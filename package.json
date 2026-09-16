@@ -10,9 +10,7 @@
     "menu:build:local": "node scripts/excel-to-json-local.cjs",
     "menu:build:link": "node scripts/excel-to-json-link.cjs",
     "menu:build": "npm run menu:build:link || npm run menu:build:local",
-    "supabase:seed:build": "node scripts/generate-supabase-seed.cjs",
-    "menu:publish": "node scripts/publish-site.cjs",
-    "site:publish": "node scripts/publish-site.cjs"
+    "supabase:seed:build": "node scripts/generate-supabase-seed.cjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.106.1",

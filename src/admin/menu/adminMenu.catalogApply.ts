@@ -114,10 +114,8 @@ export async function applyCatalogArtifactToDirectory(
   const timeTag = buildSafeTimestamp(artifact.generatedAt);
   const historyDir = await getNestedDirectoryHandle(rootHandle, ['data', 'admin-history', `catalog-apply-${timeTag}`], true);
   const publicDataDir = await getNestedDirectoryHandle(rootHandle, ['public', 'data'], true);
-  const docsDataDir = await getNestedDirectoryHandle(rootHandle, ['docs', 'data'], true);
 
   await writeJsonFile(publicDataDir, 'menu.json', artifact.afterCatalog);
-  await writeJsonFile(docsDataDir, 'menu.json', artifact.afterCatalog);
   await writeJsonFile(historyDir, 'before-catalog.json', artifact.beforeCatalog);
   await writeJsonFile(historyDir, 'after-catalog.json', artifact.afterCatalog);
   await writeJsonFile(historyDir, 'apply-artifact.json', artifact);
@@ -129,7 +127,6 @@ export async function applyCatalogArtifactToDirectory(
     nextCatalog: artifact.afterCatalog,
     fileTargets: [
       'public/data/menu.json',
-      'docs/data/menu.json',
       `data/admin-history/catalog-apply-${timeTag}/before-catalog.json`,
       `data/admin-history/catalog-apply-${timeTag}/after-catalog.json`,
       `data/admin-history/catalog-apply-${timeTag}/apply-artifact.json`,
@@ -255,13 +252,9 @@ async function assertCatalogStructure(rootHandle: BrowserFileSystemDirectoryHand
     const publicDir = await rootHandle.getDirectoryHandle('public');
     const publicDataDir = await publicDir.getDirectoryHandle('data');
     await publicDataDir.getFileHandle('menu.json');
-
-    const docsDir = await rootHandle.getDirectoryHandle('docs');
-    const docsDataDir = await docsDir.getDirectoryHandle('data');
-    await docsDataDir.getFileHandle('menu.json');
   } catch {
     throw new Error(
-      'Selecciona la raiz del repo de ZAFIRO. Debe contener public/data/menu.json y docs/data/menu.json.',
+      'Selecciona la raiz del repo de ZAFIRO. Debe contener public/data/menu.json.',
     );
   }
 }
