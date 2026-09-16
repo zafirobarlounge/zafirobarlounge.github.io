@@ -5,19 +5,17 @@
     <title>ZAFIRO Bar Lounge</title>
     <script>
       (function () {
-        var pathSegmentsToKeep = 1;
         var location = window.location;
         var origin = location.origin;
         var pathname = location.pathname;
         var search = location.search;
         var hash = location.hash;
-        var segments = pathname.split('/');
-        var basePath = segments.slice(0, 1 + pathSegmentsToKeep).join('/') || '/';
-        var redirectPath = pathname.slice(basePath.length).replace(/^\/+/, '');
+        var basePath = '/';
+        var redirectPath = pathname.replace(/^\/+/, '');
         var destination =
           origin +
           basePath +
-          '/?/' +
+          '?/' +
           redirectPath +
           (search ? '&' + search.slice(1) : '') +
           hash;

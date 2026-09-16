@@ -554,7 +554,7 @@ export function AdminMenuEditorView() {
       ]);
       setActiveSection('changes');
       setExportFeedback(
-        `Se aplicaron ${result.artifact.summary.appliedItems} item${result.artifact.summary.appliedItems === 1 ? '' : 's'} al catalogo JSON. Se actualizaron public/data/menu.json y docs/data/menu.json con respaldo en data/admin-history.`,
+        `Se aplicaron ${result.artifact.summary.appliedItems} item${result.artifact.summary.appliedItems === 1 ? '' : 's'} al catalogo JSON. Se actualizo public/data/menu.json con respaldo en data/admin-history.`,
       );
     } catch (applyError) {
       setExportFeedback(
@@ -2017,7 +2017,7 @@ export function AdminMenuEditorView() {
                                 {formatSnapshotDate(entry.createdAt)}
                               </p>
                               <p className="mt-3 text-sm leading-7 text-mist">
-                                Archivos actualizados: <span className="text-ivory">public/data/menu.json</span> y <span className="text-ivory">docs/data/menu.json</span>
+                                Archivos actualizados: <span className="text-ivory">public/data/menu.json</span>
                               </p>
                               <p className="mt-2 text-xs leading-6 text-mist">
                                 Respaldos generados: {entry.fileTargets.length} archivo{entry.fileTargets.length === 1 ? '' : 's'}
