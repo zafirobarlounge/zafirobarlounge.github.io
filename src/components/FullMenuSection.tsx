@@ -190,7 +190,7 @@ export function FullMenuSection({ items, dictionary, locale }: FullMenuSectionPr
                               <div className="absolute inset-0 shadow-[inset_0_-52px_74px_rgba(4,6,12,0.52),inset_0_0_42px_rgba(0,0,0,0.1)]" />
                             </div>
                           ) : (
-                            <div className="border-b border-white/10 bg-[radial-gradient(circle_at_top_left,_rgba(36,107,255,0.16),_transparent_40%),rgba(255,255,255,0.03)] px-4 py-4">
+                            <div className="bg-[radial-gradient(circle_at_top_left,_rgba(36,107,255,0.16),_transparent_40%),rgba(255,255,255,0.03)] px-4 py-4">
                               <p className="text-[0.68rem] uppercase tracking-[0.24em] text-cyanGlow/80">
                                 {getLocalizedCategoryLabel(normalizedCategory, locale)}
                               </p>
