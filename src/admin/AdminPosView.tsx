@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { ChevronDown, LayoutGrid, List } from 'lucide-react';
 import { AdminLayout } from './AdminLayout';
 import { useSupabaseAuth } from '../auth/SupabaseAuthProvider';
 import type {
@@ -51,6 +52,11 @@ import {
   POS_SYNC_DEBUG,
   mapPosRealtimeOrderItem,
   mapPosRealtimeLog,
+  loadPosTableContextFromSupabase,
+  loadClosedSalesForSessionFromSupabase,
+  applyRealtimeEventToTableContext,
+  isPosTableContextValid,
+  type PosTableContext,
 } from '../integrations/supabase/posOperationsRepository';
 
 function logPosSync(message: string) {
@@ -161,9 +167,37 @@ export function AdminPosView() {
   );
 
   const [activeTab, setActiveTab] = useState<WorkspaceTab>(() => workspaceTabs[0] ?? 'floor');
+  const [floorTableLayout, setFloorTableLayout] = useState<'list' | 'grid'>(() => {
+    try {
+      return window.localStorage.getItem('zafiro.pos.table-layout') === 'grid' ? 'grid' : 'list';
+    } catch {
+      return 'list';
+    }
+  });
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('zafiro.pos.table-layout', floorTableLayout);
+    } catch {
+      // The layout remains usable when browser storage is unavailable.
+    }
+  }, [floorTableLayout]);
   const [posState, setPosState] = useState<PosState | null>(null);
+  const [salesSessionAlertTime, setSalesSessionAlertTime] = useState(() => Date.now());
+  useEffect(() => {
+    const refreshAlertTime = () => setSalesSessionAlertTime(Date.now());
+    const alertTimer = window.setInterval(refreshAlertTime, 60000);
+    window.addEventListener('focus', refreshAlertTime);
+    return () => {
+      window.clearInterval(alertTimer);
+      window.removeEventListener('focus', refreshAlertTime);
+    };
+  }, []);
+  const overdueSalesSession = posState?.activeSalesSession && isSalesSessionPastClosingCutoff(posState.activeSalesSession, salesSessionAlertTime)
+    ? posState.activeSalesSession
+    : null;
   const [products, setProducts] = useState<PosProductOption[]>([]);
-  const [selectedTableId, setSelectedTableId] = useState<string | null>(null);
+  const [selectedTableId, setSelectedTableIdState] = useState<string | null>(null);
+  const selectedTableIdRef = useRef<string | null>(null);
   const [isTableSheetOpen, setIsTableSheetOpen] = useState(false);
   const [isCloseDraftWarningOpen, setIsCloseDraftWarningOpen] = useState(false);
   const [isMoveTableModalOpen, setIsMoveTableModalOpen] = useState(false);
@@ -197,9 +231,14 @@ export function AdminPosView() {
   const [cashierRightPanel, setCashierRightPanel] = useState<CashierRightPanel>('summary');
   const [selectedDetachedCashierOrderId, setSelectedDetachedCashierOrderId] = useState<string | null>(null);
   const [selectedHistoricalSessionId, setSelectedHistoricalSessionId] = useState<string | null>(null);
+  const [historicalSessionDetail, setHistoricalSessionDetail] = useState<{
+    sessionId: string | null; orders: PosOrderWithRelations[]; loading: boolean; error: string | null;
+  }>({ sessionId: null, orders: [], loading: false, error: null });
+  const [historicalSessionRetry, setHistoricalSessionRetry] = useState(0);
   const [expandedTraceLogIds, setExpandedTraceLogIds] = useState<string[]>([]);
   const [highlightedPendingPaymentId, setHighlightedPendingPaymentId] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [notificationRevision, setNotificationRevision] = useState(0);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [floatingActionToast, setFloatingActionToast] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -225,6 +264,13 @@ export function AdminPosView() {
   const shouldFocusCashierPaymentPanelRef = useRef(false);
   const shouldFocusFloorWorkspacePanelRef = useRef(false);
   const posStateRef = useRef<PosState | null>(null);
+  const [tableContext, setTableContext] = useState<PosTableContext | null>(null);
+  const tableContextRef = useRef<PosTableContext | null>(null);
+  const tableContextRequestRef = useRef(0);
+  const [tableContextRevision, setTableContextRevision] = useState(0);
+  const [isSavingLineItem, setIsSavingLineItem] = useState(false);
+  const savingLineItemRef = useRef(false);
+  const tableContextEventsRef = useRef<PosRealtimeEvent[]>([]);
   const activeTabRef = useRef<WorkspaceTab>('floor');
   const actorRef = useRef(actor);
   const workspaceAccessRef = useRef({
@@ -238,6 +284,45 @@ export function AdminPosView() {
   const deferredProductSearch = useDeferredValue(productSearch);
 
   const shouldSuppressBackgroundSync = () => Date.now() < suppressAutoSyncUntilRef.current;
+
+  const invalidateTableContext = () => {
+    tableContextRequestRef.current += 1;
+    tableContextRef.current = null;
+    setTableContext(null);
+    setTableContextRevision((revision) => revision + 1);
+  };
+
+  const setSelectedTableId = (value: string | null | ((current: string | null) => string | null)) => {
+    const nextId = typeof value === 'function' ? value(selectedTableIdRef.current) : value;
+    if (nextId !== selectedTableIdRef.current) {
+      selectedTableIdRef.current = nextId;
+      invalidateTableContext();
+    }
+    setSelectedTableIdState(nextId);
+  };
+
+  const updateTableContextFromRealtime = (event: PosRealtimeEvent) => {
+    if (savingLineItemRef.current) {
+      tableContextEventsRef.current.push(event);
+      return;
+    }
+    const current = tableContextRef.current;
+    if (current && current.tableId !== selectedTableIdRef.current) {
+      invalidateTableContext();
+      return;
+    }
+    if (!current) {
+      if (event.table !== 'pos_order_status_logs') invalidateTableContext();
+      return;
+    }
+    const next = applyRealtimeEventToTableContext(current, event);
+    if (!next) {
+      invalidateTableContext();
+    } else if (next !== current) {
+      tableContextRef.current = next;
+      setTableContext(next);
+    }
+  };
 
   const scheduleTrailingSync = (delay = 960) => {
     logPosSync(`trailing schedule reason=trailing-sync delay=${delay}ms replace=${trailingSyncTimerRef.current != null}`);
@@ -428,6 +513,7 @@ export function AdminPosView() {
         logPosSync(`handleRealtimeEvent ignored reason=unmounted table=${event.table} event=${event.eventType} id=${eventId}`);
         return false;
       }
+      updateTableContextFromRealtime(event);
       if (pendingLoad) {
         eventsDuringLoad.push(event);
         logPosSync(`eventsDuringLoad buffered loadId=${activeLoadId} table=${event.table} event=${event.eventType} id=${eventId} count=${eventsDuringLoad.length}`);
@@ -527,6 +613,20 @@ export function AdminPosView() {
             }
             eventsDuringLoad = [];
             setPosState(syncedState);
+            const currentContext = tableContextRef.current;
+            if (!savingLineItemRef.current && currentContext) {
+              const table = syncedState.tables.find((entry) => entry.id === currentContext.table.id);
+              const nextContext = table ? {
+                tableId: table.id, table, order: table.activeOrder, items: table.activeOrder?.items ?? [], salesSession: syncedState.activeSalesSession,
+              } : null;
+              if (nextContext && nextContext.tableId === selectedTableIdRef.current && isPosTableContextValid(nextContext, currentContext.tableId) &&
+                nextContext.order?.id === currentContext.order?.id) {
+                tableContextRef.current = nextContext;
+                setTableContext(nextContext);
+              } else {
+                invalidateTableContext();
+              }
+            }
             setSelectedTableId((current) => {
               if (current && nextState.tables.some((table) => table.id === current)) {
                 return current;
@@ -587,6 +687,7 @@ export function AdminPosView() {
     const handleVisibilitySync = () => {
       logPosSync(`visibilitychange reason=visibility state=${document.visibilityState}`);
       if (document.visibilityState === 'visible' && !shouldSuppressBackgroundSync()) {
+        invalidateTableContext();
         scheduleBackgroundSync('visibility');
       } else {
         logPosSync('visibilitychange skipped reason=visibility blocked=hidden-or-suppressed');
@@ -601,6 +702,7 @@ export function AdminPosView() {
       }
 
       scheduleBackgroundSync('focus');
+      invalidateTableContext();
     };
 
     document.addEventListener('visibilitychange', handleVisibilitySync);
@@ -657,6 +759,24 @@ export function AdminPosView() {
     [posState?.tables, selectedTableId],
   );
   const selectedOrder = selectedTable?.activeOrder ?? null;
+  useEffect(() => {
+    const requestId = ++tableContextRequestRef.current;
+    tableContextRef.current = null;
+    setTableContext(null);
+    const tableId = selectedTableId;
+    if (!tableId || selectedTable?.id !== tableId || activeTab !== 'floor' || savingLineItemRef.current) return;
+    void loadPosTableContextFromSupabase(tableId).then((context) => {
+      if (tableContextRequestRef.current !== requestId || selectedTableIdRef.current !== tableId ||
+        !isPosTableContextValid(context, tableId)) return;
+      tableContextRef.current = context;
+      setTableContext(context);
+    }).catch((error: unknown) => {
+      if (tableContextRequestRef.current === requestId) {
+        setErrorMessage(error instanceof Error ? error.message : 'No fue posible cargar la mesa.');
+      }
+    });
+    return () => { tableContextRequestRef.current += 1; };
+  }, [selectedTableId, selectedTable?.id, activeTab, isTableSheetOpen, tableContextRevision]);
   const filteredProducts = useMemo(() => {
     const term = deferredProductSearch.trim().toLowerCase();
     return products.filter((product) => {
@@ -778,6 +898,7 @@ export function AdminPosView() {
   const canVoidProcessedItems = actor.roles.includes('superadmin') || actor.roles.includes('cashier');
   const createTableName = createTableForm.name.trim();
   const createTableCode = createTableForm.code.trim().toUpperCase();
+  const hasCreateTableText = Boolean(createTableForm.code || createTableForm.name);
   const canCreateTable = Boolean(createTableName && createTableCode && isCapacityValid && !busyAction);
   const paymentPreview = useMemo(() => {
     if (!selectedCashierOrder) {
@@ -909,7 +1030,7 @@ export function AdminPosView() {
     return allCashierOrders.filter((order) => order.salesSessionId === posState.activeSalesSession?.id);
   }, [allCashierOrders, posState?.activeSalesSession]);
   const previousClosedSessions = useMemo(
-    () => (posState?.recentSalesSessions ?? []).filter((session) => session.status === 'closed'),
+    () => (posState?.recentSalesSessions ?? []).filter((session) => session.status === 'closed').slice(0, 7),
     [posState?.recentSalesSessions],
   );
   const activeSalesSessionClosedSales = useMemo(
@@ -936,13 +1057,30 @@ export function AdminPosView() {
   );
   const selectedHistoricalSessionSales = useMemo(
     () =>
-      selectedHistoricalSession
-        ? closedSales
-            .filter((order) => order.salesSessionId === selectedHistoricalSession.id && isPaidClosedSale(order))
+      selectedHistoricalSession && historicalSessionDetail.sessionId === selectedHistoricalSession.id
+        ? historicalSessionDetail.orders
+            .filter(isPaidClosedSale)
             .sort((left, right) => (right.closedAt ?? right.updatedAt).localeCompare(left.closedAt ?? left.updatedAt))
         : [],
-    [closedSales, selectedHistoricalSession],
+    [historicalSessionDetail, selectedHistoricalSession],
   );
+  const isHistoricalSessionLoading = Boolean(selectedHistoricalSession &&
+    (historicalSessionDetail.sessionId !== selectedHistoricalSession.id || historicalSessionDetail.loading));
+  useEffect(() => {
+    const historicalSessionId = selectedHistoricalSession?.id;
+    if (activeTab !== 'cashier' || cashierRightPanel !== 'previous_sessions' || !historicalSessionId) return;
+    let isCurrent = true;
+    setHistoricalSessionDetail({ sessionId: historicalSessionId, orders: [], loading: true, error: null });
+    void loadClosedSalesForSessionFromSupabase(historicalSessionId).then((orders) => {
+      if (isCurrent) setHistoricalSessionDetail({ sessionId: historicalSessionId, orders, loading: false, error: null });
+    }).catch((error: unknown) => {
+      if (isCurrent) setHistoricalSessionDetail({
+        sessionId: historicalSessionId, orders: [], loading: false,
+        error: error instanceof Error ? error.message : 'No fue posible cargar las mesas de esta jornada.',
+      });
+    });
+    return () => { isCurrent = false; };
+  }, [activeTab, cashierRightPanel, selectedHistoricalSession?.id, historicalSessionRetry]);
   const sessionOpenTableCount = activeSalesSessionOrders.filter((order) => order.closedAt == null).length;
   const sessionClosedTableCount = activeSalesSessionClosedSales.length;
 
@@ -1100,7 +1238,7 @@ export function AdminPosView() {
 
     const clearHighlight = window.setTimeout(() => {
       setHighlightedOrderItemId((current) => (current === itemId ? null : current));
-    }, 2200);
+    }, 5000);
 
     return () => {
       window.clearTimeout(clearHighlight);
@@ -1114,10 +1252,19 @@ export function AdminPosView() {
 
     const timer = window.setTimeout(() => {
       setFloatingActionToast(null);
-    }, 2200);
+    }, 3000);
 
     return () => window.clearTimeout(timer);
   }, [floatingActionToast]);
+  useEffect(() => {
+    const hasNotification = Boolean(actionMessage || errorMessage);
+    if (!hasNotification) return;
+    const timer = window.setTimeout(() => {
+      setActionMessage(null);
+      setErrorMessage(null);
+    }, errorMessage ? 8000 : 5000);
+    return () => window.clearTimeout(timer);
+  }, [actionMessage, errorMessage, notificationRevision]);
   useEffect(() => {
     if (!shouldFocusReplacementFormRef.current || !replaceTargetItemId || activeTab !== 'floor') {
       return;
@@ -1250,16 +1397,20 @@ export function AdminPosView() {
     try {
       const result = await action();
       options?.onSuccess?.(result);
+      if (!savingLineItemRef.current) invalidateTableContext();
       setActionMessage(label);
+      setNotificationRevision((revision) => revision + 1);
       if (options?.showToast) {
         setFloatingActionToast(label);
       }
       markLocalMutationCommitted();
     } catch (error) {
+      if (savingLineItemRef.current) invalidateTableContext();
       const normalizedError = error instanceof Error ? error : new Error(`No fue posible completar: ${label}`);
       const customMessage = options?.onError?.(normalizedError);
       setActionMessage(null);
       setErrorMessage(customMessage ?? normalizedError.message);
+      setNotificationRevision((revision) => revision + 1);
     } finally {
       if (!options?.skipBusy && currentBusyActionIdRef.current === actionId) {
         setBusyAction(null);
@@ -1349,6 +1500,15 @@ export function AdminPosView() {
     );
   };
 
+  const handleCancelOrDeleteTable = async () => {
+    if (busyAction) return;
+    if (hasCreateTableText) {
+      setCreateTableForm((current) => ({ ...current, code: '', name: '' }));
+      return;
+    }
+    await handleDeleteSelectedTable();
+  };
+
   const handleDeleteSelectedTable = async () => {
     if (!selectedTable) {
       return;
@@ -1428,143 +1588,163 @@ export function AdminPosView() {
   };
 
   const handleAddOrReplaceItem = async () => {
-    if (!selectedTable) {
-      setErrorMessage('Selecciona una mesa antes de continuar.');
+    const context = tableContextRef.current;
+    if (savingLineItemRef.current) return;
+    const tableId = selectedTableIdRef.current;
+    if (!tableId || selectedTable?.id !== tableId || !context || !isPosTableContextValid(context, tableId)) {
+      invalidateTableContext();
       return;
     }
+    savingLineItemRef.current = true;
+    setIsSavingLineItem(true);
+    tableContextEventsRef.current = [];
+    try {
+      if (!selectedTable) {
+        setErrorMessage('Selecciona una mesa antes de continuar.');
+        return;
+      }
 
-    if (!isLineQuantityValid || parsedLineQuantity == null) {
-      setErrorMessage('La cantidad debe ser mayor que cero.');
-      return;
-    }
+      if (!isLineQuantityValid || parsedLineQuantity == null) {
+        setErrorMessage('La cantidad debe ser mayor que cero.');
+        return;
+      }
 
-    if (addItemMode === 'extra') {
+      if (addItemMode === 'extra') {
+        if (replaceTargetItemId) {
+          setErrorMessage('Sal del modo reemplazo antes de agregar un extra.');
+          return;
+        }
+
+        if (!customItemNameValue) {
+          setErrorMessage('El extra debe tener un nombre.');
+          return;
+        }
+
+        if (!isCustomItemUnitPriceValid || parsedCustomItemUnitPrice == null) {
+          setErrorMessage('El precio unitario del extra debe ser mayor que cero.');
+          return;
+        }
+
+        await executeAction(
+          `Extra agregado a ${selectedTable.code}`,
+          async () =>
+            addCustomItemToTableInSupabase(
+              selectedTable.id,
+              {
+                notes: lineNotes,
+                prepArea: customItemPrepArea,
+                productName: customItemNameValue,
+                quantity: parsedLineQuantity,
+                unitPrice: parsedCustomItemUnitPrice,
+              },
+              actor,
+          ),
+          {
+            skipBusy: true,
+            showToast: true,
+            onSuccess: (createdItem) => {
+              pendingOrderItemFocusRef.current = createdItem.id;
+              setPosState((current) =>
+                current ? mergeAddedItemsIntoPosState(current, selectedTable, [createdItem], actor.email) : current,
+              );
+              setCustomItemName('');
+              setCustomItemUnitPrice('');
+              setLineNotes('');
+              setLineQuantity('1');
+            },
+            onError: (error) => `No se pudo agregar el extra al borrador: ${error.message}`,
+          },
+        );
+        return;
+      }
+
+      if (!selectedProduct) {
+        setErrorMessage('Selecciona un producto antes de continuar.');
+        return;
+      }
+
+      const payload: AddOrderItemInput = {
+        menuItemSourceKey: selectedProduct.sourceKey,
+        notes: lineNotes,
+        productName: selectedProduct.name,
+        productSlug: selectedProduct.slug,
+        productType: selectedProduct.type,
+        quantity: parsedLineQuantity,
+        unitPrice: selectedProduct.price,
+      };
+
       if (replaceTargetItemId) {
-        setErrorMessage('Sal del modo reemplazo antes de agregar un extra.');
-        return;
-      }
+        const targetItem = selectedOrder?.items.find((item) => item.id === replaceTargetItemId);
+        await executeAction(
+          `Producto reemplazado en ${selectedTable.code}`,
+          async () =>
+            replaceOrderItemInSupabase(
+              replaceTargetItemId,
+              { ...payload, reason: replaceReason.trim() || `Reemplazo de ${targetItem?.productName ?? 'producto'}` },
+              actor,
+              targetItem,
+            ),
+          {
+            skipBusy: true,
+            onSuccess: (replacementItem) => {
+              pendingOrderItemFocusRef.current = replacementItem.id;
+              const now = new Date().toISOString();
+              const cancelledOriginal = targetItem
+                ? {
+                    ...targetItem,
+                    cancellationReason: replaceReason.trim() || `Reemplazo de ${targetItem.productName}`,
+                    cancelledAt: now,
+                    cancelledByEmail: actor.email,
+                    financialStatus: 'cancelled' as const,
+                    operationalStatus: 'cancelled' as const,
+                    updatedAt: now,
+                    updatedByEmail: actor.email,
+                  }
+                : null;
 
-      if (!customItemNameValue) {
-        setErrorMessage('El extra debe tener un nombre.');
-        return;
-      }
-
-      if (!isCustomItemUnitPriceValid || parsedCustomItemUnitPrice == null) {
-        setErrorMessage('El precio unitario del extra debe ser mayor que cero.');
+              setPosState((current) =>
+                current
+                  ? mergeUpdatedItemsIntoPosState(current, cancelledOriginal ? [cancelledOriginal, replacementItem] : [replacementItem])
+                  : current,
+              );
+              resetReplacementMode();
+              setLineNotes('');
+              setLineQuantity('1');
+            },
+            onError: (error) => `No se pudo reemplazar el producto: ${error.message}`,
+          },
+        );
         return;
       }
 
       await executeAction(
-        `Extra agregado a ${selectedTable.code}`,
-        async () =>
-          addCustomItemToTableInSupabase(
-            selectedTable.id,
-            {
-              notes: lineNotes,
-              prepArea: customItemPrepArea,
-              productName: customItemNameValue,
-              quantity: parsedLineQuantity,
-              unitPrice: parsedCustomItemUnitPrice,
-            },
-            actor,
-        ),
+        `Producto agregado a ${selectedTable.code}`,
+        async () => addItemsToTableInSupabase(selectedTable.id, [payload], actor, context),
         {
           skipBusy: true,
           showToast: true,
-          onSuccess: (createdItem) => {
-            pendingOrderItemFocusRef.current = createdItem.id;
-            setPosState((current) =>
-              current ? mergeAddedItemsIntoPosState(current, selectedTable, [createdItem], actor.email) : current,
-            );
-            setCustomItemName('');
-            setCustomItemUnitPrice('');
-            setLineNotes('');
-            setLineQuantity('1');
-          },
-          onError: (error) => `No se pudo agregar el extra al borrador: ${error.message}`,
-        },
-      );
-      return;
-    }
-
-    if (!selectedProduct) {
-      setErrorMessage('Selecciona un producto antes de continuar.');
-      return;
-    }
-
-    const payload: AddOrderItemInput = {
-      menuItemSourceKey: selectedProduct.sourceKey,
-      notes: lineNotes,
-      productName: selectedProduct.name,
-      productSlug: selectedProduct.slug,
-      productType: selectedProduct.type,
-      quantity: parsedLineQuantity,
-      unitPrice: selectedProduct.price,
-    };
-
-    if (replaceTargetItemId) {
-      const targetItem = selectedOrder?.items.find((item) => item.id === replaceTargetItemId);
-      await executeAction(
-        `Producto reemplazado en ${selectedTable.code}`,
-        async () =>
-          replaceOrderItemInSupabase(
-            replaceTargetItemId,
-            { ...payload, reason: replaceReason.trim() || `Reemplazo de ${targetItem?.productName ?? 'producto'}` },
-            actor,
-            targetItem,
-          ),
-        {
-          skipBusy: true,
-          onSuccess: (replacementItem) => {
-            pendingOrderItemFocusRef.current = replacementItem.id;
-            const now = new Date().toISOString();
-            const cancelledOriginal = targetItem
-              ? {
-                  ...targetItem,
-                  cancellationReason: replaceReason.trim() || `Reemplazo de ${targetItem.productName}`,
-                  cancelledAt: now,
-                  cancelledByEmail: actor.email,
-                  financialStatus: 'cancelled' as const,
-                  operationalStatus: 'cancelled' as const,
-                  updatedAt: now,
-                  updatedByEmail: actor.email,
-                }
-              : null;
-
+          onSuccess: (createdItems) => {
+            if (tableContextRef.current === context) setTableContext({ ...context });
+            pendingOrderItemFocusRef.current = createdItems[0]?.id ?? null;
             setPosState((current) =>
               current
-                ? mergeUpdatedItemsIntoPosState(current, cancelledOriginal ? [cancelledOriginal, replacementItem] : [replacementItem])
+                ? mergeAddedItemsIntoPosState(current, selectedTable, createdItems, actor.email)
                 : current,
             );
-            resetReplacementMode();
             setLineNotes('');
             setLineQuantity('1');
           },
-          onError: (error) => `No se pudo reemplazar el producto: ${error.message}`,
+          onError: (error) => `No se pudo agregar el producto al borrador: ${error.message}`,
         },
       );
-      return;
+    } finally {
+      savingLineItemRef.current = false;
+      setIsSavingLineItem(false);
+      const events = tableContextEventsRef.current;
+      tableContextEventsRef.current = [];
+      for (const event of events) updateTableContextFromRealtime(event);
+      if (addItemMode === 'extra' || replaceTargetItemId || !tableContextRef.current) invalidateTableContext();
     }
-
-    await executeAction(
-      `Producto agregado a ${selectedTable.code}`,
-      async () => addItemsToTableInSupabase(selectedTable.id, [payload], actor),
-      {
-        skipBusy: true,
-        showToast: true,
-        onSuccess: (createdItems) => {
-          pendingOrderItemFocusRef.current = createdItems[0]?.id ?? null;
-          setPosState((current) =>
-            current
-              ? mergeAddedItemsIntoPosState(current, selectedTable, createdItems, actor.email)
-              : current,
-          );
-          setLineNotes('');
-          setLineQuantity('1');
-        },
-        onError: (error) => `No se pudo agregar el producto al borrador: ${error.message}`,
-      },
-    );
   };
 
   const handleStartEditing = (item: PosOrderItem) => {
@@ -1608,16 +1788,16 @@ export function AdminPosView() {
 
   const handleCancelItem = async (item: PosOrderItem) => {
     const reason = window.prompt(
-      item.operationalStatus === 'draft' ? `Motivo para quitar el borrador ${item.productName}:` : `Motivo de cancelacion para ${item.productName}:`,
+      item.operationalStatus === 'draft' ? `Motivo para quitar 1 unidad del borrador ${item.productName}:` : `Motivo para cancelar 1 unidad de ${item.productName}:`,
       item.notes || (item.operationalStatus === 'draft' ? 'Borrador descartado' : 'Cancelacion operativa'),
     );
     if (!reason) {
       return;
     }
 
-    await executeAction(`${item.productName} cancelado`, async () => cancelOrderItemInSupabase(item.id, reason, actor, item), {
-      onSuccess: (updatedItem) => {
-        setPosState((current) => (current ? mergeUpdatedItemsIntoPosState(current, [updatedItem]) : current));
+    await executeAction(`1 unidad de ${item.productName} cancelada`, async () => cancelOrderItemInSupabase(item.id, reason, actor, item), {
+      onSuccess: (updatedItems) => {
+        setPosState((current) => (current ? mergeUpdatedItemsIntoPosState(current, updatedItems) : current));
       },
     });
   };
@@ -1843,6 +2023,13 @@ export function AdminPosView() {
           ) : null}
 
           {selectedOrder ? (
+            <div className="mt-4 flex flex-wrap gap-x-5 gap-y-2 text-sm text-mist">
+              <p><span className="text-cyanGlow/75">Apertura de cuenta:</span> {formatDateTime(selectedOrder.openedAt)}</p>
+              <p><span className="text-cyanGlow/75">Cierre:</span> {selectedOrder.closedAt ? formatDateTime(selectedOrder.closedAt) : 'En curso'}</p>
+            </div>
+          ) : null}
+
+          {selectedOrder ? (
             <div className="mt-4 flex flex-wrap items-center gap-3">
               <button type="button" onClick={handleOpenMoveTableModal} disabled={!canMoveSelectedOrder || Boolean(busyAction)} className={ghostButtonClassName}>
                 Mover mesa
@@ -1988,10 +2175,12 @@ export function AdminPosView() {
             <button
                 type="button"
                 onClick={() => void handleAddOrReplaceItem()}
-                disabled={!canSubmitLineItem}
-                className={`${primaryButtonClassName} mt-4`}
+                disabled={!canSubmitLineItem || !selectedTableId || !tableContext || !isPosTableContextValid(tableContext, selectedTableId) || isSavingLineItem}
+                aria-busy={isSavingLineItem}
+                className={`${addToTableButtonClassName} mt-4`}
               >
-                {replaceTargetItemId ? 'Aplicar reemplazo' : addItemMode === 'extra' ? 'Agregar extra' : 'Agregar a la mesa'}
+                {isSavingLineItem ? <span aria-hidden="true" className="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-current border-t-transparent motion-reduce:animate-none" /> : null}
+                <span>{isSavingLineItem ? 'Guardando...' : !selectedTableId || !tableContext || !isPosTableContextValid(tableContext, selectedTableId) ? 'Mesa no lista' : replaceTargetItemId ? 'Aplicar reemplazo' : addItemMode === 'extra' ? 'Agregar extra' : 'Agregar a la mesa'}</span>
             </button>
           </div>
 
@@ -2078,7 +2267,7 @@ export function AdminPosView() {
                           Editar
                         </button>
                         <button type="button" onClick={() => void handleCancelItem(item)} className={dangerButtonClassName}>
-                          Quitar borrador
+                          Quitar 1 unidad
                         </button>
                       </>
                     ) : null}
@@ -2088,7 +2277,7 @@ export function AdminPosView() {
                           Reemplazar
                         </button>
                         <button type="button" onClick={() => void handleCancelItem(item)} className={dangerButtonClassName}>
-                          Cancelar producto
+                          Cancelar 1 unidad
                         </button>
                       </>
                     ) : null}
@@ -2141,18 +2330,23 @@ export function AdminPosView() {
       <section className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
         <div className="max-w-3xl">
           <p className="text-[0.72rem] uppercase tracking-[0.28em] text-cyanGlow/80">POS operativo</p>
-          <h1 className="mt-3 font-display text-[1.7rem] leading-[0.95] text-ivory sm:text-[3.4rem]">Mesas, cocina, bar y caja</h1>
           <p className="mt-3 hidden max-w-2xl text-[0.98rem] leading-7 text-mist sm:block sm:mt-5 sm:text-lg sm:leading-8">
             Opera cuentas por mesa, controla preparacion y registra cobros con trazabilidad del turno.
           </p>
         </div>
 
-        <div className="flex flex-wrap gap-2">
+      </section>
+
+      <nav aria-label="Areas del POS" className="sticky top-[var(--admin-header-height,0px)] z-30 mt-4 flex flex-wrap gap-2 border-b border-white/10 bg-obsidian px-1 py-3 shadow-[0_8px_18px_rgba(0,0,0,0.18)]">
           {workspaceTabs.map((tab) => (
             <button
               key={tab}
               type="button"
-              onClick={() => setActiveTab(tab)}
+              aria-pressed={activeTab === tab}
+              onClick={() => {
+                setActiveTab(tab);
+                window.scrollTo({ top: 0, left: 0, behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' });
+              }}
               className={`rounded-full px-3 py-1.5 text-[0.68rem] font-semibold uppercase tracking-[0.18em] sm:px-4 sm:py-2 sm:text-xs sm:tracking-[0.22em] ${
                 activeTab === tab
                   ? 'border border-cyanGlow/25 bg-cyanGlow/10 text-cyanGlow'
@@ -2162,11 +2356,10 @@ export function AdminPosView() {
               {workspaceLabels[tab]}
             </button>
           ))}
-        </div>
-      </section>
+      </nav>
 
       {showMetricsOverview || showPreparationMetrics || showFloorMetrics ? (
-        <section className="mt-5">
+        <section hidden className="mt-5">
           <div className="flex items-center justify-between gap-3 rounded-[1.4rem] border border-white/10 bg-white/[0.04] px-4 py-3">
             <div>
               <p className="text-[0.65rem] uppercase tracking-[0.2em] text-mist">KPI</p>
@@ -2212,9 +2405,15 @@ export function AdminPosView() {
           {actionMessage}
         </section>
       ) : null}
+      {overdueSalesSession ? (
+        <section role="alert" className="mt-5 rounded-[1.2rem] border border-amberGlow/35 bg-amberGlow/10 px-3 py-3 text-sm leading-6 text-amber-100 sm:mt-6 sm:rounded-[1.4rem] sm:px-4">
+          <p className="font-semibold">La jornada {overdueSalesSession.sessionLabel} sigue abierta.</p>
+          <p>Ya paso el corte de las 6:00 a. m. de Colombia. Revisa los pendientes y realiza el cierre.</p>
+        </section>
+      ) : null}
       {floatingActionToast ? (
         <div className="pointer-events-none fixed inset-x-2 top-4 z-[9999] flex items-center gap-2 rounded-[1.2rem] border border-emerald-300/40 bg-emerald-500/20 px-4 py-3 text-sm text-emerald-100 backdrop-blur-sm shadow-lg sm:top-auto sm:bottom-6 sm:right-6 sm:inset-x-auto sm:w-fit sm:border-emerald-300/50 sm:bg-emerald-500/25">
-          <span className="text-xl">?</span>
+          <span aria-hidden="true" className="text-xl">&#10003;</span>
           <span className="font-medium">{floatingActionToast}</span>
         </div>
       ) : null}
@@ -2222,8 +2421,16 @@ export function AdminPosView() {
       {activeTab === 'floor' && canOperateFloor ? (
         <section className="mt-8 grid gap-6 xl:grid-cols-[minmax(18rem,0.95fr)_minmax(0,1.35fr)_minmax(21rem,0.95fr)]">
           <div className="space-y-5">
-            <Panel title="Mesas vivas" subtitle="Selecciona una mesa para operar la cuenta">
-              <div className="space-y-3">
+            <Panel title="Mesas vivas" subtitle="Selecciona una mesa para operar la cuenta" actions={
+              <div role="group" aria-label="Vista de mesas" className="flex shrink-0 rounded-lg border border-white/10 bg-black/20 p-1">
+                {(['list', 'grid'] as const).map((layout) => (
+                  <button key={layout} type="button" aria-label={layout === 'list' ? 'Ver mesas en lista' : 'Ver mesas en cuadricula'} aria-pressed={floorTableLayout === layout} onClick={() => setFloorTableLayout(layout)} title={layout === 'list' ? 'Ver mesas en lista' : 'Ver mesas en cuadricula'} className={`flex h-10 w-10 items-center justify-center rounded-md transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyanGlow ${floorTableLayout === layout ? 'bg-cyanGlow/15 text-cyanGlow' : 'text-mist hover:bg-white/5 hover:text-ivory'}`}>
+                    {layout === 'list' ? <List size={18} aria-hidden="true" /> : <LayoutGrid size={18} aria-hidden="true" />}
+                  </button>
+                ))}
+              </div>
+            }>
+              <div className={floorTableLayout === 'grid' ? 'grid grid-cols-2 items-stretch gap-3' : 'space-y-3'}>
                 {floorTables.map((table) => {
                   const readyCount = table.activeOrder?.items.filter((item) => item.operationalStatus === 'ready').length ?? 0;
                   const pickingUpCount = table.activeOrder?.items.filter((item) => item.operationalStatus === 'picking_up').length ?? 0;
@@ -2252,7 +2459,7 @@ export function AdminPosView() {
                           setIsTableSheetOpen(true);
                         }
                       }}
-                      className={`w-full rounded-[1.2rem] border p-4 text-left transition ${
+                      className={`flex w-full flex-col items-stretch justify-start rounded-[1.2rem] border p-4 text-left transition ${
                         selectedTable?.id === table.id
                           ? 'border-cyanGlow/28 bg-cyanGlow/10'
                           : readyCount > 0
@@ -2262,15 +2469,15 @@ export function AdminPosView() {
                             : 'border-white/8 bg-white/[0.02]'
                       }`}
                     >
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <p className="text-[0.68rem] uppercase tracking-[0.22em] text-cyanGlow/75">{table.code}</p>
-                          <div className="mt-2 flex items-center gap-2">
-                            <p className="font-semibold text-ivory">{table.name}</p>
+                      <div className={floorTableLayout === 'grid' ? 'grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-2' : 'flex items-start justify-between gap-3'}>
+                        <div className={floorTableLayout === 'grid' ? 'contents' : 'min-w-0'}>
+                          <p className={`break-words text-[0.68rem] uppercase tracking-[0.22em] text-cyanGlow/75 ${floorTableLayout === 'grid' ? 'col-start-1 row-start-1' : ''}`}>{table.code}</p>
+                          <div className={`mt-2 flex items-center gap-2 ${floorTableLayout === 'grid' ? 'col-span-2 row-start-2' : ''}`}>
+                            <p className="break-words font-semibold text-ivory">{table.name}</p>
                             {indicatorClassName ? <span className={`inline-block h-2.5 w-2.5 rounded-full ${indicatorClassName}`} /> : null}
                           </div>
                         </div>
-                        <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-[0.65rem] uppercase tracking-[0.22em] text-mist">
+                        <span className={`shrink-0 rounded-full border px-2 py-1 text-[0.65rem] uppercase tracking-normal ${floorTableLayout === 'grid' ? 'col-start-2 row-start-1 justify-self-end' : ''} ${table.status === 'occupied' ? 'border-amberGlow/35 bg-amberGlow/10 text-amberGlow' : table.status === 'available' ? 'border-emerald-300/25 bg-emerald-300/10 text-emerald-200' : 'border-white/10 bg-white/[0.04] text-mist'}`}>
                           {tableStatusLabels[table.status]}
                         </span>
                       </div>
@@ -2278,7 +2485,7 @@ export function AdminPosView() {
                         <div className="mt-3 text-sm text-mist">
                           <p>{table.activeOrder.items.length} producto(s)</p>
                           <p>{formatCurrency(table.activeOrder.summary.remainingBalance)} pendiente</p>
-                          {table.assignedStaffEmail ? <p className="mt-2 text-xs text-cyanGlow/75">Responsable actual: {formatOperatorIdentity(table.assignedStaffEmail)}</p> : null}
+                          {table.assignedStaffEmail ? <p className="mt-2 break-words text-xs text-cyanGlow/75">Responsable actual: <span className={floorTableLayout === 'grid' ? 'mt-1 block text-ivory' : ''}>{formatOperatorIdentity(table.assignedStaffEmail)}</span></p> : null}
                           {readyCount > 0 ? <p className="mt-2 font-medium text-rose-200">{readyCount} listo(s) por recoger</p> : null}
                           {pickingUpCount > 0 ? <p className="mt-2 text-cyanGlow/90">{pickingUpCount} en recogida</p> : null}
                           {!readyCount && !pickingUpCount && inPreparationCount > 0 ? <p className="mt-2 text-amberGlow">{inPreparationCount} en preparacion</p> : null}
@@ -2286,7 +2493,7 @@ export function AdminPosView() {
                       ) : (
                         <div className="mt-3 text-sm text-mist">
                           <p>Sin cuenta activa</p>
-                          {table.assignedStaffEmail ? <p className="mt-2 text-xs text-cyanGlow/75">Responsable actual: {formatOperatorIdentity(table.assignedStaffEmail)}</p> : null}
+                          {table.assignedStaffEmail ? <p className="mt-2 break-words text-xs text-cyanGlow/75">Responsable actual: <span className={floorTableLayout === 'grid' ? 'mt-1 block text-ivory' : ''}>{formatOperatorIdentity(table.assignedStaffEmail)}</span></p> : null}
                         </div>
                       )}
                     </button>
@@ -2300,7 +2507,12 @@ export function AdminPosView() {
               ) : null}
             </Panel>
 
-            <Panel title="Crear mesa" subtitle="Mesas fijas o adicionales para alta ocupacion">
+            <details className="rounded-[1.3rem] border border-white/10 bg-white/[0.03] p-4 shadow-[0_18px_40px_rgba(0,0,0,0.2)] sm:rounded-[1.7rem] sm:p-5">
+              <summary className="cursor-pointer marker:text-cyanGlow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyanGlow/24">
+                <span className="text-[0.68rem] uppercase tracking-[0.24em] text-cyanGlow/80">Crear mesa</span>
+                <p className="mt-2 text-sm leading-6 text-mist sm:mt-3 sm:leading-7">Mesas fijas o adicionales para alta ocupacion</p>
+              </summary>
+              <div className="mt-3 sm:mt-4">
               <div className="grid gap-3 sm:grid-cols-2">
                 <Field label="Codigo">
                   <input value={createTableForm.code} onChange={(event) => setCreateTableForm((current) => ({ ...current, code: event.target.value }))} className={inputClassName} placeholder="M-07" />
@@ -2346,21 +2558,22 @@ export function AdminPosView() {
                 <button type="button" onClick={() => void handleCreateTable()} disabled={!canCreateTable} className={primaryButtonClassName}>
                 {busyAction ?? 'Crear mesa'}
                 </button>
-                {selectedTable ? (
+                {selectedTable || hasCreateTableText ? (
                   <button
                     type="button"
-                    onClick={() => void handleDeleteSelectedTable()}
-                    disabled={!canDeleteSelectedTable || Boolean(busyAction)}
-                    className={dangerButtonClassName}
+                    onClick={() => void handleCancelOrDeleteTable()}
+                    disabled={Boolean(busyAction) || (!hasCreateTableText && !canDeleteSelectedTable)}
+                    className={hasCreateTableText ? ghostButtonClassName : dangerButtonClassName}
                   >
-                    Eliminar mesa seleccionada
+                    {hasCreateTableText ? 'Cancelar' : `Eliminar mesa ${selectedTable?.code ?? ''}`}
                   </button>
                 ) : null}
               </div>
-              {selectedTable && !canDeleteSelectedTable ? (
+              {selectedTable && !hasCreateTableText && !canDeleteSelectedTable ? (
                 <p className="mt-3 text-sm text-mist">Solo puedes eliminar una mesa cuando no tenga cuenta activa ni este ocupada.</p>
               ) : null}
-            </Panel>
+              </div>
+            </details>
           </div>
 
           <div ref={floorWorkspacePanelRef} tabIndex={-1} className="hidden space-y-5 focus:outline-none xl:block">
@@ -2375,6 +2588,13 @@ export function AdminPosView() {
                     <SummaryPill label="Cuenta" value={selectedOrder ? formatCurrency(selectedOrder.summary.totalDue) : formatCurrency(0)} />
                     <SummaryPill label="Saldo" value={selectedOrder ? formatCurrency(selectedOrder.summary.remainingBalance) : formatCurrency(0)} />
                   </div>
+
+                  {selectedOrder ? (
+                    <div className="mt-4 flex flex-wrap gap-x-5 gap-y-2 text-sm text-mist">
+                      <p><span className="text-cyanGlow/75">Apertura de cuenta:</span> {formatDateTime(selectedOrder.openedAt)}</p>
+                      <p><span className="text-cyanGlow/75">Cierre:</span> {selectedOrder.closedAt ? formatDateTime(selectedOrder.closedAt) : 'En curso'}</p>
+                    </div>
+                  ) : null}
 
                   {selectedOrder ? (
                     <div className="mt-4 flex flex-wrap items-center gap-3">
@@ -2503,10 +2723,12 @@ export function AdminPosView() {
                     <button
                       type="button"
                       onClick={() => void handleAddOrReplaceItem()}
-                      disabled={!canSubmitLineItem}
-                      className={`${primaryButtonClassName} mt-4`}
+                      disabled={!canSubmitLineItem || !selectedTableId || !tableContext || !isPosTableContextValid(tableContext, selectedTableId) || isSavingLineItem}
+                      aria-busy={isSavingLineItem}
+                      className={`${addToTableButtonClassName} mt-4`}
                     >
-                      {replaceTargetItemId ? 'Aplicar reemplazo' : addItemMode === 'extra' ? 'Agregar extra' : 'Agregar a la mesa'}
+                      {isSavingLineItem ? <span aria-hidden="true" className="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-current border-t-transparent motion-reduce:animate-none" /> : null}
+                      <span>{isSavingLineItem ? 'Guardando...' : !selectedTableId || !tableContext || !isPosTableContextValid(tableContext, selectedTableId) ? 'Mesa no lista' : replaceTargetItemId ? 'Aplicar reemplazo' : addItemMode === 'extra' ? 'Agregar extra' : 'Agregar a la mesa'}</span>
                     </button>
                   </div>
 
@@ -2607,7 +2829,7 @@ export function AdminPosView() {
                                   Editar
                                 </button>
                                 <button type="button" onClick={() => void handleCancelItem(item)} className={dangerButtonClassName}>
-                                  Quitar borrador
+                                  Quitar 1 unidad
                                 </button>
                               </>
                             ) : null}
@@ -2617,7 +2839,7 @@ export function AdminPosView() {
                                   Reemplazar
                                 </button>
                                 <button type="button" onClick={() => void handleCancelItem(item)} className={dangerButtonClassName}>
-                                  Cancelar producto
+                                  Cancelar 1 unidad
                                 </button>
                               </>
                             ) : null}
@@ -2776,21 +2998,12 @@ export function AdminPosView() {
 
           {shouldShowFloorSidebar ? (
             <div className="space-y-5">
-              <Panel title="Resumen de cuenta" subtitle="Capas separadas: operacion vs cobro">
-                {selectedOrder ? (
-                  <div className="space-y-4">
-                    <SummaryPill label="Operativo" value={`${selectedOrder.items.filter((item) => item.operationalStatus === 'ready').length} listo(s)`} />
-                    <SummaryPill label="Financiero" value={financialStatusLabels[selectedOrder.financialStatus]} />
-                    <SummaryPill label="Pagado" value={formatCurrency(selectedOrder.summary.totalPaid)} />
-                    <SummaryPill label="Restante" value={formatCurrency(selectedOrder.summary.remainingBalance)} />
-                  </div>
-                ) : (
-                  <EmptyState message="Cuando una mesa abra cuenta aqui veras el acumulado y su capa financiera." />
-                )}
-              </Panel>
-
-              <Panel title="Trazabilidad reciente" subtitle="Ultimos eventos operativos y financieros">
-                <div className="space-y-3">
+              <details className="rounded-[1.3rem] border border-white/10 bg-white/[0.03] p-4 shadow-[0_18px_40px_rgba(0,0,0,0.2)] sm:rounded-[1.7rem] sm:p-5">
+                <summary className="cursor-pointer marker:text-cyanGlow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyanGlow/24">
+                  <span className="text-[0.68rem] uppercase tracking-[0.24em] text-cyanGlow/80">Trazabilidad reciente</span>
+                  <p className="mt-2 text-sm leading-6 text-mist sm:mt-3 sm:leading-7">Ultimos eventos operativos y financieros</p>
+                </summary>
+                <div className="mt-3 space-y-3 sm:mt-4">
                   {(posState?.logs ?? []).slice(0, 8).map((log) => {
                     const contextLabel = resolveLogContextLabel(log, ordersById, tablesById);
                     const productLabel = resolveLogProductLabel(log);
@@ -2841,7 +3054,7 @@ export function AdminPosView() {
                   })}
                   {!(posState?.logs ?? []).length ? <EmptyState message="Todavia no hay movimientos recientes en la trazabilidad POS." /> : null}
                 </div>
-              </Panel>
+              </details>
             </div>
           ) : null}
         </section>
@@ -3015,7 +3228,7 @@ export function AdminPosView() {
                                   disabled={Boolean(busyAction)}
                                   className="rounded-full border border-rose-300/18 bg-transparent px-3 py-1.5 text-[0.62rem] font-semibold uppercase tracking-[0.16em] text-rose-100/75 transition hover:border-rose-300/35 hover:bg-rose-300/8 hover:text-rose-50 disabled:cursor-not-allowed disabled:opacity-40"
                                 >
-                                  {cancelTarget.operationalStatus === 'draft' ? 'Quitar borrador' : 'Cancelar'}
+                                  {cancelTarget.operationalStatus === 'draft' ? 'Quitar 1 unidad' : 'Cancelar 1 unidad'}
                                 </button>
                               ) : null}
                               {voidTarget ? (
@@ -3225,6 +3438,12 @@ export function AdminPosView() {
                     label={posState?.activeSalesSession ? 'Jornada activa' : 'Estado de jornada'}
                     value={posState?.activeSalesSession?.sessionLabel ?? 'Sin jornada abierta'}
                   />
+                  {posState?.activeSalesSession ? (
+                    <>
+                      <SummaryPill label="Apertura" value={formatDateTime(posState.activeSalesSession.openedAt)} />
+                      <SummaryPill label="Cierre" value={posState.activeSalesSession.closedAt ? formatDateTime(posState.activeSalesSession.closedAt) : 'En curso'} />
+                    </>
+                  ) : null}
                   <SummaryPill
                     label="Fecha contable"
                     value={posState?.activeSalesSession?.businessDate ?? posState?.recentSalesSessions.find((session) => session.status === 'closed')?.businessDate ?? 'Sin cierre'}
@@ -3259,8 +3478,14 @@ export function AdminPosView() {
                   </details>
                 </div>
 
-                <div className="rounded-[1.2rem] border border-white/8 bg-white/[0.02] p-4">
-                  <p className="text-[0.68rem] uppercase tracking-[0.22em] text-cyanGlow/75">Ventas pagadas de la jornada actual</p>
+                <details className="group/paid-sales rounded-[1.2rem] border border-white/8 bg-white/[0.02] p-4">
+                  <summary className="flex cursor-pointer list-none items-center justify-between gap-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyanGlow/24 [&::-webkit-details-marker]:hidden">
+                    <div>
+                      <p className="text-[0.68rem] uppercase tracking-[0.22em] text-cyanGlow/75">Ventas pagadas de la jornada actual ({activeSalesSessionPaidClosedSales.length})</p>
+                      <p className="mt-2 text-sm text-mist">{activeSalesSessionPaidClosedSales.length} cuenta(s) pagada(s) y cerrada(s)</p>
+                    </div>
+                    <ChevronDown size={18} aria-hidden="true" className="shrink-0 text-cyanGlow/75 transition-transform group-open/paid-sales:rotate-180" />
+                  </summary>
                   <div className="mt-3 space-y-3">
                     {activeSalesSessionPaidClosedSales.map((order) => (
                       <details key={`active-${order.id}`} className="rounded-[1.2rem] border border-white/8 bg-black/15 p-4">
@@ -3269,7 +3494,8 @@ export function AdminPosView() {
                             <div>
                               <p className="font-medium text-ivory">{resolveOrderTableLabel(order, tablesById)}</p>
                               <p className="mt-1 text-xs uppercase tracking-[0.18em] text-cyanGlow/75">
-                                Cerrada {formatDateTime(order.closedAt ?? order.updatedAt)}
+                                <span className="block">Apertura: {formatDateTime(order.openedAt)}</span>
+                                <span className="mt-1 block">Cierre: {order.closedAt ? formatDateTime(order.closedAt) : 'Sin hora registrada'}</span>
                               </p>
                             </div>
                             <span className="rounded-full border border-emerald-300/20 bg-emerald-300/10 px-3 py-1 text-[0.65rem] uppercase tracking-[0.22em] text-emerald-200">
@@ -3331,7 +3557,7 @@ export function AdminPosView() {
                     ))}
                     {!activeSalesSessionPaidClosedSales.length ? <EmptyState message="Todavia no hay ventas pagadas cerradas dentro de la jornada vigente." /> : null}
                   </div>
-                </div>
+                </details>
 
                 <div className="rounded-[1.2rem] border border-white/8 bg-white/[0.02] p-4">
                   <p className="text-[0.68rem] uppercase tracking-[0.22em] text-cyanGlow/75">Control de jornada</p>
@@ -3392,6 +3618,10 @@ export function AdminPosView() {
                   {previousClosedSessions.length ? (
                     <div className="mt-4 rounded-[1rem] border border-white/8 bg-black/15 px-3 py-3 text-sm text-mist">
                       Ultima cerrada: <span className="text-ivory">{previousClosedSessions[0].sessionLabel}</span>
+                      <p className="mt-2 text-xs leading-5">
+                        <span className="block">Apertura: {formatDateTime(previousClosedSessions[0].openedAt)}</span>
+                        <span className="block">Cierre: {previousClosedSessions[0].closedAt ? formatDateTime(previousClosedSessions[0].closedAt) : 'Sin hora registrada'}</span>
+                      </p>
                     </div>
                   ) : (
                     <div className="mt-4 rounded-[1rem] border border-white/8 bg-black/15 px-3 py-3 text-sm text-mist">
@@ -3421,7 +3651,9 @@ export function AdminPosView() {
                           <div>
                             <p className="font-medium text-ivory">{session.sessionLabel}</p>
                             <p className="mt-1 text-xs uppercase tracking-[0.18em] text-cyanGlow/75">
-                              {session.businessDate} · cerrada {session.closedAt ? formatDateTime(session.closedAt) : 'sin hora'}
+                              <span className="block">{session.businessDate} · cerrada</span>
+                              <span className="mt-1 block">Apertura: {formatDateTime(session.openedAt)}</span>
+                              <span className="mt-1 block">Cierre: {session.closedAt ? formatDateTime(session.closedAt) : 'Sin hora registrada'}</span>
                             </p>
                           </div>
                           <span className="rounded-full border border-emerald-300/20 bg-emerald-300/10 px-3 py-1 text-[0.65rem] uppercase tracking-[0.22em] text-emerald-200">
@@ -3434,8 +3666,8 @@ export function AdminPosView() {
                           <p>
                             Mesas:{' '}
                             {selectedHistoricalSession?.id === session.id
-                              ? selectedHistoricalSessionSales.length
-                              : closedSales.filter((order) => order.salesSessionId === session.id && isPaidClosedSale(order)).length}
+                              ? isHistoricalSessionLoading || historicalSessionDetail.error ? '-' : selectedHistoricalSessionSales.length
+                              : '-'}
                           </p>
                           <p>Productos: {session.summary?.products.reduce((sum, item) => sum + item.quantity, 0) ?? 0}</p>
                         </div>
@@ -3446,23 +3678,36 @@ export function AdminPosView() {
                           <div className="grid gap-3 sm:grid-cols-2">
                             <SummaryPill label="Jornada" value={selectedHistoricalSession.sessionLabel} />
                             <SummaryPill label="Fecha contable" value={selectedHistoricalSession.businessDate} />
+                            <SummaryPill label="Apertura" value={formatDateTime(selectedHistoricalSession.openedAt)} />
+                            <SummaryPill label="Cierre" value={selectedHistoricalSession.closedAt ? formatDateTime(selectedHistoricalSession.closedAt) : 'Sin hora registrada'} />
                             <SummaryPill label="Vendido" value={formatCurrency(selectedHistoricalSession.summary?.grossSales ?? 0)} />
                             <SummaryPill label="Cobrado" value={formatCurrency(selectedHistoricalSession.summary?.totalCollected ?? 0)} />
                             <SummaryPill label="Efectivo" value={formatCurrency(selectedHistoricalSessionCashTotal)} />
                             <SummaryPill label="Transferencias" value={formatCurrency(selectedHistoricalSessionNonCashTotal)} />
                             <SummaryPill label="Pendiente" value={formatCurrency(selectedHistoricalSession.summary?.pendingBalance ?? 0)} />
-                            <SummaryPill label="Mesas cerradas" value={String(selectedHistoricalSessionSales.length)} />
+                            <SummaryPill label="Mesas cerradas" value={isHistoricalSessionLoading || historicalSessionDetail.error ? '-' : String(selectedHistoricalSessionSales.length)} />
                           </div>
 
-                          <div className="rounded-[1rem] border border-white/8 bg-black/15 p-4">
-                            <p className="text-[0.68rem] uppercase tracking-[0.22em] text-cyanGlow/75">Productos vendidos</p>
+                          <details className="rounded-[1rem] border border-white/8 bg-black/15 p-4">
+                            <summary className="cursor-pointer text-[0.68rem] uppercase tracking-[0.22em] text-cyanGlow/75 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyanGlow/24">
+                              Productos vendidos ({selectedHistoricalSession.summary?.products.length ?? 0})
+                            </summary>
+                            <div className="mt-3">
                             <SalesSessionProductsSummary
                               products={selectedHistoricalSession.summary?.products ?? []}
                               emptyMessage="No hay productos resumidos en esta jornada."
                             />
-                          </div>
+                            </div>
+                          </details>
 
                           <div className="space-y-3">
+                            {isHistoricalSessionLoading ? <p role="status" className="text-sm text-mist">Cargando mesas de la jornada...</p> : null}
+                            {!isHistoricalSessionLoading && historicalSessionDetail.error ? (
+                              <div role="alert" className="space-y-3 text-sm text-rose-100">
+                                <p>{historicalSessionDetail.error}</p>
+                                <button type="button" onClick={() => setHistoricalSessionRetry((retry) => retry + 1)} className={ghostButtonClassName}>Reintentar</button>
+                              </div>
+                            ) : null}
                             {selectedHistoricalSessionSales.map((order) => (
                               <details key={order.id} className="rounded-[1.2rem] border border-white/8 bg-white/[0.02] p-4">
                                 <summary className="list-none cursor-pointer">
@@ -3470,7 +3715,8 @@ export function AdminPosView() {
                                     <div>
                                       <p className="font-medium text-ivory">{resolveOrderTableLabel(order, tablesById)}</p>
                                       <p className="mt-1 text-xs uppercase tracking-[0.18em] text-cyanGlow/75">
-                                        Cerrada {formatDateTime(order.closedAt ?? order.updatedAt)}
+                                        <span className="block">Apertura: {formatDateTime(order.openedAt)}</span>
+                                        <span className="mt-1 block">Cierre: {order.closedAt ? formatDateTime(order.closedAt) : 'Sin hora registrada'}</span>
                                       </p>
                                     </div>
                                     <span className="rounded-full border border-emerald-300/20 bg-emerald-300/10 px-3 py-1 text-[0.65rem] uppercase tracking-[0.22em] text-emerald-200">
@@ -3530,7 +3776,7 @@ export function AdminPosView() {
                                 </div>
                               </details>
                             ))}
-                            {!selectedHistoricalSessionSales.length ? <EmptyState message="Esta jornada todavia no tiene mesas cerradas asociadas." /> : null}
+                            {!isHistoricalSessionLoading && !historicalSessionDetail.error && !selectedHistoricalSessionSales.length ? <EmptyState message="Esta jornada todavia no tiene mesas cerradas asociadas." /> : null}
                           </div>
                         </div>
                       ) : null}
@@ -4366,11 +4612,16 @@ function FlowSwitch({
   );
 }
 
-function Panel({ children, subtitle, title }: { children: ReactNode; subtitle: string; title: string }) {
+function Panel({ actions, children, subtitle, title }: { actions?: ReactNode; children: ReactNode; subtitle: string; title: string }) {
   return (
     <section className="rounded-[1.3rem] border border-white/10 bg-white/[0.03] p-4 shadow-[0_18px_40px_rgba(0,0,0,0.2)] sm:rounded-[1.7rem] sm:p-5">
-      <p className="text-[0.68rem] uppercase tracking-[0.24em] text-cyanGlow/80">{title}</p>
-      <p className="mt-2 text-sm leading-6 text-mist sm:mt-3 sm:leading-7">{subtitle}</p>
+      <div className={actions ? 'flex flex-wrap items-start justify-between gap-3' : undefined}>
+        <div className="min-w-0 flex-1">
+          <p className="text-[0.68rem] uppercase tracking-[0.24em] text-cyanGlow/80">{title}</p>
+          <p className="mt-2 text-sm leading-6 text-mist sm:mt-3 sm:leading-7">{subtitle}</p>
+        </div>
+        {actions}
+      </div>
       <div className="mt-3 sm:mt-4">{children}</div>
     </section>
   );
@@ -5043,6 +5294,17 @@ function formatDetachedTableLabel(tableName?: string | null, tableCode?: string 
   return 'Mesa eliminada';
 }
 
+function isSalesSessionPastClosingCutoff(session: Pick<PosSalesSession, 'openedAt' | 'closedAt' | 'status'>, now: number) {
+  if (session.status !== 'open' || session.closedAt) return false;
+  const openedAt = Date.parse(session.openedAt);
+  if (!Number.isFinite(openedAt)) return false;
+  // Colombia stays at UTC-5; 06:00 local is 11:00 UTC.
+  const colombianOpeningDate = new Date(openedAt - 5 * 60 * 60 * 1000);
+  let cutoff = Date.UTC(colombianOpeningDate.getUTCFullYear(), colombianOpeningDate.getUTCMonth(), colombianOpeningDate.getUTCDate(), 11);
+  if (openedAt >= cutoff) cutoff += 24 * 60 * 60 * 1000;
+  return now >= cutoff;
+}
+
 function formatDateTime(value: string) {
   return new Intl.DateTimeFormat('es-CO', {
     day: '2-digit',
@@ -5355,6 +5617,7 @@ const invalidInputClassName =
   'w-full rounded-[1rem] border border-rose-300/45 bg-obsidian/50 px-4 py-3 text-base text-ivory outline-none transition focus:border-rose-300/65';
 const primaryButtonClassName =
   'rounded-full border border-cyanGlow/28 bg-cyanGlow/12 px-4 py-2.5 text-xs font-semibold uppercase tracking-[0.22em] text-cyanGlow transition hover:border-cyanGlow/42 hover:bg-cyanGlow/18 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyanGlow/24 disabled:cursor-not-allowed disabled:opacity-60';
+const addToTableButtonClassName = `${primaryButtonClassName} inline-flex min-h-[44px] w-64 max-w-full items-center justify-center gap-2 disabled:!border-white/20 disabled:!bg-white/[0.04] disabled:!text-white/40 disabled:!opacity-100 disabled:shadow-none`;
 const ghostButtonClassName =
   'rounded-full border border-white/14 bg-white/[0.06] px-4 py-2.5 text-xs font-semibold uppercase tracking-[0.22em] text-ivory transition hover:border-cyanGlow/24 hover:bg-white/[0.1] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyanGlow/20';
 const dangerButtonClassName =

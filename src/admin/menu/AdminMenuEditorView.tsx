@@ -994,6 +994,186 @@ export function AdminMenuEditorView() {
             <section className="rounded-[1.75rem] border border-white/10 bg-white/[0.03] p-4 sm:p-5">
               <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
                 <div className="max-w-3xl">
+                  <p className="text-[0.68rem] uppercase tracking-[0.24em] text-cyanGlow/80">Preparar aplicacion</p>
+                  <h2 className="mt-3 font-display text-[2rem] leading-none text-ivory sm:text-[2.35rem]">
+                    Estacion de control del catalogo
+                  </h2>
+                  <p className="mt-3 text-sm leading-7 text-mist">
+                    Esta capa muestra exactamente que se aplicaria al catalogo oficial si hoy conectaras una accion real
+                    de persistencia.
+                  </p>
+                </div>
+
+                <div className="grid gap-3 text-sm text-mist sm:grid-cols-2 xl:min-w-[24rem]">
+                  <InlineMetric label="Items listos" value={String(adminApplyPayload.summary.readyItems)} />
+                  <InlineMetric label="Items bloqueados" value={String(adminApplyPayload.summary.blockedItems)} />
+                  <InlineMetric label="Aplicable" value={adminApplyPayload.summary.applicable ? 'Si' : 'No'} />
+                  <InlineMetric label="Items a aplicar" value={String(adminApplyPayload.summary.totalChangedItems)} />
+                </div>
+              </div>
+
+              <div className="mt-5 grid gap-4 xl:grid-cols-[minmax(0,1.08fr)_minmax(0,0.92fr)]">
+                <div className="rounded-[1.5rem] border border-white/10 bg-obsidian/35">
+                  <div className="border-b border-white/10 px-4 py-4 sm:px-5">
+                    <p className="text-[0.68rem] uppercase tracking-[0.24em] text-cyanGlow/80">Cambios que se aplicarian</p>
+                    <p className="mt-2 text-sm leading-7 text-mist">
+                      Revisa item por item que campos cambiarian y si el cambio ya esta listo o sigue bloqueado.
+                    </p>
+                  </div>
+
+                  <div className="max-h-[30rem] overflow-y-auto divide-y divide-white/10">
+                    {adminApplyPayload.items.length ? (
+                      adminApplyPayload.items.map((item) => (
+                        <div key={item.draftKey} className="px-4 py-4 sm:px-5">
+                          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <h3 className="truncate font-semibold text-ivory">{item.itemName}</h3>
+                                <span className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-1 text-[0.58rem] font-semibold uppercase tracking-[0.16em] text-mist">
+                                  {item.itemSlug}
+                                </span>
+                                <span
+                                  className={`rounded-full px-2 py-1 text-[0.58rem] font-semibold uppercase tracking-[0.16em] ${
+                                    item.status === 'ready'
+                                      ? 'border border-emerald-300/20 bg-emerald-300/10 text-emerald-200'
+                                      : 'border border-rose-200/20 bg-rose-200/10 text-rose-100'
+                                  }`}
+                                >
+                                  {item.status === 'ready' ? 'Listo para aplicar' : 'Bloqueado'}
+                                </span>
+                              </div>
+
+                              <div className="mt-3 space-y-3">
+                                {item.changedFields.map((fieldChange) => (
+                                  <div key={`${item.draftKey}-${fieldChange.field}`} className="rounded-[1.15rem] border border-white/10 bg-white/[0.03] p-3">
+                                    <p className="text-[0.58rem] uppercase tracking-[0.16em] text-cyanGlow/85">
+                                      {fieldChange.fieldLabel}
+                                    </p>
+                                    <div className="mt-2 grid gap-3 sm:grid-cols-2">
+                                      <div>
+                                        <p className="text-[0.58rem] uppercase tracking-[0.16em] text-mist">Antes</p>
+                                        <p className="mt-1 text-sm leading-6 text-mist">{fieldChange.before}</p>
+                                      </div>
+                                      <div>
+                                        <p className="text-[0.58rem] uppercase tracking-[0.16em] text-cyanGlow/85">Despues</p>
+                                        <p className="mt-1 text-sm leading-6 text-ivory">{fieldChange.after}</p>
+                                      </div>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+
+                              {item.status === 'blocked' ? (
+                                <p className="mt-3 text-xs leading-6 text-rose-100">
+                                  {Object.values(item.validationErrors).join(' ')}
+                                </p>
+                              ) : null}
+                            </div>
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="px-4 py-8 text-sm text-mist sm:px-5">
+                        Aun no hay cambios para preparar una aplicacion al catalogo.
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <div className="rounded-[1.5rem] border border-white/10 bg-obsidian/35 p-4 sm:p-5">
+                    <p className="text-[0.68rem] uppercase tracking-[0.24em] text-cyanGlow/80">Estado de aplicacion</p>
+                    <div className="mt-4 space-y-3 text-sm leading-7 text-mist">
+                      <ReviewStatusRow
+                        label="Hay cambios listos"
+                        ok={adminApplyPayload.summary.readyItems > 0}
+                        okText="Si"
+                        pendingText="No"
+                      />
+                      <ReviewStatusRow
+                        label="No hay items bloqueados"
+                        ok={adminApplyPayload.summary.blockedItems === 0}
+                        okText="Si"
+                        pendingText="No"
+                      />
+                      <ReviewStatusRow
+                        label="Payload aplicable"
+                        ok={adminApplyPayload.summary.applicable}
+                        okText="Si"
+                        pendingText="Revisar"
+                      />
+                      <ReviewStatusRow
+                        label="Accion local al JSON disponible"
+                        ok={adminApplyPayload.summary.readyItems > 0}
+                        okText="Si"
+                        pendingText="Pendiente"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="rounded-[1.5rem] border border-white/10 bg-obsidian/35 p-4 sm:p-5">
+                    <p className="text-[0.68rem] uppercase tracking-[0.24em] text-cyanGlow/80">Guardar en Supabase</p>
+                    <p className="mt-3 text-sm leading-7 text-mist">
+                      Esta es la nueva persistencia principal para GitHub Pages. Guarda solo cambios validos y registra trazabilidad basica en Supabase.
+                    </p>
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={handleSaveToSupabase}
+                        disabled={!adminApplyPayload.summary.readyItems || !isSupabaseConfigured()}
+                        className="interactive-button rounded-full border border-emerald-300/20 bg-emerald-300/10 px-4 py-2 text-[0.68rem] font-semibold uppercase tracking-[0.2em] text-emerald-200 disabled:cursor-not-allowed disabled:opacity-45"
+                      >
+                        Guardar cambios reales en Supabase
+                      </button>
+                      <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-2 text-[0.62rem] font-semibold uppercase tracking-[0.18em] text-mist">
+                        {isSupabaseConfigured() ? 'Supabase listo' : 'Faltan env vars'}
+                      </span>
+                    </div>
+                    <div className="mt-4 rounded-[1.2rem] border border-white/10 bg-white/[0.03] p-4 text-xs leading-6 text-mist">
+                      Lectura publica: Supabase primero, con fallback temporal a <span className="text-ivory">menu.json</span>.
+                      <br />
+                      Guardado admin: Supabase real, sin depender del filesystem local.
+                    </div>
+                  </div>
+
+                  <div className="rounded-[1.5rem] border border-white/10 bg-obsidian/35 p-4 sm:p-5">
+                    <p className="text-[0.68rem] uppercase tracking-[0.24em] text-cyanGlow/80">Excel y sincronizacion</p>
+                    <p className="mt-3 text-sm leading-7 text-mist">
+                      Compara el estado actual de Supabase contra el Excel base, genera un Excel derivado desde la app o
+                      importa un Excel actualizado para decidir si Supabase debe sincronizarse.
+                    </p>
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleOpenBaseExcel('compare')}
+                        className="interactive-button rounded-full border border-white/10 bg-white/[0.04] px-4 py-2 text-[0.68rem] font-semibold uppercase tracking-[0.2em] text-ivory"
+                      >
+                        Comparar con Excel base
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleOpenBaseExcel('derive')}
+                        className="interactive-button rounded-full border border-cyanGlow/20 bg-cyanGlow/10 px-4 py-2 text-[0.68rem] font-semibold uppercase tracking-[0.2em] text-cyanGlow"
+                      >
+                        Generar Excel derivado
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleOpenExcelImport}
+                        className="interactive-button rounded-full border border-amberGlow/20 bg-amberGlow/10 px-4 py-2 text-[0.68rem] font-semibold uppercase tracking-[0.2em] text-amberGlow"
+                      >
+                        Importar Excel y preparar sincronizacion
+                      </button>
+                    </div>
+                    {exportFeedback ? <p className="mt-4 text-xs leading-6 text-cyanGlow/85">{exportFeedback}</p> : null}
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section className="rounded-[1.75rem] border border-white/10 bg-white/[0.03] p-4 sm:p-5">
+              <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+                <div className="max-w-3xl">
                   <p className="text-[0.68rem] uppercase tracking-[0.24em] text-cyanGlow/80">Revision antes de guardar</p>
                   <h2 className="mt-3 font-display text-[2rem] leading-none text-ivory sm:text-[2.35rem]">
                     {editedCount
@@ -1196,186 +1376,6 @@ export function AdminMenuEditorView() {
                         Aun no hay un Excel importado preparado para sincronizacion.
                       </div>
                     )}
-                  </div>
-                </div>
-              </div>
-            </section>
-
-            <section className="rounded-[1.75rem] border border-white/10 bg-white/[0.03] p-4 sm:p-5">
-              <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-                <div className="max-w-3xl">
-                  <p className="text-[0.68rem] uppercase tracking-[0.24em] text-cyanGlow/80">Preparar aplicacion</p>
-                  <h2 className="mt-3 font-display text-[2rem] leading-none text-ivory sm:text-[2.35rem]">
-                    Estacion de control del catalogo
-                  </h2>
-                  <p className="mt-3 text-sm leading-7 text-mist">
-                    Esta capa muestra exactamente que se aplicaria al catalogo oficial si hoy conectaras una accion real
-                    de persistencia.
-                  </p>
-                </div>
-
-                <div className="grid gap-3 text-sm text-mist sm:grid-cols-2 xl:min-w-[24rem]">
-                  <InlineMetric label="Items listos" value={String(adminApplyPayload.summary.readyItems)} />
-                  <InlineMetric label="Items bloqueados" value={String(adminApplyPayload.summary.blockedItems)} />
-                  <InlineMetric label="Aplicable" value={adminApplyPayload.summary.applicable ? 'Si' : 'No'} />
-                  <InlineMetric label="Items a aplicar" value={String(adminApplyPayload.summary.totalChangedItems)} />
-                </div>
-              </div>
-
-              <div className="mt-5 grid gap-4 xl:grid-cols-[minmax(0,1.08fr)_minmax(0,0.92fr)]">
-                <div className="rounded-[1.5rem] border border-white/10 bg-obsidian/35">
-                  <div className="border-b border-white/10 px-4 py-4 sm:px-5">
-                    <p className="text-[0.68rem] uppercase tracking-[0.24em] text-cyanGlow/80">Cambios que se aplicarian</p>
-                    <p className="mt-2 text-sm leading-7 text-mist">
-                      Revisa item por item que campos cambiarian y si el cambio ya esta listo o sigue bloqueado.
-                    </p>
-                  </div>
-
-                  <div className="max-h-[30rem] overflow-y-auto divide-y divide-white/10">
-                    {adminApplyPayload.items.length ? (
-                      adminApplyPayload.items.map((item) => (
-                        <div key={item.draftKey} className="px-4 py-4 sm:px-5">
-                          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                            <div className="min-w-0">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <h3 className="truncate font-semibold text-ivory">{item.itemName}</h3>
-                                <span className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-1 text-[0.58rem] font-semibold uppercase tracking-[0.16em] text-mist">
-                                  {item.itemSlug}
-                                </span>
-                                <span
-                                  className={`rounded-full px-2 py-1 text-[0.58rem] font-semibold uppercase tracking-[0.16em] ${
-                                    item.status === 'ready'
-                                      ? 'border border-emerald-300/20 bg-emerald-300/10 text-emerald-200'
-                                      : 'border border-rose-200/20 bg-rose-200/10 text-rose-100'
-                                  }`}
-                                >
-                                  {item.status === 'ready' ? 'Listo para aplicar' : 'Bloqueado'}
-                                </span>
-                              </div>
-
-                              <div className="mt-3 space-y-3">
-                                {item.changedFields.map((fieldChange) => (
-                                  <div key={`${item.draftKey}-${fieldChange.field}`} className="rounded-[1.15rem] border border-white/10 bg-white/[0.03] p-3">
-                                    <p className="text-[0.58rem] uppercase tracking-[0.16em] text-cyanGlow/85">
-                                      {fieldChange.fieldLabel}
-                                    </p>
-                                    <div className="mt-2 grid gap-3 sm:grid-cols-2">
-                                      <div>
-                                        <p className="text-[0.58rem] uppercase tracking-[0.16em] text-mist">Antes</p>
-                                        <p className="mt-1 text-sm leading-6 text-mist">{fieldChange.before}</p>
-                                      </div>
-                                      <div>
-                                        <p className="text-[0.58rem] uppercase tracking-[0.16em] text-cyanGlow/85">Despues</p>
-                                        <p className="mt-1 text-sm leading-6 text-ivory">{fieldChange.after}</p>
-                                      </div>
-                                    </div>
-                                  </div>
-                                ))}
-                              </div>
-
-                              {item.status === 'blocked' ? (
-                                <p className="mt-3 text-xs leading-6 text-rose-100">
-                                  {Object.values(item.validationErrors).join(' ')}
-                                </p>
-                              ) : null}
-                            </div>
-                          </div>
-                        </div>
-                      ))
-                    ) : (
-                      <div className="px-4 py-8 text-sm text-mist sm:px-5">
-                        Aun no hay cambios para preparar una aplicacion al catalogo.
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                <div className="space-y-4">
-                  <div className="rounded-[1.5rem] border border-white/10 bg-obsidian/35 p-4 sm:p-5">
-                    <p className="text-[0.68rem] uppercase tracking-[0.24em] text-cyanGlow/80">Estado de aplicacion</p>
-                    <div className="mt-4 space-y-3 text-sm leading-7 text-mist">
-                      <ReviewStatusRow
-                        label="Hay cambios listos"
-                        ok={adminApplyPayload.summary.readyItems > 0}
-                        okText="Si"
-                        pendingText="No"
-                      />
-                      <ReviewStatusRow
-                        label="No hay items bloqueados"
-                        ok={adminApplyPayload.summary.blockedItems === 0}
-                        okText="Si"
-                        pendingText="No"
-                      />
-                      <ReviewStatusRow
-                        label="Payload aplicable"
-                        ok={adminApplyPayload.summary.applicable}
-                        okText="Si"
-                        pendingText="Revisar"
-                      />
-                      <ReviewStatusRow
-                        label="Accion local al JSON disponible"
-                        ok={adminApplyPayload.summary.readyItems > 0}
-                        okText="Si"
-                        pendingText="Pendiente"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="rounded-[1.5rem] border border-white/10 bg-obsidian/35 p-4 sm:p-5">
-                    <p className="text-[0.68rem] uppercase tracking-[0.24em] text-cyanGlow/80">Guardar en Supabase</p>
-                    <p className="mt-3 text-sm leading-7 text-mist">
-                      Esta es la nueva persistencia principal para GitHub Pages. Guarda solo cambios validos y registra trazabilidad basica en Supabase.
-                    </p>
-                    <div className="mt-4 flex flex-wrap gap-2">
-                      <button
-                        type="button"
-                        onClick={handleSaveToSupabase}
-                        disabled={!adminApplyPayload.summary.readyItems || !isSupabaseConfigured()}
-                        className="interactive-button rounded-full border border-emerald-300/20 bg-emerald-300/10 px-4 py-2 text-[0.68rem] font-semibold uppercase tracking-[0.2em] text-emerald-200 disabled:cursor-not-allowed disabled:opacity-45"
-                      >
-                        Guardar cambios reales en Supabase
-                      </button>
-                      <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-2 text-[0.62rem] font-semibold uppercase tracking-[0.18em] text-mist">
-                        {isSupabaseConfigured() ? 'Supabase listo' : 'Faltan env vars'}
-                      </span>
-                    </div>
-                    <div className="mt-4 rounded-[1.2rem] border border-white/10 bg-white/[0.03] p-4 text-xs leading-6 text-mist">
-                      Lectura publica: Supabase primero, con fallback temporal a <span className="text-ivory">menu.json</span>.
-                      <br />
-                      Guardado admin: Supabase real, sin depender del filesystem local.
-                    </div>
-                  </div>
-
-                  <div className="rounded-[1.5rem] border border-white/10 bg-obsidian/35 p-4 sm:p-5">
-                    <p className="text-[0.68rem] uppercase tracking-[0.24em] text-cyanGlow/80">Excel y sincronizacion</p>
-                    <p className="mt-3 text-sm leading-7 text-mist">
-                      Compara el estado actual de Supabase contra el Excel base, genera un Excel derivado desde la app o
-                      importa un Excel actualizado para decidir si Supabase debe sincronizarse.
-                    </p>
-                    <div className="mt-4 flex flex-wrap gap-2">
-                      <button
-                        type="button"
-                        onClick={() => handleOpenBaseExcel('compare')}
-                        className="interactive-button rounded-full border border-white/10 bg-white/[0.04] px-4 py-2 text-[0.68rem] font-semibold uppercase tracking-[0.2em] text-ivory"
-                      >
-                        Comparar con Excel base
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleOpenBaseExcel('derive')}
-                        className="interactive-button rounded-full border border-cyanGlow/20 bg-cyanGlow/10 px-4 py-2 text-[0.68rem] font-semibold uppercase tracking-[0.2em] text-cyanGlow"
-                      >
-                        Generar Excel derivado
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleOpenExcelImport}
-                        className="interactive-button rounded-full border border-amberGlow/20 bg-amberGlow/10 px-4 py-2 text-[0.68rem] font-semibold uppercase tracking-[0.2em] text-amberGlow"
-                      >
-                        Importar Excel y preparar sincronizacion
-                      </button>
-                    </div>
-                    {exportFeedback ? <p className="mt-4 text-xs leading-6 text-cyanGlow/85">{exportFeedback}</p> : null}
                   </div>
                 </div>
               </div>

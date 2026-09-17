@@ -13,6 +13,22 @@ const parse = (file) => ts.createSourceFile(file, readFileSync(path.join(root, f
 const plain = (value) => JSON.parse(JSON.stringify(value));
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
+test('session closing alert uses the next Colombian 6am cutoff and disappears only on closure', () => {
+  const file = parse(posPath);
+  const helper = file.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === 'isSalesSessionPastClosingCutoff');
+  assert.ok(helper);
+  const check = evaluate(`${helper.getText(file)}; isSalesSessionPastClosingCutoff`, {});
+  const session = { openedAt: '2026-09-17T02:00:00Z', closedAt: null, status: 'open' };
+  assert.equal(check(session, Date.parse('2026-09-17T10:59:59Z')), false);
+  assert.equal(check(session, Date.parse('2026-09-17T11:00:00Z')), true);
+  assert.equal(check(session, Date.parse('2026-09-20T18:00:00Z')), true);
+  assert.equal(check({ ...session, status: 'closed', closedAt: '2026-09-17T13:00:00Z' }, Date.parse('2026-09-20T18:00:00Z')), false);
+  const newSession = { ...session, openedAt: '2026-09-17T13:00:00Z' };
+  assert.equal(check(newSession, Date.parse('2026-09-17T18:00:00Z')), false);
+  assert.equal(check(newSession, Date.parse('2026-09-18T11:00:00Z')), true);
+  assert.equal(check({ ...session, openedAt: 'invalid' }, Date.now()), false);
+});
+
 function evaluate(source, context) {
   const compiled = ts.transpileModule(source, {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, jsx: ts.JsxEmit.ReactJSX },
@@ -44,6 +60,8 @@ function mockClient(rows = {}, errors = {}) {
       const details = { table, orders: [] };
       const query = {
         select() { return query; },
+        eq(key, value) { data = data.filter((row) => row[key] === value); return query; },
+        in(key, values) { data = data.filter((row) => values.includes(row[key])); return query; },
         order(key, { ascending = true } = {}) {
           details.orders.push({ key, ascending });
           data.sort((a, b) => String(a[key]).localeCompare(String(b[key])) * (ascending ? 1 : -1));
@@ -144,6 +162,13 @@ function posHarness(loader) {
     shouldSuppressBackgroundSync: () => context.suppressed,
     loadPosStateFromSupabase: loader,
     subscribeToPosRealtime: repo.subscribeToPosRealtime,
+    updateTableContextFromRealtime() {},
+    invalidateTableContext() {},
+    savingLineItemRef: { current: false },
+    tableContextRef: { current: null },
+    selectedTableIdRef: { current: null },
+    setTableContext() {},
+    isPosTableContextValid: repo.isPosTableContextValid,
     mapPosRealtimeOrderItem: repo.mapPosRealtimeOrderItem,
     mapPosRealtimeLog: repo.mapPosRealtimeLog,
     stateUpdates: 0,
@@ -382,6 +407,63 @@ test('history still paginates large datasets without downloading any page twice'
   assert.equal(client.queries.filter((table) => table === 'pos_payments').length, 1);
 });
 
+test('cashier historical detail loads only closed orders of the requested session and their items/payments', async () => {
+  const client = mockClient(fixtures());
+  const result = await loadRepository(client).loadClosedSalesForSessionFromSupabase('s0');
+  assert.deepEqual(plain(result.map((order) => order.id)), ['closed']);
+  assert.equal(result[0].items.length, 1);
+  assert.equal(result[0].payments.length, 1);
+  assert.equal(result[0].summary.totalPaid, 10000);
+  assert.ok(client.queries.every((table) => ['pos_orders', 'pos_order_items', 'pos_payments'].includes(table)));
+  const before = client.queries.length;
+  assert.deepEqual(plain(await loadRepository(client).loadClosedSalesForSessionFromSupabase('unknown-session')), []);
+  assert.deepEqual(client.queries.slice(before), ['pos_orders']);
+  await assert.rejects(loadRepository(mockClient({}, { pos_orders: { message: 'offline' } })).loadClosedSalesForSessionFromSupabase('s0'), /offline/);
+});
+
+test('cashier historical detail paginates session orders without a global historical download', async () => {
+  const rows = fixtures();
+  rows.pos_orders = Array.from({ length: 1001 }, (_, index) => ({ ...rows.pos_orders[0], id: `sale-${index}` }));
+  rows.pos_order_items = []; rows.pos_payments = [];
+  const client = mockClient(rows);
+  const result = await loadRepository(client).loadClosedSalesForSessionFromSupabase('s0');
+  assert.equal(result.length, 1001);
+  assert.equal(client.queries.filter((table) => table === 'pos_orders').length, 2);
+  assert.equal(client.queries.includes('pos_sales_sessions'), false);
+});
+
+test('cashier historical detail effect ignores late session responses, reports failures and supports reload', async () => {
+  const requests = [];
+  const context = {
+    Error, activeTab: 'cashier', cashierRightPanel: 'summary', selectedHistoricalSession: { id: 'a' },
+    setHistoricalSessionDetail(value) { context.detail = value; },
+    loadClosedSalesForSessionFromSupabase(id) { return new Promise((resolve, reject) => requests.push({ id, resolve, reject })); },
+  };
+  const mount = () => evaluate(`(${getEffect(posPath, 'const historicalSessionId')})()`, context);
+  mount(); assert.equal(requests.length, 0);
+  context.cashierRightPanel = 'previous_sessions';
+  const cleanupA = mount();
+  assert.equal(context.detail.loading, true);
+  cleanupA(); context.selectedHistoricalSession = { id: 'b' };
+  const cleanupB = mount();
+  requests[1].resolve(['sale-b']); await settle();
+  requests[0].resolve(['sale-a']); await settle();
+  assert.equal(context.detail.sessionId, 'b');
+  assert.deepEqual(plain(context.detail.orders), ['sale-b']);
+  cleanupB();
+  const cleanupFailure = mount();
+  requests[2].reject(new Error('offline')); await settle();
+  assert.equal(context.detail.error, 'offline');
+  assert.equal(context.detail.loading, false);
+  cleanupFailure();
+  const cleanupRetry = mount();
+  assert.equal(context.detail.error, null);
+  requests[3].resolve([]); await settle();
+  assert.equal(context.detail.loading, false);
+  assert.equal(context.detail.error, null);
+  cleanupRetry();
+});
+
 test('read loaders propagate errors instead of returning incomplete settings/history', async () => {
   const settingsRepo = loadRepository(mockClient({}, { pos_operational_flow_settings: { message: 'offline' } }));
   await assert.rejects(settingsRepo.loadPosOperationalFlowSettingsFromSupabase(), /offline/);
@@ -468,6 +550,395 @@ function completeLog(overrides = {}) {
     before_data: null, after_data: [completeItem()], ...overrides,
   };
 }
+
+function contextMutationClient(rows, logResult = () => Promise.resolve({ data: null, error: null })) {
+  const requests = [];
+  return {
+    requests,
+    from(table) {
+      const request = { table, action: 'read', filters: [] };
+      let values;
+      let one = false;
+      const query = {
+        select() { return query; },
+        eq(key, value) { request.filters.push([key, value]); return query; },
+        in(key, values) { request.filters.push([key, values]); return query; },
+        order() { return query; },
+        range() { return query; },
+        limit() { return query; },
+        single() { one = true; return query; },
+        maybeSingle() { one = true; return query; },
+        update(patch) { request.action = 'update'; values = patch; return query; },
+        insert(patch) { request.action = 'insert'; values = patch; return query; },
+        then(resolve, reject) {
+          requests.push(request);
+          if (table === 'pos_order_status_logs') {
+            (rows[table] ??= []).push(values);
+            return logResult().then(resolve, reject);
+          }
+          let selected = (rows[table] ?? []).filter((row) => request.filters.every(([key, value]) => Array.isArray(value) ? value.includes(row[key]) : row[key] === value));
+          if (request.action === 'update') {
+            selected.forEach((row) => Object.assign(row, values, { updated_at: new Date().toISOString() }));
+          } else if (request.action === 'insert') {
+            const row = { id: `new-${requests.length}`, created_at: timestamp, updated_at: timestamp, ...values };
+            (rows[table] ??= []).push(row);
+            selected = [row];
+          }
+          return Promise.resolve({ data: one ? selected[0] ?? null : selected.map((row) => ({ ...row })), error: null }).then(resolve, reject);
+        },
+      };
+      return query;
+    },
+  };
+}
+
+function tableContextRows(empty = false) {
+  const rows = fixtures();
+  rows.pos_sales_sessions[0].status = 'open';
+  rows.pos_order_items[1] = completeItem({ id: 'i-open', order_id: 'open', total_price: 24690 });
+  if (empty) {
+    rows.pos_tables[0].active_order_id = null;
+    rows.pos_tables[0].status = 'available';
+  }
+  return rows;
+}
+
+const contextActor = { email: 'waiter@example.test', roles: ['waiter'] };
+const contextPayload = {
+  productName: 'Producto', productSlug: 'producto', productType: 'comida',
+  menuItemSourceKey: null, notes: 'Persisted notes', quantity: 1, unitPrice: 12345,
+};
+
+test('operational cancellation removes exactly one unit from draft/sent/pending lines and preserves history', async () => {
+  for (const status of ['draft', 'sent', 'pending_preparation']) {
+    for (const quantity of [1, 2, 4]) {
+      const row = completeItem({ id: 'cancel-target', order_id: 'open', quantity, unit_price: 8000, total_price: quantity * 8000, operational_status: status });
+      const rows = { pos_order_items: [row] };
+      const client = contextMutationClient(rows);
+      const repo = loadRepository(client);
+      const source = parse(repositoryPath);
+      const declaration = source.statements.find((node) => ts.isFunctionDeclaration(node) && node.name.text === 'cancelOrderItemInSupabase');
+      const logs = [];
+      const reconciled = [];
+      const context = {
+        exports: {}, CONTROLLED_CANCEL_STATUSES: new Set(['draft', 'sent', 'pending_preparation']),
+        getSupabaseClient: () => client,
+        getOrderItemById: async () => repo.mapPosRealtimeOrderItem({ ...row }),
+        mapPosOrderItemRow: repo.mapPosRealtimeOrderItem,
+        throwIfError(error) { if (error) throw new Error(error.message); },
+        reconcileOrderState: async (id) => { reconciled.push(id); },
+        insertPosLog: async (input) => { logs.push(input); },
+      };
+      evaluate(declaration.getText(source), context);
+      const staleItem = repo.mapPosRealtimeOrderItem({ ...row, quantity: 99 });
+      const result = await context.exports.cancelOrderItemInSupabase(row.id, 'One unit only', contextActor, staleItem);
+      assert.equal(reconciled.length, 1);
+      assert.equal(logs[0].eventType, 'item_cancelled');
+      const cancelled = result.find((item) => item.operationalStatus === 'cancelled');
+      assert.equal(cancelled.quantity, 1);
+      assert.equal(cancelled.totalPrice, 8000);
+      assert.equal(cancelled.financialStatus, 'cancelled');
+      assert.equal(cancelled.serviceRound, 1);
+      if (quantity > 1) {
+        const active = result.find((item) => item.id === 'cancel-target');
+        assert.equal(active.quantity, quantity - 1);
+        assert.equal(active.totalPrice, (quantity - 1) * 8000);
+        assert.equal(active.operationalStatus, status);
+        assert.equal(active.notes, 'Persisted notes');
+        assert.equal(rows.pos_order_items.length, 2);
+      } else {
+        assert.equal(result.length, 1);
+        assert.equal(rows.pos_order_items.length, 1);
+      }
+    }
+  }
+});
+
+test('entering empty/existing tables loads only read context, no payments, and reopening refreshes it', async () => {
+  for (const empty of [true, false]) {
+    const rows = tableContextRows(empty);
+    const client = contextMutationClient(rows);
+    const repo = loadRepository(client);
+    const context = await repo.loadPosTableContextFromSupabase('t1');
+    assert.equal(context.order === null, empty);
+    assert.equal(context.items.length, empty ? 0 : 1);
+    assert.equal(context.salesSession.id, 's0');
+    assert.ok(client.requests.every((request) => request.action === 'read'));
+    assert.equal(client.requests.some((request) => request.table === 'pos_payments'), false);
+    rows.pos_tables[0].name = 'Updated table';
+    assert.equal((await repo.loadPosTableContextFromSupabase('t1')).table.name, 'Updated table');
+  }
+});
+
+test('first product opens an account; second/compatible/different products reuse context without reads', async () => {
+  const rows = tableContextRows(true);
+  const client = contextMutationClient(rows);
+  const repo = loadRepository(client);
+  const context = await repo.loadPosTableContextFromSupabase('t1');
+  for (const [index, patch] of [{}, {}, { productSlug: 'other' }, { notes: 'Other notes' }].entries()) {
+    const before = client.requests.length;
+    const added = await repo.addItemsToTableInSupabase('t1', [{ ...contextPayload, ...patch }], contextActor, context);
+    assert.equal(client.requests.slice(before).some((request) => request.action === 'read'), false);
+    assert.equal(added[0].operationalStatus, 'draft');
+    assert.equal(added[0].unitPrice, 12345);
+    assert.equal(added[0].quantity, index === 1 ? 2 : 1);
+    assert.equal(added[0].serviceRound, index < 2 ? 1 : index);
+    assert.equal(context.table.activeOrderId, context.order.id);
+    assert.equal(context.table.status, 'occupied');
+  }
+  assert.equal(context.items.length, 3);
+  assert.equal(rows.pos_order_status_logs.filter((log) => log.event_type === 'order_opened').length, 1);
+  assert.equal(rows.pos_order_status_logs.filter((log) => log.event_type === 'items_added').length, 4);
+});
+
+test('pending or failed logs do not block the confirmed account/product result', async () => {
+  for (const logResult of [() => new Promise(() => {}), () => Promise.resolve({ error: { message: 'offline' } })]) {
+    const rows = tableContextRows(true);
+    const client = contextMutationClient(rows, logResult);
+    const repo = loadRepository(client);
+    const context = await repo.loadPosTableContextFromSupabase('t1');
+    const result = await repo.addItemsToTableInSupabase('t1', [contextPayload], contextActor, context);
+    assert.equal(result.length, 1);
+    assert.equal(rows.pos_tables[0].active_order_id, result[0].orderId);
+    await settle();
+  }
+});
+
+test('Realtime merges complete items and invalidates changed/deleted/incomplete account context', async () => {
+  const rows = tableContextRows();
+  const repo = loadRepository(contextMutationClient(rows));
+  const context = await repo.loadPosTableContextFromSupabase('t1');
+  const event = { table: 'pos_order_items', eventType: 'INSERT', newRecord: completeItem({ id: 'remote', order_id: 'open', service_round: 8 }), oldRecord: null };
+  const merged = repo.applyRealtimeEventToTableContext(context, event);
+  assert.equal(merged.items.length, 2);
+  assert.equal(repo.applyRealtimeEventToTableContext(merged, event).items.length, 2);
+  const updated = repo.applyRealtimeEventToTableContext(merged, { ...event, eventType: 'UPDATE', newRecord: { ...event.newRecord, quantity: 4 } });
+  assert.equal(updated.items.find((item) => item.id === 'remote').quantity, 4);
+  assert.equal(repo.applyRealtimeEventToTableContext(context, { ...event, newRecord: { id: 'i-open', order_id: 'open' } }), null);
+  assert.equal(repo.applyRealtimeEventToTableContext(context, { ...event, eventType: 'DELETE', newRecord: null, oldRecord: event.newRecord }), null);
+  assert.equal(repo.applyRealtimeEventToTableContext(context, { table: 'pos_tables', eventType: 'UPDATE', newRecord: { ...rows.pos_tables[0], active_order_id: null }, oldRecord: null }), null);
+  assert.equal(repo.applyRealtimeEventToTableContext(context, { table: 'pos_sales_sessions', eventType: 'UPDATE', newRecord: { id: 's0' }, oldRecord: null }), null);
+});
+
+test('invalid context falls back safely and stale draft quantity cannot overwrite a remote edit', async () => {
+  const rows = tableContextRows();
+  const client = contextMutationClient(rows);
+  const repo = loadRepository(client);
+  const context = await repo.loadPosTableContextFromSupabase('t1');
+  rows.pos_order_items[1].quantity = 5;
+  await assert.rejects(repo.addItemsToTableInSupabase('t1', [contextPayload], contextActor, context), /otro dispositivo/);
+  assert.equal(rows.pos_order_items[1].quantity, 5);
+  const refreshed = await repo.loadPosTableContextFromSupabase('t1');
+  assert.equal((await repo.addItemsToTableInSupabase('t1', [contextPayload], contextActor, refreshed))[0].quantity, 6);
+  const invalid = { ...refreshed, table: { ...refreshed.table, id: 'wrong' } };
+  const before = client.requests.length;
+  await repo.addItemsToTableInSupabase('t1', [contextPayload], contextActor, invalid);
+  assert.ok(client.requests.slice(before).some((request) => request.table === 'pos_tables' && request.action === 'read'));
+});
+
+function componentCallback(name) {
+  const source = parse(posPath);
+  let callback;
+  function visit(node) {
+    if (ts.isVariableDeclaration(node) && node.name.getText(source) === name) callback = node.initializer.getText(source);
+    ts.forEachChild(node, visit);
+  }
+  visit(source);
+  assert.ok(callback, `Missing callback: ${name}`);
+  return callback;
+}
+
+test('cashier previous sessions show at most seven closed records, preserving newest-first order', () => {
+  const sessions = [{ id: 'active', status: 'open' }, ...Array.from({ length: 10 }, (_, index) => ({ id: `closed-${index}`, status: 'closed' }))];
+  const result = evaluate(componentCallback('previousClosedSessions'), {
+    posState: { recentSalesSessions: sessions }, useMemo: (callback) => callback(),
+  });
+  assert.deepEqual(plain(result.map((session) => session.id)), Array.from({ length: 7 }, (_, index) => `closed-${index}`));
+});
+
+test('create-table Cancel clears only code/name; empty form uses selected-table deletion', async () => {
+  for (const fields of [{ code: 'M-9', name: '' }, { code: '', name: 'Mesa 9' }, { code: 'M-9', name: 'Mesa 9' }, { code: '', name: '' }]) {
+    let deleted = 0;
+    const form = { ...fields, capacity: 8, zone: 'terrace', notes: 'Keep notes' };
+    const context = {
+      busyAction: null, hasCreateTableText: Boolean(form.code || form.name),
+      setCreateTableForm(update) { context.form = update(form); },
+      handleDeleteSelectedTable: async () => { deleted++; },
+    };
+    const action = evaluate(`(${componentCallback('handleCancelOrDeleteTable')})`, context);
+    await action();
+    if (context.hasCreateTableText) {
+      assert.equal(deleted, 0);
+      assert.deepEqual(plain(context.form), { ...form, code: '', name: '' });
+    } else {
+      assert.equal(deleted, 1);
+    }
+    context.busyAction = 'Creating';
+    await action();
+    assert.equal(deleted, context.hasCreateTableText ? 0 : 1);
+  }
+});
+
+test('upper POS notifications expire after five seconds for success and eight for errors; cleanup cancels old timer', () => {
+  for (const error of [false, true]) {
+    let callback;
+    let delay;
+    let cancelled = false;
+    const context = {
+      actionMessage: error ? null : 'Producto agregado', errorMessage: error ? 'No fue posible guardar' : null,
+      setActionMessage(value) { context.actionMessage = value; },
+      setErrorMessage(value) { context.errorMessage = value; },
+      window: {
+        setTimeout(fn, ms) { callback = fn; delay = ms; return 1; },
+        clearTimeout(id) { assert.equal(id, 1); cancelled = true; },
+      },
+    };
+    const cleanup = evaluate(`(${getEffect(posPath, 'const hasNotification')})()`, context);
+    assert.equal(delay, error ? 8000 : 5000);
+    callback();
+    assert.equal(context.actionMessage, null);
+    assert.equal(context.errorMessage, null);
+    cleanup();
+    assert.equal(cancelled, true);
+  }
+});
+
+test('table context effect blocks while loading and ignores responses after closing/reopening or unmount', async () => {
+  const requests = [];
+  const rows = tableContextRows();
+  const repo = loadRepository(contextMutationClient(rows));
+  const loaded = await repo.loadPosTableContextFromSupabase('t1');
+  const context = {
+    selectedTable: { id: 't1' }, activeTab: 'floor',
+    selectedTableId: 't1', selectedTableIdRef: { current: 't1' }, isPosTableContextValid: repo.isPosTableContextValid,
+    tableContextRequestRef: { current: 0 }, tableContextRef: { current: loaded },
+    savingLineItemRef: { current: false },
+    setTableContext(value) { context.current = value; }, setErrorMessage() {},
+    loadPosTableContextFromSupabase() { return new Promise((resolve) => requests.push(resolve)); },
+  };
+  const mount = () => evaluate(`(${getEffect(posPath, 'const requestId = ++tableContextRequestRef.current')})()`, context);
+  const close = mount();
+  assert.equal(context.current, null);
+  assert.equal(context.tableContextRef.current, null);
+  close();
+  const unmount = mount();
+  requests[0](loaded); await settle();
+  assert.equal(context.current, null);
+  requests[1](loaded); await settle();
+  assert.equal(context.current, loaded);
+  unmount();
+  const lateUnmount = mount();
+  lateUnmount();
+  requests[2](loaded); await settle();
+  assert.equal(context.current, null);
+});
+
+test('actual add handler blocks duplicate clicks and releases the guard after primary save, not trailing sync', async () => {
+  const repo = loadRepository(contextMutationClient(tableContextRows()));
+  const loaded = await repo.loadPosTableContextFromSupabase('t1');
+  let confirm;
+  let calls = 0;
+  const context = {
+    selectedTable: { id: 't1', code: '01' }, actor: contextActor,
+    selectedTableIdRef: { current: 't1' },
+    tableContextRef: { current: loaded }, savingLineItemRef: { current: false },
+    tableContextEventsRef: { current: [] }, isPosTableContextValid: repo.isPosTableContextValid,
+    isLineQuantityValid: true, parsedLineQuantity: 1, addItemMode: 'menu', replaceTargetItemId: null,
+    selectedProduct: { sourceKey: null, name: 'Producto', slug: 'producto', type: 'comida', price: 12345 },
+    lineNotes: 'Persisted notes', pendingOrderItemFocusRef: { current: null },
+    setIsSavingLineItem(value) { context.saving = value; }, setTableContext() {},
+    setErrorMessage() {}, setPosState() {}, setLineNotes() {}, setLineQuantity() {},
+    updateTableContextFromRealtime() {}, invalidateTableContext() { context.invalidations = (context.invalidations ?? 0) + 1; },
+    addItemsToTableInSupabase() { calls++; return new Promise((resolve) => { confirm = resolve; }); },
+    async executeAction(label, action, options) { const result = await action(); options.onSuccess(result); },
+  };
+  const add = evaluate(`(${componentCallback('handleAddOrReplaceItem')})`, context);
+  const pending = add();
+  assert.equal(context.saving, true);
+  await add();
+  assert.equal(calls, 1);
+  confirm([loaded.items[0]]);
+  await pending;
+  assert.equal(context.saving, false);
+  assert.equal(context.savingLineItemRef.current, false);
+  context.tableContextRef.current = null;
+  await add();
+  assert.equal(calls, 1, 'no save without a loaded context');
+  context.tableContextRef.current = loaded;
+  context.selectedTableIdRef.current = 't2';
+  await add();
+  assert.equal(calls, 1, 'a stale handler cannot save after selection has changed');
+  context.selectedTableIdRef.current = 't1';
+  context.tableContextRef.current = { ...loaded, tableId: 't2' };
+  await add();
+  assert.equal(calls, 1, 'context.tableId must match the actual selected ID');
+  assert.equal(context.invalidations, 3, 'missing/mismatched context requests reload');
+});
+
+test('selection changes synchronously clear context before the next React effect', () => {
+  const context = {
+    selectedTableIdRef: { current: 't1' }, tableContextRef: { current: { tableId: 't1' } },
+    invalidateTableContext() { context.tableContextRef.current = null; context.invalidated = true; },
+    setSelectedTableIdState(value) { context.selected = value; },
+  };
+  const select = evaluate(`(${componentCallback('setSelectedTableId')})`, context);
+  select('t2');
+  assert.equal(context.selectedTableIdRef.current, 't2');
+  assert.equal(context.tableContextRef.current, null);
+  assert.equal(context.invalidated, true);
+  assert.equal(context.selected, 't2');
+  select((current) => current === 't2' ? null : current);
+  assert.equal(context.selectedTableIdRef.current, null);
+});
+
+test('F5 waits for explicit selection; rapid A-to-B switch discards A even before effect cleanup', async () => {
+  const repo = loadRepository(contextMutationClient(tableContextRows()));
+  const a = await repo.loadPosTableContextFromSupabase('t1');
+  const b = { ...a, tableId: 't2', table: { ...a.table, id: 't2' }, order: { ...a.order, tableId: 't2' } };
+  const requests = [];
+  const context = {
+    selectedTable: { id: 't1' }, selectedTableId: null, selectedTableIdRef: { current: null }, activeTab: 'floor',
+    tableContextRequestRef: { current: 0 }, tableContextRef: { current: null }, savingLineItemRef: { current: false },
+    isPosTableContextValid: repo.isPosTableContextValid,
+    setTableContext(value) { context.current = value; }, setErrorMessage() {},
+    loadPosTableContextFromSupabase(id) { return new Promise((resolve) => requests.push({ id, resolve })); },
+  };
+  const mount = () => evaluate(`(${getEffect(posPath, 'const requestId = ++tableContextRequestRef.current')})()`, context);
+  mount();
+  assert.equal(requests.length, 0);
+  context.selectedTableId = 't1'; context.selectedTableIdRef.current = 't1';
+  const cleanupA = mount();
+  assert.equal(context.current, null, 'automatic selection is not a ready context');
+  context.selectedTableId = 't2'; context.selectedTableIdRef.current = 't2';
+  requests[0].resolve(a); await settle();
+  assert.equal(context.current, null, 'late A cannot be accepted while B is selected');
+  cleanupA();
+  context.selectedTable = { id: 't2' };
+  const cleanupB = mount();
+  assert.equal(requests[1].id, 't2');
+  requests[1].resolve(b); await settle();
+  assert.equal(context.current.tableId, 't2');
+  cleanupB();
+});
+
+test('released table after last draft removal invalidates old context and loads an empty account safely', async () => {
+  const rows = tableContextRows();
+  const repo = loadRepository(contextMutationClient(rows));
+  const original = await repo.loadPosTableContextFromSupabase('t1');
+  rows.pos_tables[0].active_order_id = null;
+  rows.pos_tables[0].status = 'available';
+  rows.pos_orders[1].closed_at = timestamp;
+  rows.pos_order_items = rows.pos_order_items.filter((item) => item.order_id !== 'open');
+  assert.equal(repo.applyRealtimeEventToTableContext(original, {
+    table: 'pos_tables', eventType: 'UPDATE', newRecord: rows.pos_tables[0], oldRecord: null,
+  }), null);
+  const fresh = await repo.loadPosTableContextFromSupabase('t1');
+  assert.equal(fresh.order, null);
+  assert.equal(fresh.items.length, 0);
+  const result = await repo.addItemsToTableInSupabase('t1', [contextPayload], contextActor, fresh);
+  assert.notEqual(result[0].orderId, original.order.id);
+  assert.equal(result[0].serviceRound, 1);
+});
 
 function emitRealtime(harness, table, eventType, record) {
   harness.client.channels[0].handlers.find(({ filter }) => filter.table === table)

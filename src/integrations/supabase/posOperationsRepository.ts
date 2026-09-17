@@ -626,15 +626,80 @@ export async function moveActiveOrderToTableInSupabase(sourceTableId: string, de
   };
 }
 
-export async function addItemsToTableInSupabase(tableId: string, items: AddOrderItemInput[], actor: PosActorContext) {
+export interface PosTableContext {
+  tableId: string;
+  table: PosTable;
+  order: PosOrder | null;
+  items: PosOrderItem[];
+  salesSession: PosSalesSession | null;
+}
+
+export function isPosTableContextValid(context: PosTableContext, tableId: string) {
+  return context.tableId === tableId && context.table.id === tableId && Array.isArray(context.items) &&
+    (context.order
+      ? context.table.activeOrderId === context.order.id && context.order.tableId === tableId &&
+        !context.order.closedAt && context.items.every((item) => item.orderId === context.order!.id)
+      : !context.table.activeOrderId && context.items.length === 0);
+}
+
+export function applyRealtimeEventToTableContext(context: PosTableContext, event: PosRealtimeEvent): PosTableContext | null {
+  if (event.table === 'pos_sales_sessions') return null;
+  const record = event.eventType === 'DELETE' ? event.oldRecord : event.newRecord ?? event.oldRecord;
+  if (event.table === 'pos_tables' && record?.id === context.table.id) {
+    if (event.eventType === 'DELETE' || !event.newRecord ||
+      record.active_order_id !== (context.order?.id ?? null) ||
+      !['code', 'name', 'type', 'status', 'created_at', 'updated_at'].every((key) => typeof record[key] === 'string')) return null;
+    return { ...context, table: mapPosTableRow(record as unknown as PosTableRow) };
+  }
+  if (event.table === 'pos_orders' && (record?.id === context.order?.id || record?.table_id === context.table.id)) {
+    if (!context.order || event.eventType === 'DELETE' || !event.newRecord ||
+      record?.id !== context.order.id || record.table_id !== context.table.id || record.closed_at !== null ||
+      record.sales_session_id !== context.order.salesSessionId ||
+      !['opened_at', 'created_at', 'updated_at', 'opened_by_email', 'financial_status'].every((key) => typeof record[key] === 'string')) return null;
+    return { ...context, order: mapPosOrderRow(record as unknown as PosOrderRow) };
+  }
+  if (event.table === 'pos_order_items') {
+    const known = context.items.find((item) => item.id === record?.id);
+    if (record?.order_id !== context.order?.id && !known) {
+      // An incomplete payload cannot prove that the selected account is unaffected.
+      return typeof record?.order_id === 'string' ? context : null;
+    }
+    const item = mapPosRealtimeOrderItem(event.newRecord);
+    if (event.eventType === 'DELETE' || !item || item.orderId !== context.order?.id) return null;
+    if (known && Date.parse(item.updatedAt) < Date.parse(known.updatedAt)) return context;
+    return { ...context, items: [...context.items.filter((entry) => entry.id !== item.id), item] };
+  }
+  return context;
+}
+
+export async function loadPosTableContextFromSupabase(tableId: string): Promise<PosTableContext> {
+  const [table, salesSession] = await Promise.all([getTableById(tableId), getOpenSalesSession()]);
+  const [order, items] = table.activeOrderId
+    ? await Promise.all([getOrderById(table.activeOrderId), loadOrderItems(table.activeOrderId)])
+    : [null, []];
+  const context = { tableId, table, salesSession, order, items };
+  if (!isPosTableContextValid(context, tableId)) {
+    throw new Error('La mesa cambio mientras se cargaba. Vuelve a abrirla para sincronizar.');
+  }
+  return context;
+}
+
+export async function addItemsToTableInSupabase(
+  tableId: string, items: AddOrderItemInput[], actor: PosActorContext, context?: PosTableContext | null,
+) {
   if (!items.length) {
     throw new Error('No hay productos para agregar a la mesa.');
   }
 
   const supabase = getSupabaseClient();
-  const table = await getTableById(tableId);
-  const order = await ensureOpenOrderForTable(table, actor);
-  const currentItems = await loadOrderItems(order.id);
+  const loadedContext = context && isPosTableContextValid(context, tableId) ? context : null;
+  const table = loadedContext?.table ?? await getTableById(tableId);
+  const order = loadedContext?.order?.salesSessionId
+    ? loadedContext.order
+    : await ensureOpenOrderForTable(table, actor, {
+      knownSalesSession: loadedContext?.salesSession, knownOrder: loadedContext?.order, nonBlockingLogs: true,
+    });
+  const currentItems = loadedContext ? [...loadedContext.items] : await loadOrderItems(order.id);
   const returnedItems: PosOrderItem[] = [];
 
   for (const item of items) {
@@ -650,7 +715,7 @@ export async function addItemsToTableInSupabase(tableId: string, items: AddOrder
 
     if (existingDraft) {
       const quantity = existingDraft.quantity + item.quantity;
-      const { data, error } = await supabase
+      let query = supabase
         .from('pos_order_items')
         .update({
           quantity,
@@ -658,11 +723,18 @@ export async function addItemsToTableInSupabase(tableId: string, items: AddOrder
           updated_by_email: actor.email,
         } as never)
         .eq('id', existingDraft.id)
-        .eq('operational_status', 'draft')
-        .select('*')
-        .single();
+        .eq('operational_status', 'draft');
+      if (loadedContext) {
+        query = query.eq('quantity', existingDraft.quantity).eq('updated_at', existingDraft.updatedAt);
+      }
+      const { data, error } = loadedContext
+        ? await query.select('*').maybeSingle()
+        : await query.select('*').single();
 
       throwIfError(error, 'No fue posible agrupar el producto en borrador');
+      if (!data) {
+        throw new Error('El borrador cambio en otro dispositivo. Sincroniza la mesa y vuelve a agregar.');
+      }
       const mergedItem = mapPosOrderItemRow(data);
       returnedItems.push(mergedItem);
       const itemIndex = currentItems.findIndex((entry) => entry.id === mergedItem.id);
@@ -701,7 +773,7 @@ export async function addItemsToTableInSupabase(tableId: string, items: AddOrder
   }
 
   await touchTableOccupation(table.id, order.id, actor.email);
-  await insertPosLog({
+  insertPosLogBestEffort({
     actor,
     afterData: returnedItems,
     eventType: 'items_added',
@@ -709,6 +781,12 @@ export async function addItemsToTableInSupabase(tableId: string, items: AddOrder
     orderId: order.id,
     tableId: table.id,
   });
+
+  if (loadedContext) {
+    loadedContext.order = order;
+    loadedContext.items = currentItems;
+    loadedContext.table = { ...table, activeOrderId: order.id, status: 'occupied', assignedStaffEmail: actor.email };
+  }
 
   return returnedItems;
 }
@@ -930,7 +1008,7 @@ export async function replaceOrderItemInSupabase(
 }
 
 export async function cancelOrderItemInSupabase(itemId: string, reason: string, actor: PosActorContext, currentItemOverride?: PosOrderItem) {
-  const currentItem = currentItemOverride ?? (await getOrderItemById(itemId));
+  const currentItem = await getOrderItemById(itemId);
 
   if (!CONTROLLED_CANCEL_STATUSES.has(currentItem.operationalStatus)) {
     throw new Error('Esta linea ya no puede cancelarse desde este punto del flujo.');
@@ -938,6 +1016,31 @@ export async function cancelOrderItemInSupabase(itemId: string, reason: string, 
 
   const supabase = getSupabaseClient();
   const now = new Date().toISOString();
+  if (currentItem.quantity > 1) {
+    const remainingQuantity = currentItem.quantity - 1;
+    const { data: activeLine, error: activeError } = await supabase.from('pos_order_items')
+      .update({ quantity: remainingQuantity, total_price: currentItem.unitPrice * remainingQuantity, updated_by_email: actor.email } as never)
+      .eq('id', itemId).eq('quantity', currentItem.quantity).eq('updated_at', currentItem.updatedAt)
+      .in('operational_status', ['draft', 'sent', 'pending_preparation'])
+      .select('*').single();
+    throwIfError(activeError, 'No fue posible quitar una unidad de la linea');
+    // Preserve the remaining line and retain the cancelled unit in the same round/history.
+    const { id: _id, created_at: _createdAt, updated_at: _updatedAt, ...fields } = activeLine;
+    const { data: cancelledUnit, error: cancelledError } = await supabase.from('pos_order_items')
+      .insert({
+        ...fields, quantity: 1, total_price: currentItem.unitPrice,
+        operational_status: 'cancelled', financial_status: 'cancelled',
+        cancellation_reason: reason.trim(), cancelled_at: now, cancelled_by_email: actor.email,
+        created_by_email: actor.email, updated_by_email: actor.email,
+      } as never).select('*').single();
+    throwIfError(cancelledError, 'No fue posible registrar la unidad cancelada');
+    await reconcileOrderState(currentItem.orderId, actor.email);
+    await insertPosLog({
+      actor, afterData: [activeLine, cancelledUnit], beforeData: currentItem,
+      eventType: 'item_cancelled', notes: reason.trim(), orderId: currentItem.orderId, orderItemId: currentItem.id,
+    });
+    return [mapPosOrderItemRow(activeLine), mapPosOrderItemRow(cancelledUnit)];
+  }
   const { data, error } = await supabase
     .from('pos_order_items')
     .update({
@@ -949,6 +1052,8 @@ export async function cancelOrderItemInSupabase(itemId: string, reason: string, 
       updated_by_email: actor.email,
     } as never)
     .eq('id', itemId)
+    .eq('quantity', currentItem.quantity)
+    .eq('updated_at', currentItem.updatedAt)
     .in('operational_status', ['draft', 'sent', 'pending_preparation'])
     .select('*')
     .single();
@@ -966,7 +1071,7 @@ export async function cancelOrderItemInSupabase(itemId: string, reason: string, 
     orderItemId: currentItem.id,
   });
 
-  return mapPosOrderItemRow(data);
+  return [mapPosOrderItemRow(data)];
 }
 
 export async function cancelClosedPaidOrderInSupabase(orderId: string, reason: string, actor: PosActorContext, currentOrderOverride?: PosOrderWithRelations) {
@@ -1869,14 +1974,17 @@ async function loadCurrentStaffRoles() {
   return (data ?? []).map((entry) => entry.role as StaffRole);
 }
 
-async function ensureOpenOrderForTable(table: PosTable, actor: PosActorContext) {
+async function ensureOpenOrderForTable(
+  table: PosTable, actor: PosActorContext,
+  options?: { knownSalesSession?: PosSalesSession | null; knownOrder?: PosOrder | null; nonBlockingLogs?: boolean },
+) {
   if (table.activeOrderId) {
-    const existingOrder = await getOrderById(table.activeOrderId);
+    const existingOrder = options?.knownOrder ?? await getOrderById(table.activeOrderId);
     if (existingOrder.salesSessionId) {
       return existingOrder;
     }
 
-    const salesSession = await ensureOpenSalesSession(actor);
+    const salesSession = options?.knownSalesSession ?? await ensureOpenSalesSession(actor);
     const supabase = getSupabaseClient();
     const { data, error } = await supabase
       .from('pos_orders')
@@ -1892,7 +2000,7 @@ async function ensureOpenOrderForTable(table: PosTable, actor: PosActorContext) 
   }
 
   const supabase = getSupabaseClient();
-  const salesSession = await ensureOpenSalesSession(actor);
+  const salesSession = options?.knownSalesSession ?? await ensureOpenSalesSession(actor);
   const { data, error } = await supabase
     .from('pos_orders')
     .insert({
@@ -1910,14 +2018,19 @@ async function ensureOpenOrderForTable(table: PosTable, actor: PosActorContext) 
 
   throwIfError(error, 'No fue posible abrir la cuenta de la mesa');
   await touchTableOccupation(table.id, data.id, actor.email);
-  await insertPosLog({
+  const logInput = {
     actor,
     afterData: data,
     eventType: 'order_opened',
     notes: `Cuenta abierta para ${table.code}`,
     orderId: data.id,
     tableId: table.id,
-  });
+  };
+  if (options?.nonBlockingLogs) {
+    insertPosLogBestEffort(logInput);
+  } else {
+    await insertPosLog(logInput);
+  }
   return mapPosOrderRow(data);
 }
 
@@ -2480,7 +2593,19 @@ async function loadPaymentsBySalesSessionId(salesSessionId: string) {
   return rows.map(mapPosPaymentRow);
 }
 
+export async function loadClosedSalesForSessionFromSupabase(salesSessionId: string): Promise<PosOrderWithRelations[]> {
+  const orders = (await loadOrderRowsForSalesSession(salesSessionId)).filter((order) => order.closed_at != null);
+  const ids = orders.map((order) => order.id);
+  const [items, payments] = await Promise.all([loadPosOrderItemRowsByOrderIds(ids), loadPosPaymentRowsByOrderIds(ids)]);
+  return buildOrdersWithRelations(orders, items, payments)
+    .sort((left, right) => (right.closedAt ?? right.updatedAt).localeCompare(left.closedAt ?? left.updatedAt));
+}
+
 async function loadOrdersForSalesSession(salesSessionId: string) {
+  return (await loadOrderRowsForSalesSession(salesSessionId)).map(mapPosOrderRow);
+}
+
+async function loadOrderRowsForSalesSession(salesSessionId: string) {
   const supabase = getSupabaseClient();
   const pageSize = 1000;
   const rows: PosOrderRow[] = [];
@@ -2500,7 +2625,7 @@ async function loadOrdersForSalesSession(salesSessionId: string) {
     }
   }
 
-  return rows.map(mapPosOrderRow);
+  return rows;
 }
 
 async function loadOrdersByIds(orderIds: string[]) {
@@ -2562,6 +2687,12 @@ async function ensureOpenSalesSession(actor: PosActorContext) {
     return currentOpenSession;
   }
   return openSalesSessionInSupabase(actor);
+}
+
+function insertPosLogBestEffort(input: Parameters<typeof insertPosLog>[0]) {
+  void insertPosLog(input).catch((error: unknown) => {
+    console.error('No fue posible registrar la trazabilidad POS.', error);
+  });
 }
 
 async function insertPosLog(input: {

@@ -616,8 +616,9 @@ export function AdminSalesSessionsView() {
                             </span>
                           </div>
                           <p className="mt-1.5 text-[0.68rem] uppercase tracking-[0.16em] text-cyanGlow/75">
-                            {session.businessDate} - abierta {formatDateTime(session.openedAt)}
-                            {session.closedAt ? ` - cerrada ${formatDateTime(session.closedAt)}` : ''}
+                            <span className="block">{session.businessDate}</span>
+                            <span className="mt-1 block">Apertura: {formatDateTime(session.openedAt)}</span>
+                            <span className="mt-1 block">Cierre: {session.closedAt ? formatDateTime(session.closedAt) : session.status === 'open' ? 'En curso' : 'Sin hora registrada'}</span>
                           </p>
 
                           <div className="mt-4 grid gap-x-5 gap-y-3 md:grid-cols-[1.05fr_1.2fr]">
@@ -648,6 +649,8 @@ export function AdminSalesSessionsView() {
                       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                         <SummaryPill label="Jornada" value={session.sessionLabel} />
                         <SummaryPill label="Fecha contable" value={session.businessDate} />
+                        <SummaryPill label="Apertura" value={formatDateTime(session.openedAt)} />
+                        <SummaryPill label="Cierre" value={session.closedAt ? formatDateTime(session.closedAt) : session.status === 'open' ? 'En curso' : 'Sin hora registrada'} />
                         <SummaryPill label="Vendido" value={formatCurrency(session.summary?.grossSales ?? session.totalSold)} />
                         <SummaryPill label="Cobrado" value={formatCurrency(session.summary?.totalCollected ?? session.totalCollected)} />
                         <SummaryPill label="Efectivo" value={formatCurrency(cashTotal)} />
@@ -693,7 +696,8 @@ export function AdminSalesSessionsView() {
                                 <div>
                                   <p className="font-medium text-ivory">{resolveOrderTableLabel(order, tablesById)}</p>
                                   <p className="mt-1 text-xs uppercase tracking-[0.18em] text-cyanGlow/75">
-                                    Cerrada {formatDateTime(order.closedAt ?? order.updatedAt)}
+                                    <span className="block">Apertura: {formatDateTime(order.openedAt)}</span>
+                                    <span className="mt-1 block">Cierre: {order.closedAt ? formatDateTime(order.closedAt) : 'Sin hora registrada'}</span>
                                   </p>
                                 </div>
                                 <span className="rounded-full border border-emerald-300/20 bg-emerald-300/10 px-3 py-1 text-[0.65rem] uppercase tracking-[0.22em] text-emerald-200">
