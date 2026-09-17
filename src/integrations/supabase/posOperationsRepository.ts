@@ -1,4 +1,4 @@
-import type { RealtimeChannel, RealtimePostgresChangesPayload } from '@supabase/supabase-js';
+import type { RealtimeChannel, RealtimePostgresChangesPayload, REALTIME_SUBSCRIBE_STATES } from '@supabase/supabase-js';
 import type {
   AddCustomOrderItemInput,
   AddOrderItemInput,
@@ -30,6 +30,14 @@ import type {
 } from '../../shared/operations/operations.types';
 import { getSupabaseClient } from './client';
 import type { Database } from './database.types';
+
+export const POS_SYNC_DEBUG = false;
+
+function logPosSync(message: string) {
+  if (POS_SYNC_DEBUG) {
+    console.debug(`[POS SYNC] ${message} ts=${Date.now()}`);
+  }
+}
 
 type MenuItemPublicRow = Database['public']['Views']['menu_items_public']['Row'];
 type PosTableRow = Database['public']['Tables']['pos_tables']['Row'];
@@ -134,7 +142,7 @@ export async function loadPosStateFromSupabase(options: LoadPosStateOptions = {}
   const [tables, logs, salesSessions, operationalFlowSettings] = await Promise.all([
     supabase.from('pos_tables').select('*').order('code', { ascending: true }),
     shouldIncludeLogs
-      ? supabase.from('pos_order_status_logs').select('*').order('created_at', { ascending: false }).limit(120)
+      ? supabase.from('pos_order_status_logs').select('*').order('created_at', { ascending: false }).limit(options.includeHistoricalRows ? 120 : 15)
       : Promise.resolve({ data: [] as PosLogRow[], error: null }),
     supabase.from('pos_sales_sessions').select('*').order('opened_at', { ascending: false }).limit(10),
     loadPosOperationalFlowSettingsRows(),
@@ -282,6 +290,10 @@ export async function updatePosOperationalFlowSettingsInSupabase(input: UpdatePo
     notes: `Configuracion operativa actualizada para ${input.area === 'bar' ? 'bar' : 'cocina'}`,
   });
 
+  return mapPosOperationalFlowSettingsRows(await loadPosOperationalFlowSettingsRows());
+}
+
+export async function loadPosOperationalFlowSettingsFromSupabase(): Promise<PosOperationalFlowSettings> {
   return mapPosOperationalFlowSettingsRows(await loadPosOperationalFlowSettingsRows());
 }
 
@@ -614,15 +626,80 @@ export async function moveActiveOrderToTableInSupabase(sourceTableId: string, de
   };
 }
 
-export async function addItemsToTableInSupabase(tableId: string, items: AddOrderItemInput[], actor: PosActorContext) {
+export interface PosTableContext {
+  tableId: string;
+  table: PosTable;
+  order: PosOrder | null;
+  items: PosOrderItem[];
+  salesSession: PosSalesSession | null;
+}
+
+export function isPosTableContextValid(context: PosTableContext, tableId: string) {
+  return context.tableId === tableId && context.table.id === tableId && Array.isArray(context.items) &&
+    (context.order
+      ? context.table.activeOrderId === context.order.id && context.order.tableId === tableId &&
+        !context.order.closedAt && context.items.every((item) => item.orderId === context.order!.id)
+      : !context.table.activeOrderId && context.items.length === 0);
+}
+
+export function applyRealtimeEventToTableContext(context: PosTableContext, event: PosRealtimeEvent): PosTableContext | null {
+  if (event.table === 'pos_sales_sessions') return null;
+  const record = event.eventType === 'DELETE' ? event.oldRecord : event.newRecord ?? event.oldRecord;
+  if (event.table === 'pos_tables' && record?.id === context.table.id) {
+    if (event.eventType === 'DELETE' || !event.newRecord ||
+      record.active_order_id !== (context.order?.id ?? null) ||
+      !['code', 'name', 'type', 'status', 'created_at', 'updated_at'].every((key) => typeof record[key] === 'string')) return null;
+    return { ...context, table: mapPosTableRow(record as unknown as PosTableRow) };
+  }
+  if (event.table === 'pos_orders' && (record?.id === context.order?.id || record?.table_id === context.table.id)) {
+    if (!context.order || event.eventType === 'DELETE' || !event.newRecord ||
+      record?.id !== context.order.id || record.table_id !== context.table.id || record.closed_at !== null ||
+      record.sales_session_id !== context.order.salesSessionId ||
+      !['opened_at', 'created_at', 'updated_at', 'opened_by_email', 'financial_status'].every((key) => typeof record[key] === 'string')) return null;
+    return { ...context, order: mapPosOrderRow(record as unknown as PosOrderRow) };
+  }
+  if (event.table === 'pos_order_items') {
+    const known = context.items.find((item) => item.id === record?.id);
+    if (record?.order_id !== context.order?.id && !known) {
+      // An incomplete payload cannot prove that the selected account is unaffected.
+      return typeof record?.order_id === 'string' ? context : null;
+    }
+    const item = mapPosRealtimeOrderItem(event.newRecord);
+    if (event.eventType === 'DELETE' || !item || item.orderId !== context.order?.id) return null;
+    if (known && Date.parse(item.updatedAt) < Date.parse(known.updatedAt)) return context;
+    return { ...context, items: [...context.items.filter((entry) => entry.id !== item.id), item] };
+  }
+  return context;
+}
+
+export async function loadPosTableContextFromSupabase(tableId: string): Promise<PosTableContext> {
+  const [table, salesSession] = await Promise.all([getTableById(tableId), getOpenSalesSession()]);
+  const [order, items] = table.activeOrderId
+    ? await Promise.all([getOrderById(table.activeOrderId), loadOrderItems(table.activeOrderId)])
+    : [null, []];
+  const context = { tableId, table, salesSession, order, items };
+  if (!isPosTableContextValid(context, tableId)) {
+    throw new Error('La mesa cambio mientras se cargaba. Vuelve a abrirla para sincronizar.');
+  }
+  return context;
+}
+
+export async function addItemsToTableInSupabase(
+  tableId: string, items: AddOrderItemInput[], actor: PosActorContext, context?: PosTableContext | null,
+) {
   if (!items.length) {
     throw new Error('No hay productos para agregar a la mesa.');
   }
 
   const supabase = getSupabaseClient();
-  const table = await getTableById(tableId);
-  const order = await ensureOpenOrderForTable(table, actor);
-  const currentItems = await loadOrderItems(order.id);
+  const loadedContext = context && isPosTableContextValid(context, tableId) ? context : null;
+  const table = loadedContext?.table ?? await getTableById(tableId);
+  const order = loadedContext?.order?.salesSessionId
+    ? loadedContext.order
+    : await ensureOpenOrderForTable(table, actor, {
+      knownSalesSession: loadedContext?.salesSession, knownOrder: loadedContext?.order, nonBlockingLogs: true,
+    });
+  const currentItems = loadedContext ? [...loadedContext.items] : await loadOrderItems(order.id);
   const returnedItems: PosOrderItem[] = [];
 
   for (const item of items) {
@@ -638,7 +715,7 @@ export async function addItemsToTableInSupabase(tableId: string, items: AddOrder
 
     if (existingDraft) {
       const quantity = existingDraft.quantity + item.quantity;
-      const { data, error } = await supabase
+      let query = supabase
         .from('pos_order_items')
         .update({
           quantity,
@@ -646,11 +723,18 @@ export async function addItemsToTableInSupabase(tableId: string, items: AddOrder
           updated_by_email: actor.email,
         } as never)
         .eq('id', existingDraft.id)
-        .eq('operational_status', 'draft')
-        .select('*')
-        .single();
+        .eq('operational_status', 'draft');
+      if (loadedContext) {
+        query = query.eq('quantity', existingDraft.quantity).eq('updated_at', existingDraft.updatedAt);
+      }
+      const { data, error } = loadedContext
+        ? await query.select('*').maybeSingle()
+        : await query.select('*').single();
 
       throwIfError(error, 'No fue posible agrupar el producto en borrador');
+      if (!data) {
+        throw new Error('El borrador cambio en otro dispositivo. Sincroniza la mesa y vuelve a agregar.');
+      }
       const mergedItem = mapPosOrderItemRow(data);
       returnedItems.push(mergedItem);
       const itemIndex = currentItems.findIndex((entry) => entry.id === mergedItem.id);
@@ -689,7 +773,7 @@ export async function addItemsToTableInSupabase(tableId: string, items: AddOrder
   }
 
   await touchTableOccupation(table.id, order.id, actor.email);
-  await insertPosLog({
+  insertPosLogBestEffort({
     actor,
     afterData: returnedItems,
     eventType: 'items_added',
@@ -697,6 +781,12 @@ export async function addItemsToTableInSupabase(tableId: string, items: AddOrder
     orderId: order.id,
     tableId: table.id,
   });
+
+  if (loadedContext) {
+    loadedContext.order = order;
+    loadedContext.items = currentItems;
+    loadedContext.table = { ...table, activeOrderId: order.id, status: 'occupied', assignedStaffEmail: actor.email };
+  }
 
   return returnedItems;
 }
@@ -918,7 +1008,7 @@ export async function replaceOrderItemInSupabase(
 }
 
 export async function cancelOrderItemInSupabase(itemId: string, reason: string, actor: PosActorContext, currentItemOverride?: PosOrderItem) {
-  const currentItem = currentItemOverride ?? (await getOrderItemById(itemId));
+  const currentItem = await getOrderItemById(itemId);
 
   if (!CONTROLLED_CANCEL_STATUSES.has(currentItem.operationalStatus)) {
     throw new Error('Esta linea ya no puede cancelarse desde este punto del flujo.');
@@ -926,6 +1016,31 @@ export async function cancelOrderItemInSupabase(itemId: string, reason: string, 
 
   const supabase = getSupabaseClient();
   const now = new Date().toISOString();
+  if (currentItem.quantity > 1) {
+    const remainingQuantity = currentItem.quantity - 1;
+    const { data: activeLine, error: activeError } = await supabase.from('pos_order_items')
+      .update({ quantity: remainingQuantity, total_price: currentItem.unitPrice * remainingQuantity, updated_by_email: actor.email } as never)
+      .eq('id', itemId).eq('quantity', currentItem.quantity).eq('updated_at', currentItem.updatedAt)
+      .in('operational_status', ['draft', 'sent', 'pending_preparation'])
+      .select('*').single();
+    throwIfError(activeError, 'No fue posible quitar una unidad de la linea');
+    // Preserve the remaining line and retain the cancelled unit in the same round/history.
+    const { id: _id, created_at: _createdAt, updated_at: _updatedAt, ...fields } = activeLine;
+    const { data: cancelledUnit, error: cancelledError } = await supabase.from('pos_order_items')
+      .insert({
+        ...fields, quantity: 1, total_price: currentItem.unitPrice,
+        operational_status: 'cancelled', financial_status: 'cancelled',
+        cancellation_reason: reason.trim(), cancelled_at: now, cancelled_by_email: actor.email,
+        created_by_email: actor.email, updated_by_email: actor.email,
+      } as never).select('*').single();
+    throwIfError(cancelledError, 'No fue posible registrar la unidad cancelada');
+    await reconcileOrderState(currentItem.orderId, actor.email);
+    await insertPosLog({
+      actor, afterData: [activeLine, cancelledUnit], beforeData: currentItem,
+      eventType: 'item_cancelled', notes: reason.trim(), orderId: currentItem.orderId, orderItemId: currentItem.id,
+    });
+    return [mapPosOrderItemRow(activeLine), mapPosOrderItemRow(cancelledUnit)];
+  }
   const { data, error } = await supabase
     .from('pos_order_items')
     .update({
@@ -937,6 +1052,8 @@ export async function cancelOrderItemInSupabase(itemId: string, reason: string, 
       updated_by_email: actor.email,
     } as never)
     .eq('id', itemId)
+    .eq('quantity', currentItem.quantity)
+    .eq('updated_at', currentItem.updatedAt)
     .in('operational_status', ['draft', 'sent', 'pending_preparation'])
     .select('*')
     .single();
@@ -954,7 +1071,7 @@ export async function cancelOrderItemInSupabase(itemId: string, reason: string, 
     orderItemId: currentItem.id,
   });
 
-  return mapPosOrderItemRow(data);
+  return [mapPosOrderItemRow(data)];
 }
 
 export async function cancelClosedPaidOrderInSupabase(orderId: string, reason: string, actor: PosActorContext, currentOrderOverride?: PosOrderWithRelations) {
@@ -1565,6 +1682,36 @@ export async function loadSalesSessionHistoryFromSupabase(): Promise<PosSalesSes
     loadAllPosPaymentRows(),
     loadAllPosOrderItemRows(),
   ]);
+  return buildSalesSessionHistory(sessions, allOrders, allPayments, allItems);
+}
+
+export async function loadSalesSessionHistoryViewFromSupabase() {
+  const supabase = getSupabaseClient();
+  const [sessions, allOrders, allPayments, allItems, tables] = await Promise.all([
+    loadAllPosSalesSessionRows(),
+    loadAllPosOrdersRows(),
+    loadAllPosPaymentRows(),
+    loadAllPosOrderItemRows(),
+    supabase.from('pos_tables').select('*').order('code', { ascending: true }),
+  ]);
+  throwIfError(tables.error, 'No fue posible leer las mesas POS');
+  const ordersWithRelations = buildOrdersWithRelations(allOrders, allItems, allPayments);
+
+  return {
+    history: buildSalesSessionHistory(sessions, allOrders, allPayments, allItems),
+    closedSales: ordersWithRelations
+      .filter((order) => order.closedAt != null)
+      .sort((left, right) => (right.closedAt ?? right.updatedAt).localeCompare(left.closedAt ?? left.updatedAt)),
+    tables: buildTablesWithOrders(tables.data ?? [], ordersWithRelations),
+  };
+}
+
+function buildSalesSessionHistory(
+  sessions: PosSalesSessionRow[],
+  allOrders: PosOrderRow[],
+  allPayments: PosPaymentRow[],
+  allItems: PosOrderItemRow[],
+): PosSalesSessionHistoryEntry[] {
   const orders = allOrders.filter((order) => order.sales_session_id != null);
   const payments = allPayments.filter((payment) => payment.sales_session_id != null);
   const orderIds = new Set(orders.map((order) => order.id));
@@ -1726,12 +1873,23 @@ export async function updatePosPaymentStatusInSupabase(
   return mapPosPaymentRow(data);
 }
 
-export function subscribeToPosRealtime(onChange: () => void, onEvent?: (event: PosRealtimeEvent) => boolean | void) {
+export function subscribeToPosRealtime(
+  onChange: () => void,
+  onEvent?: (event: PosRealtimeEvent) => boolean | void,
+  onStatusChange?: (status: REALTIME_SUBSCRIBE_STATES) => void,
+) {
   const supabase = getSupabaseClient();
   const channel: RealtimeChannel = supabase.channel('zafiro-pos-live');
+  let isActive = true;
   const buildHandler =
     (table: PosRealtimeTable) =>
     (payload: RealtimePostgresChangesPayload<Record<string, unknown>>) => {
+      const eventId = (payload.new as Record<string, unknown>)?.id ?? (payload.old as Record<string, unknown>)?.id ?? '-';
+      logPosSync(`realtime received table=${table} event=${payload.eventType} id=${eventId}`);
+      if (!isActive) {
+        logPosSync(`realtime ignored reason=inactive table=${table} event=${payload.eventType} id=${eventId}`);
+        return;
+      }
       const shouldReload = onEvent?.({
         eventType: payload.eventType,
         newRecord: payload.new ?? null,
@@ -1739,7 +1897,9 @@ export function subscribeToPosRealtime(onChange: () => void, onEvent?: (event: P
         table,
       });
 
+      logPosSync(`realtime table=${table} event=${payload.eventType} id=${eventId} reload=${shouldReload ?? 'default'}`);
       if (shouldReload !== false) {
+        logPosSync(`onChange reason=realtime:${table}:${payload.eventType} id=${eventId}`);
         onChange();
       }
     };
@@ -1752,9 +1912,38 @@ export function subscribeToPosRealtime(onChange: () => void, onEvent?: (event: P
     .on('postgres_changes', { event: '*', schema: 'public', table: 'pos_sales_sessions' }, buildHandler('pos_sales_sessions'))
     .on('postgres_changes', { event: '*', schema: 'public', table: 'pos_order_status_logs' }, buildHandler('pos_order_status_logs'))
     .on('postgres_changes', { event: '*', schema: 'public', table: 'pos_operational_flow_settings' }, buildHandler('pos_operational_flow_settings'))
+    .subscribe((status) => {
+      if (isActive) {
+        onStatusChange?.(status);
+      }
+    });
+
+  return () => {
+    if (!isActive) {
+      return;
+    }
+    isActive = false;
+    void supabase.removeChannel(channel);
+  };
+}
+
+export function subscribeToPosOperationalSettingsRealtime(onChange: () => void) {
+  const supabase = getSupabaseClient();
+  const channel = supabase.channel('zafiro-pos-operational-settings-live');
+  let isActive = true;
+  channel
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'pos_operational_flow_settings' }, () => {
+      if (isActive) {
+        onChange();
+      }
+    })
     .subscribe();
 
   return () => {
+    if (!isActive) {
+      return;
+    }
+    isActive = false;
     void supabase.removeChannel(channel);
   };
 }
@@ -1785,14 +1974,17 @@ async function loadCurrentStaffRoles() {
   return (data ?? []).map((entry) => entry.role as StaffRole);
 }
 
-async function ensureOpenOrderForTable(table: PosTable, actor: PosActorContext) {
+async function ensureOpenOrderForTable(
+  table: PosTable, actor: PosActorContext,
+  options?: { knownSalesSession?: PosSalesSession | null; knownOrder?: PosOrder | null; nonBlockingLogs?: boolean },
+) {
   if (table.activeOrderId) {
-    const existingOrder = await getOrderById(table.activeOrderId);
+    const existingOrder = options?.knownOrder ?? await getOrderById(table.activeOrderId);
     if (existingOrder.salesSessionId) {
       return existingOrder;
     }
 
-    const salesSession = await ensureOpenSalesSession(actor);
+    const salesSession = options?.knownSalesSession ?? await ensureOpenSalesSession(actor);
     const supabase = getSupabaseClient();
     const { data, error } = await supabase
       .from('pos_orders')
@@ -1808,7 +2000,7 @@ async function ensureOpenOrderForTable(table: PosTable, actor: PosActorContext) 
   }
 
   const supabase = getSupabaseClient();
-  const salesSession = await ensureOpenSalesSession(actor);
+  const salesSession = options?.knownSalesSession ?? await ensureOpenSalesSession(actor);
   const { data, error } = await supabase
     .from('pos_orders')
     .insert({
@@ -1826,14 +2018,19 @@ async function ensureOpenOrderForTable(table: PosTable, actor: PosActorContext) 
 
   throwIfError(error, 'No fue posible abrir la cuenta de la mesa');
   await touchTableOccupation(table.id, data.id, actor.email);
-  await insertPosLog({
+  const logInput = {
     actor,
     afterData: data,
     eventType: 'order_opened',
     notes: `Cuenta abierta para ${table.code}`,
     orderId: data.id,
     tableId: table.id,
-  });
+  };
+  if (options?.nonBlockingLogs) {
+    insertPosLogBestEffort(logInput);
+  } else {
+    await insertPosLog(logInput);
+  }
   return mapPosOrderRow(data);
 }
 
@@ -2396,7 +2593,19 @@ async function loadPaymentsBySalesSessionId(salesSessionId: string) {
   return rows.map(mapPosPaymentRow);
 }
 
+export async function loadClosedSalesForSessionFromSupabase(salesSessionId: string): Promise<PosOrderWithRelations[]> {
+  const orders = (await loadOrderRowsForSalesSession(salesSessionId)).filter((order) => order.closed_at != null);
+  const ids = orders.map((order) => order.id);
+  const [items, payments] = await Promise.all([loadPosOrderItemRowsByOrderIds(ids), loadPosPaymentRowsByOrderIds(ids)]);
+  return buildOrdersWithRelations(orders, items, payments)
+    .sort((left, right) => (right.closedAt ?? right.updatedAt).localeCompare(left.closedAt ?? left.updatedAt));
+}
+
 async function loadOrdersForSalesSession(salesSessionId: string) {
+  return (await loadOrderRowsForSalesSession(salesSessionId)).map(mapPosOrderRow);
+}
+
+async function loadOrderRowsForSalesSession(salesSessionId: string) {
   const supabase = getSupabaseClient();
   const pageSize = 1000;
   const rows: PosOrderRow[] = [];
@@ -2416,7 +2625,7 @@ async function loadOrdersForSalesSession(salesSessionId: string) {
     }
   }
 
-  return rows.map(mapPosOrderRow);
+  return rows;
 }
 
 async function loadOrdersByIds(orderIds: string[]) {
@@ -2478,6 +2687,12 @@ async function ensureOpenSalesSession(actor: PosActorContext) {
     return currentOpenSession;
   }
   return openSalesSessionInSupabase(actor);
+}
+
+function insertPosLogBestEffort(input: Parameters<typeof insertPosLog>[0]) {
+  void insertPosLog(input).catch((error: unknown) => {
+    console.error('No fue posible registrar la trazabilidad POS.', error);
+  });
 }
 
 async function insertPosLog(input: {
@@ -2650,6 +2865,50 @@ function buildSalesSessionSummary(orders: PosOrderWithRelations[], payments: Pos
     products: Array.from(productsByName.values()).sort((left, right) => right.quantity - left.quantity || right.totalAmount - left.totalAmount),
     totalCollected,
   };
+}
+
+export function mapPosRealtimeOrderItem(record: Record<string, unknown> | null): PosOrderItem | null {
+  if (!record) {
+    return null;
+  }
+  const requiredStrings = ['id', 'order_id', 'product_name', 'product_slug', 'created_by_email'];
+  const nullableStrings = [
+    'menu_item_source_key', 'replacement_for_item_id', 'updated_by_email', 'picking_up_by_email',
+    'delivered_by_email', 'cancelled_by_email', 'cancellation_reason',
+  ];
+  const nullableDates = ['sent_at', 'preparation_started_at', 'ready_at', 'picking_up_at', 'delivered_at', 'cancelled_at'];
+  const isDate = (value: unknown) => typeof value === 'string' && Number.isFinite(Date.parse(value));
+  const isMoney = (value: unknown) =>
+    (typeof value === 'number' || (typeof value === 'string' && value.trim() !== '')) &&
+    Number.isFinite(Number(value)) && Number(value) >= 0;
+
+  if (
+    !requiredStrings.every((key) => typeof record[key] === 'string' && (record[key] as string).trim() !== '') ||
+    !nullableStrings.every((key) => record[key] === null || typeof record[key] === 'string') ||
+    !nullableDates.every((key) => record[key] === null || isDate(record[key])) ||
+    !isDate(record.created_at) || !isDate(record.updated_at) || typeof record.notes !== 'string' ||
+    typeof record.quantity !== 'number' || !Number.isInteger(record.quantity) || record.quantity <= 0 ||
+    typeof record.service_round !== 'number' || !Number.isInteger(record.service_round) || record.service_round <= 0 ||
+    !isMoney(record.unit_price) || !isMoney(record.total_price) ||
+    !['kitchen', 'bar'].includes(record.prep_area as string) ||
+    !['draft', 'sent', 'pending_preparation', 'in_process', 'ready', 'picking_up', 'delivered', 'cancelled'].includes(record.operational_status as string) ||
+    !['pending_payment', 'partially_paid', 'paid_total', 'cancelled'].includes(record.financial_status as string)
+  ) {
+    return null;
+  }
+  return mapPosOrderItemRow(record as unknown as PosOrderItemRow);
+}
+
+export function mapPosRealtimeLog(record: Record<string, unknown> | null): PosOrderStatusLog | null {
+  if (!record ||
+    !['id', 'event_type', 'actor_email'].every((key) => typeof record[key] === 'string' && (record[key] as string).trim() !== '') ||
+    typeof record.created_at !== 'string' || !Number.isFinite(Date.parse(record.created_at)) ||
+    !['order_id', 'order_item_id', 'table_id', 'actor_role', 'notes'].every((key) => record[key] === null || typeof record[key] === 'string') ||
+    !['before_data', 'after_data'].every((key) => record[key] === null || (typeof record[key] === 'object' && record[key] != null))
+  ) {
+    return null;
+  }
+  return mapPosLogRow(record as unknown as PosLogRow);
 }
 
 function mapPosOrderItemRow(row: PosOrderItemRow): PosOrderItem {

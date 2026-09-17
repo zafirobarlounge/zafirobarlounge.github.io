@@ -3,17 +3,17 @@ import type { ReactNode } from 'react';
 import { Navigate } from 'react-router-dom';
 import { AdminLayout } from './AdminLayout';
 import { useSupabaseAuth } from '../auth/SupabaseAuthProvider';
-import type { PosOrderItem, PosOperationalFlowSettings, PosState, StaffRole } from '../shared/operations/operations.types';
+import type { PosOrderItem, PosOperationalFlowSettings, StaffRole } from '../shared/operations/operations.types';
 import {
   defaultPosOperationalFlowSettings,
-  loadPosStateFromSupabase,
-  subscribeToPosRealtime,
+  loadPosOperationalFlowSettingsFromSupabase,
+  subscribeToPosOperationalSettingsRealtime,
   updatePosOperationalFlowSettingsInSupabase,
 } from '../integrations/supabase/posOperationsRepository';
 
 export function AdminPosSettingsView() {
   const { isCatalogAdmin, staffRoles, user } = useSupabaseAuth();
-  const [posState, setPosState] = useState<PosState | null>(null);
+  const [operationalFlowSettings, setOperationalFlowSettings] = useState<PosOperationalFlowSettings>(defaultPosOperationalFlowSettings);
   const [isLoading, setIsLoading] = useState(true);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [savingOperationalFlowArea, setSavingOperationalFlowArea] = useState<PosOrderItem['prepArea'] | null>(null);
@@ -40,36 +40,52 @@ export function AdminPosSettingsView() {
     }
 
     let isMounted = true;
+    let pendingLoad: Promise<void> | null = null;
+    let reloadRequested = false;
 
-    const loadState = async () => {
-      try {
+    const loadState = (): Promise<void> => {
+      if (!isMounted) {
+        return Promise.resolve();
+      }
+      if (pendingLoad) {
+        reloadRequested = true;
+        return pendingLoad;
+      }
+      pendingLoad = (async () => {
         setErrorMessage(null);
         setIsLoading(true);
-        const nextState = await loadPosStateFromSupabase();
-        if (!isMounted) {
-          return;
-        }
-
-        setPosState(nextState);
-      } catch (error) {
-        if (isMounted) {
-          setErrorMessage(error instanceof Error ? error.message : 'No fue posible cargar la configuracion POS.');
-        }
-      } finally {
+        do {
+          reloadRequested = false;
+          try {
+            const nextSettings = await loadPosOperationalFlowSettingsFromSupabase();
+            if (!isMounted) {
+              return;
+            }
+            setOperationalFlowSettings(nextSettings);
+          } catch (error) {
+            if (isMounted) {
+              setErrorMessage(error instanceof Error ? error.message : 'No fue posible cargar la configuracion POS.');
+            }
+          }
+        } while (isMounted && reloadRequested);
+      })().finally(() => {
+        pendingLoad = null;
         if (isMounted) {
           setIsLoading(false);
         }
-      }
+      });
+      return pendingLoad;
     };
 
     void loadState();
 
-    const unsubscribe = subscribeToPosRealtime(() => {
+    const unsubscribe = subscribeToPosOperationalSettingsRealtime(() => {
       if (realtimeTimerRef.current != null) {
         window.clearTimeout(realtimeTimerRef.current);
       }
 
       realtimeTimerRef.current = window.setTimeout(() => {
+        realtimeTimerRef.current = null;
         if (!isMounted) {
           return;
         }
@@ -82,12 +98,11 @@ export function AdminPosSettingsView() {
       isMounted = false;
       if (realtimeTimerRef.current != null) {
         window.clearTimeout(realtimeTimerRef.current);
+        realtimeTimerRef.current = null;
       }
       unsubscribe();
     };
   }, [isCatalogAdmin]);
-
-  const operationalFlowSettings = posState?.operationalFlowSettings ?? defaultPosOperationalFlowSettings;
 
   const handleToggleOperationalFlowSetting = async (
     area: PosOrderItem['prepArea'],
@@ -110,14 +125,7 @@ export function AdminPosSettingsView() {
         actor,
       );
 
-      setPosState((current) =>
-        current
-          ? {
-              ...current,
-              operationalFlowSettings: nextSettings,
-            }
-          : null,
-      );
+      setOperationalFlowSettings(nextSettings);
       setActionMessage('La configuracion operativa se actualizo correctamente.');
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'No fue posible guardar la configuracion operativa.');

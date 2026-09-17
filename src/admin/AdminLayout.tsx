@@ -21,8 +21,23 @@ export function AdminLayout({ children }: AdminLayoutProps) {
   const location = useLocation();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const mobileMenuRef = useRef<HTMLDivElement | null>(null);
+  const headerRef = useRef<HTMLElement | null>(null);
   const primaryRole = staffRoles[0] ? roleLabels[staffRoles[0]] ?? staffRoles[0] : null;
   const shouldShowAdminHubLink = isAuthenticated && canAccessCatalog && canAccessPos && location.pathname !== '/admin';
+
+  useEffect(() => {
+    const header = headerRef.current;
+    const layout = header?.parentElement;
+    if (!header || !layout) return;
+    const updateHeight = () => layout.style.setProperty('--admin-header-height', `${header.getBoundingClientRect().height}px`);
+    updateHeight();
+    const observer = new ResizeObserver(updateHeight);
+    observer.observe(header);
+    return () => {
+      observer.disconnect();
+      layout.style.removeProperty('--admin-header-height');
+    };
+  }, []);
 
   useEffect(() => {
     const closeMenu = (event: MouseEvent | TouchEvent) => {
@@ -45,7 +60,7 @@ export function AdminLayout({ children }: AdminLayoutProps) {
 
   return (
     <div className="min-h-screen bg-obsidian text-ivory">
-      <header className="sticky top-0 z-40 border-b border-white/10 bg-obsidian/80 backdrop-blur-xl">
+      <header ref={headerRef} className="sticky top-0 z-40 border-b border-white/10 bg-obsidian/80 backdrop-blur-xl">
         <div className="mx-auto flex max-w-7xl flex-col gap-3 px-4 py-3 sm:px-6 sm:py-4 lg:flex-row lg:items-center lg:justify-between lg:px-8 xl:max-w-[90rem] 2xl:px-10">
           <div className="flex min-w-0 items-center gap-3">
             <img src={zafiroLogoWhite} alt="ZAFIRO Bar Lounge logo" className="h-8 w-auto object-contain sm:h-11" />
@@ -140,7 +155,7 @@ export function AdminLayout({ children }: AdminLayoutProps) {
         </div>
       </header>
 
-      <main className="mx-auto max-w-7xl px-4 py-7 sm:px-6 sm:py-16 lg:px-8 xl:max-w-[90rem] 2xl:px-10">{children}</main>
+      <main className="mx-auto max-w-7xl px-4 pb-7 pt-6 sm:px-6 sm:pb-16 lg:px-8 xl:max-w-[90rem] 2xl:px-10">{children}</main>
     </div>
   );
 }

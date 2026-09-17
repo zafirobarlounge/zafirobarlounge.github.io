@@ -7,8 +7,7 @@ import {
   cancelClosedPaidOrderInSupabase,
   createManualSalesSessionInSupabase,
   deleteSalesSessionFromSupabase,
-  loadPosStateFromSupabase,
-  loadSalesSessionHistoryFromSupabase,
+  loadSalesSessionHistoryViewFromSupabase,
   reassignOrderSalesSessionInSupabase,
   updateSalesSessionWindowInSupabase,
   type PosActorContext,
@@ -78,6 +77,8 @@ export function AdminSalesSessionsView() {
   const [sessionWindowErrorMessage, setSessionWindowErrorMessage] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const sessionHeaderRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const isMountedRef = useRef(false);
+  const loadRequestIdRef = useRef(0);
 
   const closedSessions = useMemo(() => sessions.filter((session) => session.status === 'closed'), [sessions]);
   const openSessions = useMemo(() => sessions.filter((session) => session.status === 'open'), [sessions]);
@@ -119,16 +120,20 @@ export function AdminSalesSessionsView() {
   const comparisonLabel = useMemo(() => (comparisonPeriod ? formatDateRangeLabel(comparisonPeriod.startDate, comparisonPeriod.endDate) : null), [comparisonPeriod]);
 
   const loadSessions = async () => {
+    if (!isMountedRef.current) {
+      return;
+    }
+    const requestId = ++loadRequestIdRef.current;
     setErrorMessage(null);
     setIsLoading(true);
     try {
-      const [history, posState] = await Promise.all([
-        loadSalesSessionHistoryFromSupabase(),
-        loadPosStateFromSupabase({ includeHistoricalRows: true }),
-      ]);
+      const { history, closedSales, tables } = await loadSalesSessionHistoryViewFromSupabase();
+      if (!isMountedRef.current || requestId !== loadRequestIdRef.current) {
+        return;
+      }
       setSessions(history);
-      setClosedSales(posState.closedSales);
-      setTables(posState.tables);
+      setClosedSales(closedSales);
+      setTables(tables);
       setExpandedSessionId((current) => {
         if (current && history.some((session) => session.id === current)) {
           return current;
@@ -137,19 +142,28 @@ export function AdminSalesSessionsView() {
         return history.find((session) => session.status === 'closed')?.id ?? history[0]?.id ?? null;
       });
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'No fue posible cargar las jornadas.');
+      if (isMountedRef.current && requestId === loadRequestIdRef.current) {
+        setErrorMessage(error instanceof Error ? error.message : 'No fue posible cargar las jornadas.');
+      }
     } finally {
-      setIsLoading(false);
+      if (isMountedRef.current && requestId === loadRequestIdRef.current) {
+        setIsLoading(false);
+      }
     }
   };
 
   useEffect(() => {
+    isMountedRef.current = true;
     if (!isCatalogAdmin) {
       setIsLoading(false);
-      return;
+    } else {
+      void loadSessions();
     }
 
-    void loadSessions();
+    return () => {
+      isMountedRef.current = false;
+      loadRequestIdRef.current++;
+    };
   }, [isCatalogAdmin]);
 
   useEffect(() => {
@@ -602,8 +616,9 @@ export function AdminSalesSessionsView() {
                             </span>
                           </div>
                           <p className="mt-1.5 text-[0.68rem] uppercase tracking-[0.16em] text-cyanGlow/75">
-                            {session.businessDate} - abierta {formatDateTime(session.openedAt)}
-                            {session.closedAt ? ` - cerrada ${formatDateTime(session.closedAt)}` : ''}
+                            <span className="block">{session.businessDate}</span>
+                            <span className="mt-1 block">Apertura: {formatDateTime(session.openedAt)}</span>
+                            <span className="mt-1 block">Cierre: {session.closedAt ? formatDateTime(session.closedAt) : session.status === 'open' ? 'En curso' : 'Sin hora registrada'}</span>
                           </p>
 
                           <div className="mt-4 grid gap-x-5 gap-y-3 md:grid-cols-[1.05fr_1.2fr]">
@@ -634,6 +649,8 @@ export function AdminSalesSessionsView() {
                       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                         <SummaryPill label="Jornada" value={session.sessionLabel} />
                         <SummaryPill label="Fecha contable" value={session.businessDate} />
+                        <SummaryPill label="Apertura" value={formatDateTime(session.openedAt)} />
+                        <SummaryPill label="Cierre" value={session.closedAt ? formatDateTime(session.closedAt) : session.status === 'open' ? 'En curso' : 'Sin hora registrada'} />
                         <SummaryPill label="Vendido" value={formatCurrency(session.summary?.grossSales ?? session.totalSold)} />
                         <SummaryPill label="Cobrado" value={formatCurrency(session.summary?.totalCollected ?? session.totalCollected)} />
                         <SummaryPill label="Efectivo" value={formatCurrency(cashTotal)} />
@@ -679,7 +696,8 @@ export function AdminSalesSessionsView() {
                                 <div>
                                   <p className="font-medium text-ivory">{resolveOrderTableLabel(order, tablesById)}</p>
                                   <p className="mt-1 text-xs uppercase tracking-[0.18em] text-cyanGlow/75">
-                                    Cerrada {formatDateTime(order.closedAt ?? order.updatedAt)}
+                                    <span className="block">Apertura: {formatDateTime(order.openedAt)}</span>
+                                    <span className="mt-1 block">Cierre: {order.closedAt ? formatDateTime(order.closedAt) : 'Sin hora registrada'}</span>
                                   </p>
                                 </div>
                                 <span className="rounded-full border border-emerald-300/20 bg-emerald-300/10 px-3 py-1 text-[0.65rem] uppercase tracking-[0.22em] text-emerald-200">
