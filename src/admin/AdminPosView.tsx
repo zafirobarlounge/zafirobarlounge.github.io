@@ -48,7 +48,22 @@ import {
   voidProcessedOrderItemInSupabase,
   derivePreparationAreaFromProductType,
   type PosRealtimeEvent,
+  POS_SYNC_DEBUG,
+  mapPosRealtimeOrderItem,
+  mapPosRealtimeLog,
 } from '../integrations/supabase/posOperationsRepository';
+
+function logPosSync(message: string) {
+  if (typeof POS_SYNC_DEBUG !== 'undefined' && POS_SYNC_DEBUG) {
+    console.debug(`[POS SYNC] ${message} ts=${Date.now()}`);
+  }
+}
+
+function nextPosSyncLoadId() {
+  const counter = nextPosSyncLoadId as typeof nextPosSyncLoadId & { current?: number };
+  counter.current = (counter.current ?? 0) + 1;
+  return counter.current;
+}
 
 type WorkspaceTab = 'floor' | 'kitchen' | 'bar' | 'cashier';
 type CashierRightPanel = 'summary' | 'previous_sessions' | 'validations' | 'movements';
@@ -194,9 +209,8 @@ export function AdminPosView() {
   const [highlightedOrderItemId, setHighlightedOrderItemId] = useState<string | null>(null);
   const realtimeTimerRef = useRef<number | null>(null);
   const trailingSyncTimerRef = useRef<number | null>(null);
-  const hiddenSyncTimestampRef = useRef(0);
   const suppressAutoSyncUntilRef = useRef(0);
-  const loadStateRef = useRef<(initial?: boolean) => Promise<void>>(async () => {});
+  const loadStateRef = useRef<(initial?: boolean, reason?: string) => Promise<void>>(async () => {});
   const historicalSessionHeaderRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const cashierPaymentPanelRef = useRef<HTMLDivElement | null>(null);
   const floorWorkspacePanelRef = useRef<HTMLDivElement | null>(null);
@@ -226,18 +240,21 @@ export function AdminPosView() {
   const shouldSuppressBackgroundSync = () => Date.now() < suppressAutoSyncUntilRef.current;
 
   const scheduleTrailingSync = (delay = 960) => {
+    logPosSync(`trailing schedule reason=trailing-sync delay=${delay}ms replace=${trailingSyncTimerRef.current != null}`);
     if (trailingSyncTimerRef.current != null) {
       window.clearTimeout(trailingSyncTimerRef.current);
     }
 
     trailingSyncTimerRef.current = window.setTimeout(() => {
+      logPosSync('trailing fire reason=trailing-sync');
       suppressAutoSyncUntilRef.current = 0;
-      void loadStateRef.current(false);
+      void loadStateRef.current(false, 'trailing-sync');
     }, delay);
   };
 
   const markLocalMutationCommitted = () => {
     suppressAutoSyncUntilRef.current = Date.now() + 220;
+    logPosSync('local mutation committed reason=local-mutation suppression=220ms trailing=320ms');
     scheduleTrailingSync(320);
   };
 
@@ -391,8 +408,30 @@ export function AdminPosView() {
 
   useEffect(() => {
     let isMounted = true;
+    let pendingLoad: Promise<void> | null = null;
+    let reloadRequested = false;
+    let eventsDuringLoad: PosRealtimeEvent[] = [];
+    let activeLoadId: number | null = null;
+    let latestRealtimeReason = 'realtime';
+    let scheduledReason: string | null = null;
+    const pendingReasons = new Set<string>();
+    let pendingReloadEvents: PosRealtimeEvent[] = [];
+    let reloadEventsDuringLoad: PosRealtimeEvent[] = [];
+    let nonRealtimeReloadRequested = false;
+    let latestRealtimeEvent: PosRealtimeEvent | undefined;
+    logPosSync('effect mount reason=initial');
 
     const handleRealtimeEvent = (event: PosRealtimeEvent) => {
+      const eventId = event.newRecord?.id ?? event.oldRecord?.id ?? '-';
+      logPosSync(`handleRealtimeEvent table=${event.table} event=${event.eventType} id=${eventId} loadId=${activeLoadId ?? '-'} pending=${pendingLoad != null}`);
+      if (!isMounted) {
+        logPosSync(`handleRealtimeEvent ignored reason=unmounted table=${event.table} event=${event.eventType} id=${eventId}`);
+        return false;
+      }
+      if (pendingLoad) {
+        eventsDuringLoad.push(event);
+        logPosSync(`eventsDuringLoad buffered loadId=${activeLoadId} table=${event.table} event=${event.eventType} id=${eventId} count=${eventsDuringLoad.length}`);
+      }
       const currentState = posStateRef.current;
       setPosState((current) => (current ? applyRealtimeEventToPosState(current, event) : current));
 
@@ -415,83 +454,169 @@ export function AdminPosView() {
         }
       }
 
-      return shouldReloadAfterRealtimeEvent(event, currentState);
+      const shouldReload = shouldReloadAfterRealtimeEvent(event, currentState);
+      if (pendingLoad && shouldReload) {
+        reloadEventsDuringLoad.push(event);
+      }
+      latestRealtimeReason = `realtime:${event.table}:${event.eventType}`;
+      latestRealtimeEvent = event;
+      logPosSync(`shouldReloadAfterRealtimeEvent table=${event.table} event=${event.eventType} id=${eventId} reload=${shouldReload} loadId=${activeLoadId ?? '-'}`);
+      return shouldReload;
     };
 
-    const loadState = async (initial = false) => {
-      try {
+    const loadState = (initial = false, reason = initial ? 'initial' : 'unspecified', event?: PosRealtimeEvent): Promise<void> => {
+      logPosSync(`loadState called reason=${reason} loadId=${activeLoadId ?? '-'} pending=${pendingLoad != null} reloadRequested=${reloadRequested}`);
+      if (!isMounted) {
+        logPosSync(`loadState ignored reason=${reason} unmounted=true`);
+        return Promise.resolve();
+      }
+      if (pendingLoad) {
+        pendingReasons.add(reason);
+        if (event) {
+          pendingReloadEvents.push(event);
+        } else {
+          nonRealtimeReloadRequested = true;
+        }
+        reloadRequested = true;
+        logPosSync(`load already pending loadId=${activeLoadId} reason=${reason} -> reloadRequested=true`);
+        return pendingLoad;
+      }
+
+      pendingLoad = (async () => {
+        let pass = 0;
         if (initial) {
           setIsLoading(true);
         }
 
-        const nextState = await loadPosStateFromSupabase({
-          includeLogs: actorRef.current.roles.includes('superadmin') || workspaceAccessRef.current.canOperateCashier,
-        });
-        if (!isMounted) {
-          return;
-        }
+        do {
+          const loadId = nextPosSyncLoadId();
+          activeLoadId = loadId;
+          const passReason = pass++ === 0 ? reason : 'pending-reload';
+          const triggers = Array.from(pendingReasons).join(',') || reason;
+          pendingReasons.clear();
+          const startedAt = Date.now();
+          let outcome = 'success';
+          logPosSync(`load #${loadId} start reason=${passReason} triggers=${triggers} pass=${pass} reloadRequested=${reloadRequested}`);
+          reloadRequested = false;
+          pendingReloadEvents = [];
+          reloadEventsDuringLoad = [];
+          nonRealtimeReloadRequested = false;
+          eventsDuringLoad = [];
+          logPosSync(`load #${loadId} reset reloadRequested=false eventsDuringLoad=0`);
+          try {
+            logPosSync(`load #${loadId} loadPosStateFromSupabase reason=${passReason}`);
+            const nextState = await loadPosStateFromSupabase({
+              includeLogs: actorRef.current.roles.includes('superadmin') || workspaceAccessRef.current.canOperateCashier,
+            });
+            if (!isMounted) {
+              outcome = 'ignored-unmounted';
+              return;
+            }
 
-        setPosState(nextState);
-        setSelectedTableId((current) => {
-          if (current && nextState.tables.some((table) => table.id === current)) {
-            return current;
+            // Keep changes received after the snapshot request started.
+            logPosSync(`load #${loadId} eventsDuringLoad replay count=${eventsDuringLoad.length}`);
+            const syncedState = eventsDuringLoad.reduce(applyRealtimeEventToPosState, nextState);
+            // Only cancel event-driven retries proven covered by the snapshot and replay.
+            if (reloadRequested && !nonRealtimeReloadRequested && !eventsDuringLoad.some((event) => event.eventType === 'DELETE')) {
+              const reloadEvents = [...pendingReloadEvents, ...reloadEventsDuringLoad];
+              reloadRequested = reloadEvents.some((event) => stillRequiresPendingRealtimeReload(event, syncedState));
+              logPosSync(`load #${loadId} pending-reload reevaluated events=${reloadEvents.length} reloadRequested=${reloadRequested}`);
+              if (!reloadRequested) {
+                pendingReasons.clear();
+              }
+            }
+            eventsDuringLoad = [];
+            setPosState(syncedState);
+            setSelectedTableId((current) => {
+              if (current && nextState.tables.some((table) => table.id === current)) {
+                return current;
+              }
+
+              return nextState.tables[0]?.id ?? null;
+            });
+          } catch (error) {
+            outcome = 'error';
+            if (isMounted) {
+              setErrorMessage(error instanceof Error ? error.message : 'No fue posible cargar el estado POS.');
+            }
+          } finally {
+            logPosSync(`load #${loadId} end reason=${passReason} outcome=${outcome} duration=${Date.now() - startedAt}ms reloadRequested=${reloadRequested} nextPass=${isMounted && reloadRequested}`);
           }
-
-          return nextState.tables[0]?.id ?? null;
-        });
-      } catch (error) {
-        if (isMounted) {
-          setErrorMessage(error instanceof Error ? error.message : 'No fue posible cargar el estado POS.');
-        }
-      } finally {
+        } while (isMounted && reloadRequested);
+      })().finally(() => {
+        pendingLoad = null;
+        logPosSync(`pendingLoad cleared loadId=${activeLoadId ?? '-'} reloadRequested=${reloadRequested}`);
+        activeLoadId = null;
         if (isMounted && initial) {
           setIsLoading(false);
         }
-      }
+      });
+      return pendingLoad;
     };
 
-    loadStateRef.current = loadState;
+    loadStateRef.current = (initial = false, reason = 'loadStateRef') => {
+      logPosSync(`loadStateRef.current reason=${reason} loadId=${activeLoadId ?? '-'} pending=${pendingLoad != null}`);
+      return loadState(initial, reason);
+    };
 
-    void loadState(true);
+    void loadState(true, 'initial');
 
-    const unsubscribe = subscribeToPosRealtime(() => {
-      if (shouldSuppressBackgroundSync()) {
+    const scheduleBackgroundSync = (reason = latestRealtimeReason, event?: PosRealtimeEvent) => {
+      if (!isMounted || shouldSuppressBackgroundSync()) {
+        logPosSync(`scheduleBackgroundSync skipped reason=${reason} blocked=${!isMounted ? 'unmounted' : 'suppressed'} loadId=${activeLoadId ?? '-'}`);
         return;
       }
 
       if (realtimeTimerRef.current != null) {
+        logPosSync(`scheduleBackgroundSync replace reason=${reason} previousReason=${scheduledReason ?? '-'} loadId=${activeLoadId ?? '-'}`);
         window.clearTimeout(realtimeTimerRef.current);
       }
 
+      scheduledReason = reason;
+      logPosSync(`scheduleBackgroundSync scheduled reason=${reason} delay=12ms loadId=${activeLoadId ?? '-'} pending=${pendingLoad != null}`);
       realtimeTimerRef.current = window.setTimeout(() => {
-        void loadState(false);
+        realtimeTimerRef.current = null;
+        scheduledReason = null;
+        logPosSync(`scheduleBackgroundSync fire reason=${reason} loadId=${activeLoadId ?? '-'}`);
+        void loadState(false, reason, event);
       }, 12);
-    }, handleRealtimeEvent);
+    };
+
+    const unsubscribe = subscribeToPosRealtime(() => scheduleBackgroundSync(latestRealtimeReason, latestRealtimeEvent), handleRealtimeEvent);
 
     const handleVisibilitySync = () => {
+      logPosSync(`visibilitychange reason=visibility state=${document.visibilityState}`);
       if (document.visibilityState === 'visible' && !shouldSuppressBackgroundSync()) {
-        void loadState(false);
+        scheduleBackgroundSync('visibility');
+      } else {
+        logPosSync('visibilitychange skipped reason=visibility blocked=hidden-or-suppressed');
       }
     };
 
     const handleWindowFocus = () => {
-      if (shouldSuppressBackgroundSync()) {
+      logPosSync(`focus reason=focus state=${document.visibilityState}`);
+      if (document.visibilityState !== 'visible' || shouldSuppressBackgroundSync()) {
+        logPosSync('focus skipped reason=focus blocked=hidden-or-suppressed');
         return;
       }
 
-      void loadState(false);
+      scheduleBackgroundSync('focus');
     };
 
     document.addEventListener('visibilitychange', handleVisibilitySync);
     window.addEventListener('focus', handleWindowFocus);
 
     return () => {
+      logPosSync(`effect cleanup reason=unmount loadId=${activeLoadId ?? '-'} pending=${pendingLoad != null}`);
       isMounted = false;
+      loadStateRef.current = async () => {};
       if (realtimeTimerRef.current != null) {
         window.clearTimeout(realtimeTimerRef.current);
+        realtimeTimerRef.current = null;
       }
       if (trailingSyncTimerRef.current != null) {
         window.clearTimeout(trailingSyncTimerRef.current);
+        trailingSyncTimerRef.current = null;
       }
       document.removeEventListener('visibilitychange', handleVisibilitySync);
       window.removeEventListener('focus', handleWindowFocus);
@@ -510,20 +635,18 @@ export function AdminPosView() {
     }
 
     const intervalId = window.setInterval(() => {
+      logPosSync(`polling tick reason=polling:${activeTab} interval=${intervalMs}ms state=${document.visibilityState}`);
       if (shouldSuppressBackgroundSync()) {
+        logPosSync(`polling skipped reason=polling:${activeTab} blocked=suppressed`);
         return;
       }
 
       if (document.visibilityState !== 'visible') {
-        const now = Date.now();
-        if (now - hiddenSyncTimestampRef.current < 15_000) {
-          return;
-        }
-
-        hiddenSyncTimestampRef.current = now;
+        logPosSync(`polling skipped reason=polling:${activeTab} blocked=hidden`);
+        return;
       }
 
-      void loadStateRef.current(false);
+      void loadStateRef.current(false, `polling:${activeTab}`);
     }, intervalMs);
 
     return () => window.clearInterval(intervalId);
@@ -3535,7 +3658,75 @@ interface RealtimeSignal {
   tone: RealtimeSignalTone;
 }
 
+function getRealtimeItemInsert(state: PosState, event: PosRealtimeEvent) {
+  const item = mapPosRealtimeOrderItem(event.newRecord);
+  if (!item) {
+    return null;
+  }
+  const order = state.openOrders.find((order) => order.id === item.orderId);
+  const table = state.tables.find((table) => table.id === order?.tableId && table.activeOrder?.id === order?.id);
+  const existingItem = findRealtimeOrderItem(state, item.id);
+  if (!order || !table || (existingItem && existingItem.orderId !== item.orderId)) {
+    return null;
+  }
+  return { item, order, table };
+}
+
+function mergeRealtimeItemInsert(state: PosState, event: PosRealtimeEvent) {
+  const insert = getRealtimeItemInsert(state, event);
+  if (!insert || findRealtimeOrderItem(state, insert.item.id)) {
+    return state;
+  }
+  const { item, order, table } = insert;
+  const items = [...order.items, item];
+  const summary = buildOrderSummaryForUi(items, order.payments);
+  const updatedOrder = { ...order, items, summary, financialStatus: deriveOrderFinancialStatusForUi(items, summary) };
+  const updatedTable = { ...table, activeOrder: updatedOrder };
+  const queues = buildPendingPreparationListsFromTables([updatedTable]);
+  const mergeQueue = (current: PosOrderItem[], incoming: PosOrderItem[]) =>
+    [...current.filter((item) => item.orderId !== order.id), ...incoming]
+      .sort((left, right) => resolvePreparationQueueTimestampForUi(left).localeCompare(resolvePreparationQueueTimestampForUi(right)));
+  return {
+    ...state,
+    generatedAt: new Date().toISOString(),
+    tables: state.tables.map((entry) => entry.id === table.id ? updatedTable : entry),
+    openOrders: state.openOrders.map((entry) => entry.id === order.id ? updatedOrder : entry),
+    pendingPreparationKitchen: mergeQueue(state.pendingPreparationKitchen, queues.pendingPreparationKitchen),
+    pendingPreparationBar: mergeQueue(state.pendingPreparationBar, queues.pendingPreparationBar),
+  };
+}
+
+function stillRequiresPendingRealtimeReload(event: PosRealtimeEvent, state: PosState) {
+  if (event.eventType === 'DELETE') {
+    return true;
+  }
+  if (event.table === 'pos_order_items') {
+    const item = mapPosRealtimeOrderItem(event.newRecord);
+    const existingItem = item ? findRealtimeOrderItem(state, item.id) : null;
+    return !item || !existingItem || existingItem.orderId !== item.orderId || !getRealtimeItemInsert(state, event);
+  }
+  if (event.table === 'pos_orders' && event.newRecord) {
+    const record = event.newRecord;
+    const order = state.openOrders.find((order) => order.id === record.id);
+    const table = state.tables.find((table) => table.id === record.table_id);
+    const sessionExists = state.recentSalesSessions.some((session) => session.id === record.sales_session_id);
+    return !order || !table || table.activeOrder?.id !== order.id || order.tableId !== table.id ||
+      !sessionExists || order.salesSessionId !== record.sales_session_id;
+  }
+  return true;
+}
+
 function applyRealtimeEventToPosState(state: PosState, event: PosRealtimeEvent) {
+  if (event.table === 'pos_order_status_logs' && event.eventType === 'INSERT') {
+    const log = mapPosRealtimeLog(event.newRecord);
+    if (!log || state.logs.some((entry) => entry.id === log.id)) {
+      return state;
+    }
+    return { ...state, logs: [...state.logs, log].sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt)).slice(0, 15) };
+  }
+  if (event.table === 'pos_order_items' && event.eventType === 'INSERT') {
+    return mergeRealtimeItemInsert(state, event);
+  }
   if (event.table === 'pos_tables' && event.newRecord) {
     const record = event.newRecord;
     const tableId = asString(record.id);
@@ -3735,6 +3926,9 @@ function shouldReloadAfterRealtimeEvent(event: PosRealtimeEvent, state: PosState
   }
 
   if (event.table === 'pos_order_items') {
+    if (event.eventType === 'INSERT') {
+      return !getRealtimeItemInsert(state, event);
+    }
     const itemId = asString(event.newRecord?.id ?? event.oldRecord?.id);
     return !itemId || !findRealtimeOrderItem(state, itemId);
   }
@@ -5087,11 +5281,9 @@ function getPosFallbackSyncInterval(tab: WorkspaceTab) {
   switch (tab) {
     case 'kitchen':
     case 'bar':
-      return 15000;
     case 'cashier':
-      return 20000;
     case 'floor':
-      return 30000;
+      return 300000;
     default:
       return 0;
   }

@@ -1,4 +1,4 @@
-import type { RealtimeChannel, RealtimePostgresChangesPayload } from '@supabase/supabase-js';
+import type { RealtimeChannel, RealtimePostgresChangesPayload, REALTIME_SUBSCRIBE_STATES } from '@supabase/supabase-js';
 import type {
   AddCustomOrderItemInput,
   AddOrderItemInput,
@@ -30,6 +30,14 @@ import type {
 } from '../../shared/operations/operations.types';
 import { getSupabaseClient } from './client';
 import type { Database } from './database.types';
+
+export const POS_SYNC_DEBUG = false;
+
+function logPosSync(message: string) {
+  if (POS_SYNC_DEBUG) {
+    console.debug(`[POS SYNC] ${message} ts=${Date.now()}`);
+  }
+}
 
 type MenuItemPublicRow = Database['public']['Views']['menu_items_public']['Row'];
 type PosTableRow = Database['public']['Tables']['pos_tables']['Row'];
@@ -134,7 +142,7 @@ export async function loadPosStateFromSupabase(options: LoadPosStateOptions = {}
   const [tables, logs, salesSessions, operationalFlowSettings] = await Promise.all([
     supabase.from('pos_tables').select('*').order('code', { ascending: true }),
     shouldIncludeLogs
-      ? supabase.from('pos_order_status_logs').select('*').order('created_at', { ascending: false }).limit(120)
+      ? supabase.from('pos_order_status_logs').select('*').order('created_at', { ascending: false }).limit(options.includeHistoricalRows ? 120 : 15)
       : Promise.resolve({ data: [] as PosLogRow[], error: null }),
     supabase.from('pos_sales_sessions').select('*').order('opened_at', { ascending: false }).limit(10),
     loadPosOperationalFlowSettingsRows(),
@@ -282,6 +290,10 @@ export async function updatePosOperationalFlowSettingsInSupabase(input: UpdatePo
     notes: `Configuracion operativa actualizada para ${input.area === 'bar' ? 'bar' : 'cocina'}`,
   });
 
+  return mapPosOperationalFlowSettingsRows(await loadPosOperationalFlowSettingsRows());
+}
+
+export async function loadPosOperationalFlowSettingsFromSupabase(): Promise<PosOperationalFlowSettings> {
   return mapPosOperationalFlowSettingsRows(await loadPosOperationalFlowSettingsRows());
 }
 
@@ -1565,6 +1577,36 @@ export async function loadSalesSessionHistoryFromSupabase(): Promise<PosSalesSes
     loadAllPosPaymentRows(),
     loadAllPosOrderItemRows(),
   ]);
+  return buildSalesSessionHistory(sessions, allOrders, allPayments, allItems);
+}
+
+export async function loadSalesSessionHistoryViewFromSupabase() {
+  const supabase = getSupabaseClient();
+  const [sessions, allOrders, allPayments, allItems, tables] = await Promise.all([
+    loadAllPosSalesSessionRows(),
+    loadAllPosOrdersRows(),
+    loadAllPosPaymentRows(),
+    loadAllPosOrderItemRows(),
+    supabase.from('pos_tables').select('*').order('code', { ascending: true }),
+  ]);
+  throwIfError(tables.error, 'No fue posible leer las mesas POS');
+  const ordersWithRelations = buildOrdersWithRelations(allOrders, allItems, allPayments);
+
+  return {
+    history: buildSalesSessionHistory(sessions, allOrders, allPayments, allItems),
+    closedSales: ordersWithRelations
+      .filter((order) => order.closedAt != null)
+      .sort((left, right) => (right.closedAt ?? right.updatedAt).localeCompare(left.closedAt ?? left.updatedAt)),
+    tables: buildTablesWithOrders(tables.data ?? [], ordersWithRelations),
+  };
+}
+
+function buildSalesSessionHistory(
+  sessions: PosSalesSessionRow[],
+  allOrders: PosOrderRow[],
+  allPayments: PosPaymentRow[],
+  allItems: PosOrderItemRow[],
+): PosSalesSessionHistoryEntry[] {
   const orders = allOrders.filter((order) => order.sales_session_id != null);
   const payments = allPayments.filter((payment) => payment.sales_session_id != null);
   const orderIds = new Set(orders.map((order) => order.id));
@@ -1726,12 +1768,23 @@ export async function updatePosPaymentStatusInSupabase(
   return mapPosPaymentRow(data);
 }
 
-export function subscribeToPosRealtime(onChange: () => void, onEvent?: (event: PosRealtimeEvent) => boolean | void) {
+export function subscribeToPosRealtime(
+  onChange: () => void,
+  onEvent?: (event: PosRealtimeEvent) => boolean | void,
+  onStatusChange?: (status: REALTIME_SUBSCRIBE_STATES) => void,
+) {
   const supabase = getSupabaseClient();
   const channel: RealtimeChannel = supabase.channel('zafiro-pos-live');
+  let isActive = true;
   const buildHandler =
     (table: PosRealtimeTable) =>
     (payload: RealtimePostgresChangesPayload<Record<string, unknown>>) => {
+      const eventId = (payload.new as Record<string, unknown>)?.id ?? (payload.old as Record<string, unknown>)?.id ?? '-';
+      logPosSync(`realtime received table=${table} event=${payload.eventType} id=${eventId}`);
+      if (!isActive) {
+        logPosSync(`realtime ignored reason=inactive table=${table} event=${payload.eventType} id=${eventId}`);
+        return;
+      }
       const shouldReload = onEvent?.({
         eventType: payload.eventType,
         newRecord: payload.new ?? null,
@@ -1739,7 +1792,9 @@ export function subscribeToPosRealtime(onChange: () => void, onEvent?: (event: P
         table,
       });
 
+      logPosSync(`realtime table=${table} event=${payload.eventType} id=${eventId} reload=${shouldReload ?? 'default'}`);
       if (shouldReload !== false) {
+        logPosSync(`onChange reason=realtime:${table}:${payload.eventType} id=${eventId}`);
         onChange();
       }
     };
@@ -1752,9 +1807,38 @@ export function subscribeToPosRealtime(onChange: () => void, onEvent?: (event: P
     .on('postgres_changes', { event: '*', schema: 'public', table: 'pos_sales_sessions' }, buildHandler('pos_sales_sessions'))
     .on('postgres_changes', { event: '*', schema: 'public', table: 'pos_order_status_logs' }, buildHandler('pos_order_status_logs'))
     .on('postgres_changes', { event: '*', schema: 'public', table: 'pos_operational_flow_settings' }, buildHandler('pos_operational_flow_settings'))
+    .subscribe((status) => {
+      if (isActive) {
+        onStatusChange?.(status);
+      }
+    });
+
+  return () => {
+    if (!isActive) {
+      return;
+    }
+    isActive = false;
+    void supabase.removeChannel(channel);
+  };
+}
+
+export function subscribeToPosOperationalSettingsRealtime(onChange: () => void) {
+  const supabase = getSupabaseClient();
+  const channel = supabase.channel('zafiro-pos-operational-settings-live');
+  let isActive = true;
+  channel
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'pos_operational_flow_settings' }, () => {
+      if (isActive) {
+        onChange();
+      }
+    })
     .subscribe();
 
   return () => {
+    if (!isActive) {
+      return;
+    }
+    isActive = false;
     void supabase.removeChannel(channel);
   };
 }
@@ -2650,6 +2734,50 @@ function buildSalesSessionSummary(orders: PosOrderWithRelations[], payments: Pos
     products: Array.from(productsByName.values()).sort((left, right) => right.quantity - left.quantity || right.totalAmount - left.totalAmount),
     totalCollected,
   };
+}
+
+export function mapPosRealtimeOrderItem(record: Record<string, unknown> | null): PosOrderItem | null {
+  if (!record) {
+    return null;
+  }
+  const requiredStrings = ['id', 'order_id', 'product_name', 'product_slug', 'created_by_email'];
+  const nullableStrings = [
+    'menu_item_source_key', 'replacement_for_item_id', 'updated_by_email', 'picking_up_by_email',
+    'delivered_by_email', 'cancelled_by_email', 'cancellation_reason',
+  ];
+  const nullableDates = ['sent_at', 'preparation_started_at', 'ready_at', 'picking_up_at', 'delivered_at', 'cancelled_at'];
+  const isDate = (value: unknown) => typeof value === 'string' && Number.isFinite(Date.parse(value));
+  const isMoney = (value: unknown) =>
+    (typeof value === 'number' || (typeof value === 'string' && value.trim() !== '')) &&
+    Number.isFinite(Number(value)) && Number(value) >= 0;
+
+  if (
+    !requiredStrings.every((key) => typeof record[key] === 'string' && (record[key] as string).trim() !== '') ||
+    !nullableStrings.every((key) => record[key] === null || typeof record[key] === 'string') ||
+    !nullableDates.every((key) => record[key] === null || isDate(record[key])) ||
+    !isDate(record.created_at) || !isDate(record.updated_at) || typeof record.notes !== 'string' ||
+    typeof record.quantity !== 'number' || !Number.isInteger(record.quantity) || record.quantity <= 0 ||
+    typeof record.service_round !== 'number' || !Number.isInteger(record.service_round) || record.service_round <= 0 ||
+    !isMoney(record.unit_price) || !isMoney(record.total_price) ||
+    !['kitchen', 'bar'].includes(record.prep_area as string) ||
+    !['draft', 'sent', 'pending_preparation', 'in_process', 'ready', 'picking_up', 'delivered', 'cancelled'].includes(record.operational_status as string) ||
+    !['pending_payment', 'partially_paid', 'paid_total', 'cancelled'].includes(record.financial_status as string)
+  ) {
+    return null;
+  }
+  return mapPosOrderItemRow(record as unknown as PosOrderItemRow);
+}
+
+export function mapPosRealtimeLog(record: Record<string, unknown> | null): PosOrderStatusLog | null {
+  if (!record ||
+    !['id', 'event_type', 'actor_email'].every((key) => typeof record[key] === 'string' && (record[key] as string).trim() !== '') ||
+    typeof record.created_at !== 'string' || !Number.isFinite(Date.parse(record.created_at)) ||
+    !['order_id', 'order_item_id', 'table_id', 'actor_role', 'notes'].every((key) => record[key] === null || typeof record[key] === 'string') ||
+    !['before_data', 'after_data'].every((key) => record[key] === null || (typeof record[key] === 'object' && record[key] != null))
+  ) {
+    return null;
+  }
+  return mapPosLogRow(record as unknown as PosLogRow);
 }
 
 function mapPosOrderItemRow(row: PosOrderItemRow): PosOrderItem {

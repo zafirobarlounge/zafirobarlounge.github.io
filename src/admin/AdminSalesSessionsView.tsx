@@ -7,8 +7,7 @@ import {
   cancelClosedPaidOrderInSupabase,
   createManualSalesSessionInSupabase,
   deleteSalesSessionFromSupabase,
-  loadPosStateFromSupabase,
-  loadSalesSessionHistoryFromSupabase,
+  loadSalesSessionHistoryViewFromSupabase,
   reassignOrderSalesSessionInSupabase,
   updateSalesSessionWindowInSupabase,
   type PosActorContext,
@@ -78,6 +77,8 @@ export function AdminSalesSessionsView() {
   const [sessionWindowErrorMessage, setSessionWindowErrorMessage] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const sessionHeaderRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const isMountedRef = useRef(false);
+  const loadRequestIdRef = useRef(0);
 
   const closedSessions = useMemo(() => sessions.filter((session) => session.status === 'closed'), [sessions]);
   const openSessions = useMemo(() => sessions.filter((session) => session.status === 'open'), [sessions]);
@@ -119,16 +120,20 @@ export function AdminSalesSessionsView() {
   const comparisonLabel = useMemo(() => (comparisonPeriod ? formatDateRangeLabel(comparisonPeriod.startDate, comparisonPeriod.endDate) : null), [comparisonPeriod]);
 
   const loadSessions = async () => {
+    if (!isMountedRef.current) {
+      return;
+    }
+    const requestId = ++loadRequestIdRef.current;
     setErrorMessage(null);
     setIsLoading(true);
     try {
-      const [history, posState] = await Promise.all([
-        loadSalesSessionHistoryFromSupabase(),
-        loadPosStateFromSupabase({ includeHistoricalRows: true }),
-      ]);
+      const { history, closedSales, tables } = await loadSalesSessionHistoryViewFromSupabase();
+      if (!isMountedRef.current || requestId !== loadRequestIdRef.current) {
+        return;
+      }
       setSessions(history);
-      setClosedSales(posState.closedSales);
-      setTables(posState.tables);
+      setClosedSales(closedSales);
+      setTables(tables);
       setExpandedSessionId((current) => {
         if (current && history.some((session) => session.id === current)) {
           return current;
@@ -137,19 +142,28 @@ export function AdminSalesSessionsView() {
         return history.find((session) => session.status === 'closed')?.id ?? history[0]?.id ?? null;
       });
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'No fue posible cargar las jornadas.');
+      if (isMountedRef.current && requestId === loadRequestIdRef.current) {
+        setErrorMessage(error instanceof Error ? error.message : 'No fue posible cargar las jornadas.');
+      }
     } finally {
-      setIsLoading(false);
+      if (isMountedRef.current && requestId === loadRequestIdRef.current) {
+        setIsLoading(false);
+      }
     }
   };
 
   useEffect(() => {
+    isMountedRef.current = true;
     if (!isCatalogAdmin) {
       setIsLoading(false);
-      return;
+    } else {
+      void loadSessions();
     }
 
-    void loadSessions();
+    return () => {
+      isMountedRef.current = false;
+      loadRequestIdRef.current++;
+    };
   }, [isCatalogAdmin]);
 
   useEffect(() => {
