@@ -155,7 +155,7 @@ export function AdminLayout({ children }: AdminLayoutProps) {
         </div>
       </header>
 
-      <main className="mx-auto max-w-7xl px-4 py-7 sm:px-6 sm:py-16 lg:px-8 xl:max-w-[90rem] 2xl:px-10">{children}</main>
+      <main className="mx-auto max-w-7xl px-4 pb-7 pt-6 sm:px-6 sm:pb-16 lg:px-8 xl:max-w-[90rem] 2xl:px-10">{children}</main>
     </div>
   );
 }
