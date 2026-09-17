@@ -3459,17 +3459,15 @@ export function AdminPosView() {
                 </div>
 
                 <div className="rounded-[1.2rem] border border-white/8 bg-white/[0.02] p-4">
-                  <details className="group">
-                    <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
+                  <details className="group/products">
+                    <summary className="flex cursor-pointer list-none items-center justify-between gap-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyanGlow/24 [&::-webkit-details-marker]:hidden">
                       <div>
-                        <p className="text-[0.68rem] uppercase tracking-[0.22em] text-cyanGlow/75">Productos vendidos en la jornada actual</p>
+                        <p className="text-[0.68rem] uppercase tracking-[0.22em] text-cyanGlow/75">Productos vendidos en la jornada actual ({activeSalesSessionSummary.products.length})</p>
                         <p className="mt-2 text-sm text-mist">
-                          {activeSalesSessionSummary.products.length
-                            ? `${activeSalesSessionSummary.products.length} producto(s) agrupado(s) en esta jornada`
-                            : 'Todavia no hay productos vendidos resumidos en esta jornada activa.'}
+                          {activeSalesSessionSummary.products.length} producto(s) agrupado(s) en esta jornada
                         </p>
                       </div>
-                      <span className="text-[0.68rem] uppercase tracking-[0.18em] text-mist transition group-open:text-cyanGlow">Ver detalle</span>
+                      <ChevronDown size={18} aria-hidden="true" className="shrink-0 text-cyanGlow/75 transition-transform group-open/products:rotate-180" />
                     </summary>
                     <SalesSessionProductsSummary
                       products={activeSalesSessionSummary.products ?? []}
