@@ -2329,15 +2329,15 @@ export function AdminPosView() {
     <AdminLayout>
       <section className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
         <div className="max-w-3xl">
-          <p className="text-[0.72rem] uppercase tracking-[0.28em] text-cyanGlow/80">POS operativo</p>
-          <p className="mt-3 hidden max-w-2xl text-[0.98rem] leading-7 text-mist sm:block sm:mt-5 sm:text-lg sm:leading-8">
+          <h1 className="text-[0.72rem] font-normal uppercase tracking-[0.28em] text-cyanGlow/80">POS operativo</h1>
+          <p hidden>
             Opera cuentas por mesa, controla preparacion y registra cobros con trazabilidad del turno.
           </p>
         </div>
 
       </section>
 
-      <nav aria-label="Areas del POS" className="sticky top-[var(--admin-header-height,0px)] z-30 mt-4 flex flex-wrap gap-2 border-b border-white/10 bg-obsidian px-1 py-3 shadow-[0_8px_18px_rgba(0,0,0,0.18)]">
+      <nav aria-label="Areas del POS" className="sticky top-[var(--admin-header-height,0px)] z-30 mt-1 flex flex-wrap gap-2 border-b border-white/10 bg-obsidian px-1 py-2 shadow-[0_8px_18px_rgba(0,0,0,0.18)]">
           {workspaceTabs.map((tab) => (
             <button
               key={tab}
