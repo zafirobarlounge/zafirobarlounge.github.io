@@ -119,6 +119,70 @@ test("PostgreSQL aislado: finanzas, transiciones, RLS, protección histórica y 
     sql(`insert into public.staff_profiles(email,full_name) values ('cashier@test.invalid','Caja'),('waiter@test.invalid','Mesero'),('kitchen@test.invalid','Cocina'),('bar@test.invalid','Bar');
       insert into public.staff_role_assignments(email,role) values ('cashier@test.invalid','cashier'),('waiter@test.invalid','waiter'),('kitchen@test.invalid','kitchen'),('bar@test.invalid','bar');
       insert into public.admin_users(email) values ('admin@test.invalid');`);
+    const existing26 = randomUUID();
+    sql(
+      `insert into public.pos_sales_sessions(id,session_label,business_date,opened_at,opened_by_email) values('${existing26}','Jornada 2026-09-26','2026-09-26','2026-09-26T23:00:00-05:00','legacy@test.invalid');`,
+    );
+    const beforeIncrement = sql(
+      "select jsonb_agg(s order by id) from public.pos_sales_sessions s;",
+    );
+    sql(
+      readFileSync(
+        "supabase/migrations/202609270002_sales_business_date.sql",
+        "utf8",
+      ),
+    );
+    await t.test(
+      "incremental conserva todos los registros, incluida la jornada abierta del 26 con corte 18",
+      () => {
+        assert.equal(
+          sql(
+            "select jsonb_agg(s order by id) from public.pos_sales_sessions s;",
+          ),
+          beforeIncrement,
+        );
+        const reused = JSON.parse(
+          sql(
+            login("waiter@test.invalid") +
+              "select public.pos_cash_ensure_session();",
+          ),
+        );
+        assert.equal(reused.id, existing26);
+        assert.equal(reused.business_date, "2026-09-26");
+        assert.equal(reused.cutoff_hour, 18);
+      },
+    );
+    await t.test(
+      "regla SQL Bogotá a las 11, 16, 17, 01, 05:59 y 06:00 y validación manual",
+      () => {
+        for (const [instant, day] of [
+          ["2026-09-27 11:00", "2026-09-27"],
+          ["2026-09-27 16:00", "2026-09-27"],
+          ["2026-09-27 17:00", "2026-09-27"],
+          ["2026-09-28 01:00", "2026-09-27"],
+          ["2026-09-28 05:59", "2026-09-27"],
+          ["2026-09-28 06:00", "2026-09-28"],
+        ])
+          assert.equal(
+            sql(
+              `select public.pos_sales_business_date('${instant}-05'::timestamptz);`,
+            ),
+            day,
+          );
+        for (const day of ["2026-09-27", "2026-09-28"])
+          assert.equal(
+            sql(
+              `select public.pos_validate_operational_date('${day}','2026-09-28 01:00-05');`,
+            ),
+            day,
+          );
+        for (const day of ["2026-09-26", "2026-09-29"])
+          fails(
+            `select public.pos_validate_operational_date('${day}','2026-09-28 01:00-05');`,
+            "hoy o ayer",
+          );
+      },
+    );
     await t.test(
       "migración conserva jornada histórica sin inventar arqueo",
       () => {
@@ -358,10 +422,109 @@ test("PostgreSQL aislado: finanzas, transiciones, RLS, protección histórica y 
       },
     );
     await t.test(
-      "base cero, movimiento concurrente idempotente y gasto sin jornada",
+      "apertura manual hoy/ayer y rechazo fuera de alcance mediante RPC",
+      () => {
+        const today = sql(
+          "select (now() at time zone 'America/Bogota')::date;",
+        );
+        const yesterday = sql(
+          "select (now() at time zone 'America/Bogota')::date - 1;",
+        );
+        for (const day of [today, yesterday]) {
+          const output = sql(
+            login() +
+              "begin;" +
+              rpc({ action: "open", amount: 0, business_date: day }).replace(
+                "pos_cash_command",
+                "pos_cash_open",
+              ) +
+              "select business_date,cutoff_hour from public.pos_sales_sessions where status='open';rollback;",
+          ).split("\n");
+          const result = JSON.parse(output[0]);
+          assert.ok(result.sales_session_id);
+          assert.equal(output[1], day + "|6");
+        }
+        for (const date of ["2020-01-01", "2099-01-01"])
+          fails(
+            login() + rpc({ action: "open", amount: 0, business_date: date }),
+            "hoy o ayer",
+          );
+        fails(
+          login() +
+            "insert into public.pos_sales_sessions(session_label,business_date,opened_by_email) values('Inválida','2020-01-01','cashier@test.invalid');",
+          "hoy o ayer",
+        );
+        assert.equal(
+          sql(
+            "select count(*) from public.pos_sales_sessions where status='open';",
+          ),
+          "0",
+        );
+      },
+    );
+    await t.test(
+      "primeros pedidos simultáneos crean una sola jornada sin base; cobros y base conservan fecha",
       async () => {
+        const firstOrder = () =>
+          parallel(
+            login("waiter@test.invalid") +
+              `with s as (select public.pos_cash_ensure_session() as row) insert into public.pos_orders(sales_session_id,opened_by_email,closed_at) select (row->>'id')::uuid,'waiter@test.invalid',now() from s returning sales_session_id;`,
+          );
+        const ids = await Promise.all([firstOrder(), firstOrder()]);
+        assert.equal(ids[0], ids[1]);
+        sid = ids[0];
+        assert.equal(
+          sql(
+            `select count(*) from public.pos_cash_registers where sales_session_id='${sid}';`,
+          ),
+          "0",
+        );
+        const sessionBefore = sql(
+          `select row_to_json(s) from public.pos_sales_sessions s where id='${sid}';`,
+        );
+        assert.equal(JSON.parse(sessionBefore).cutoff_hour, 6);
+        assert.equal(
+          JSON.parse(sessionBefore).business_date,
+          sql("select public.pos_sales_business_date();"),
+        );
+        sql(
+          `insert into public.pos_payments(order_id,sales_session_id,method,status,allocation_mode,amount_applied,created_by_email) select id,'${sid}','cash','confirmed','amount',40000,'cashier@test.invalid' from public.pos_orders where sales_session_id='${sid}' limit 1;`,
+        );
+        fails(login() + rpc(movement()), "base inicial");
+        fails(
+          login() +
+            rpc({
+              action: "close",
+              session: sid,
+              amount: 40000,
+              expected: 40000,
+            }),
+          "base inicial",
+        );
+        fails(
+          login() +
+            rpc({
+              action: "open",
+              session: sid,
+              amount: 0,
+              business_date: "2020-01-01",
+            }),
+          "no se puede cambiar",
+        );
         const opened = command({ action: "open", amount: 0 });
         sid = opened.sales_session_id;
+        assert.equal(
+          sql(
+            `select row_to_json(s) from public.pos_sales_sessions s where id='${sid}';`,
+          ),
+          sessionBefore,
+        );
+        assert.equal(
+          sql(
+            `select sum(amount_applied) from public.pos_payments where sales_session_id='${sid}';`,
+          ),
+          "40000",
+        );
         const id = randomUUID(),
           payload = movement({ amount: 10 });
         const results = await Promise.all([
@@ -409,8 +572,8 @@ test("PostgreSQL aislado: finanzas, transiciones, RLS, protección histórica y 
         command({
           action: "close",
           session: sid,
-          amount: 0,
-          expected: -10,
+          amount: 39990,
+          expected: 39990,
           reason: "Caja de prueba sin fondos",
         });
         const auto = JSON.parse(

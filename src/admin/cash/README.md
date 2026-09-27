@@ -2,6 +2,8 @@
 
 Ruta: `/admin/cash`, enlazada desde el panel, la cabecera y el control de jornada del POS.
 
+Actualización de fecha comercial: consultar [migración incremental y prueba en QA](../../../supabase/migrations/202609270002_sales_business_date.md). El corte para jornadas operativas nuevas es a las 06:00 en Bogotá. Este frontend requiere aplicar primero `202609270002_sales_business_date.sql` para la apertura manual; no se debe repetir la migración inicial ya aplicada.
+
 ## Habilitación pendiente
 
 No se ejecutó SQL ni se consultaron datos de producción. La rama no debe desplegarse antes de revisar y aplicar su migración. No ejecutar `pos-schema.sql`, seeds, recuperación ni resets sobre una instalación existente para habilitar este módulo.

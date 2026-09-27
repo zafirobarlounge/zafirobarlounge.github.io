@@ -391,6 +391,7 @@ export interface Database {
       };
     };
     Functions: {
+      pos_cash_open: { Args: { request_id: string; payload: Record<string, unknown> }; Returns: Record<string, unknown> };
       pos_cash_ensure_session: { Args: Record<PropertyKey, never>; Returns: Record<string, unknown> };
       pos_cash_read: { Args: Record<PropertyKey, never>; Returns: Record<string, unknown> };
       pos_cash_command: { Args: { request_id: string; payload: Record<string, unknown> }; Returns: Record<string, unknown> };

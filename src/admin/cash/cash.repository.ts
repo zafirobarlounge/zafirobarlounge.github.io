@@ -13,13 +13,23 @@ export async function saveCash(
   requestId: string,
   payload: Record<string, unknown>,
 ) {
-  const { data, error } = await getSupabaseClient().rpc("pos_cash_command", {
-    request_id: requestId,
-    payload,
-  });
+  const { data, error } = await getSupabaseClient().rpc(
+    payload.action === "open" ? "pos_cash_open" : "pos_cash_command",
+    {
+      request_id: requestId,
+      payload,
+    },
+  );
   if (error)
-    throw Object.assign(new Error(error.message), {
-      confirmedRejection: Boolean(error.code),
-    });
+    throw Object.assign(
+      new Error(
+        error.code === "PGRST202" && payload.action === "open"
+          ? "QA requiere aplicar primero la migración 202609270002_sales_business_date.sql para abrir o completar caja."
+          : error.message,
+      ),
+      {
+        confirmedRejection: Boolean(error.code),
+      },
+    );
   return data;
 }

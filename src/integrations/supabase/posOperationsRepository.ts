@@ -118,7 +118,6 @@ const DRAFT_EDITABLE_STATUSES = new Set<OrderOperationalStatus>(['draft']);
 const CONTROLLED_CANCEL_STATUSES = new Set<OrderOperationalStatus>(['draft', 'sent', 'pending_preparation']);
 const KITCHEN_PRODUCT_TYPES = new Set(['comida']);
 const BAR_PRODUCT_TYPES = new Set(['cocteles', 'micheladas', 'jugos-y-limonadas', 'bebidas']);
-const SALES_SESSION_CUTOFF_HOUR = 18;
 
 type PosRealtimeTable =
   | 'pos_tables'
@@ -2931,30 +2930,6 @@ function parseSalesSessionSummary(value: Record<string, unknown> | null): PosSal
   }
 
   return value as unknown as PosSalesSessionSummary;
-}
-
-function deriveSalesBusinessDate(isoDateTime: string, cutoffHour: number) {
-  const formatter = new Intl.DateTimeFormat('en-CA', {
-    day: '2-digit',
-    hour: '2-digit',
-    hour12: false,
-    month: '2-digit',
-    timeZone: 'America/Bogota',
-    year: 'numeric',
-  });
-  const parts = formatter.formatToParts(new Date(isoDateTime));
-  const pick = (type: string) => parts.find((entry) => entry.type === type)?.value ?? '00';
-  const year = Number(pick('year'));
-  const month = Number(pick('month'));
-  const day = Number(pick('day'));
-  const hour = Number(pick('hour'));
-
-  const localDate = new Date(Date.UTC(year, month - 1, day));
-  if (hour < cutoffHour) {
-    localDate.setUTCDate(localDate.getUTCDate() - 1);
-  }
-
-  return localDate.toISOString().slice(0, 10);
 }
 
 function throwIfError(error: { message: string } | null, fallbackMessage: string): asserts error is null {

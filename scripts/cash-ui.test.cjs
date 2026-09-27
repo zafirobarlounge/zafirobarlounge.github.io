@@ -14,6 +14,11 @@ const compile = (file) =>
   }).outputText;
 const domain = { exports: {}, Intl, Date };
 vm.runInNewContext(compile("src/admin/cash/cash.domain.ts"), domain);
+const businessDates = { exports: {}, Intl, Date };
+vm.runInNewContext(
+  compile("src/shared/operations/salesBusinessDate.ts"),
+  businessDates,
+);
 const fixture = () => ({
   sessions: [
     {
@@ -42,6 +47,64 @@ const fixture = () => ({
   movements: [],
 });
 const settle = () => new Promise((resolve) => setImmediate(resolve));
+test("apertura ofrece hoy/ayer y completar base no envía una fecha distinta", async () => {
+  const saved = [];
+  const h = harness({
+    data: { sessions: [], registers: [], movements: [] },
+    save: async (_, p) => {
+      saved.push(p);
+      return { sales_session_id: "new" };
+    },
+  });
+  h.render();
+  await settle();
+  let tree = h.render();
+  const form = nodes(tree, "form").find((f) =>
+    text(f).includes("Abrir jornada y caja"),
+  );
+  const date = nodes(form, "select").find(
+    (n) => n.props.name === "business_date",
+  );
+  const options = businessDates.exports.salesDayOptions();
+  assert.equal(date.props.defaultValue, options.suggested);
+  assert.deepEqual(
+    nodes(date, "option").map((n) => n.props.value),
+    [options.today, options.yesterday],
+  );
+  submit(form, {
+    amount: "100000",
+    business_date: options.yesterday,
+    notes: "",
+  });
+  await settle();
+  assert.equal(saved[0].business_date, options.yesterday);
+  const data = fixture();
+  data.registers = [];
+  const complete = harness({
+    data,
+    save: async (_, p) => {
+      saved.push(p);
+      return {};
+    },
+  });
+  complete.render();
+  await settle();
+  tree = complete.render();
+  const base = nodes(tree, "form").find((f) =>
+    text(f).includes("Completar base de la jornada activa"),
+  );
+  assert.match(
+    text(base),
+    /Ingresa el efectivo que había al inicio de la jornada, sin incluir las ventas cobradas después/,
+  );
+  assert.ok(
+    !nodes(base, "select").some((n) => n.props.name === "business_date"),
+  );
+  submit(base, { amount: "100000", notes: "" });
+  await settle();
+  assert.equal(saved[1].business_date, undefined);
+  assert.equal(saved[1].session, "session");
+});
 function harness({
   role = "cashier",
   storage = new Map(),
@@ -93,6 +156,7 @@ function harness({
       }
     },
     require(name) {
+      if (name.includes("salesBusinessDate")) return businessDates.exports;
       if (name === "react") return hooks;
       if (name === "react/jsx-runtime")
         return { jsx, jsxs: jsx, Fragment: "fragment" };

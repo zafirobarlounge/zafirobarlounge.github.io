@@ -23,6 +23,7 @@ import {
   type Movement,
 } from "./cash.domain";
 import { loadCash, saveCash } from "./cash.repository";
+import { salesDayOptions } from "../../shared/operations/salesBusinessDate";
 
 const input =
   "w-full rounded-xl border border-white/20 bg-obsidian p-3 text-ivory";
@@ -82,6 +83,7 @@ export function AdminCashView() {
   const [kind, setKind] = useState<Movement["kind"]>("expense");
   const [origin, setOrigin] = useState<Movement["origin"]>("register");
   const [counted, setCounted] = useState("");
+  const dayOptions = salesDayOptions();
   const [voiding, setVoiding] = useState<Movement | null>(null);
   const [filters, setFilters] = useState({
     start: "",
@@ -392,6 +394,30 @@ export function AdminCashView() {
                     La base puede ser cero. El responsable y la hora se
                     registran con tu sesión.
                   </p>
+                  {active ? (
+                    <p className="text-sm text-mist">
+                      Fecha de la jornada: {active.business_date}. Ingresa el
+                      efectivo que había al inicio de la jornada, sin incluir
+                      las ventas cobradas después
+                    </p>
+                  ) : (
+                    <Field label="Fecha de la jornada">
+                      <select
+                        key={dayOptions.today}
+                        className={input}
+                        name="business_date"
+                        required
+                        defaultValue={dayOptions.suggested}
+                      >
+                        <option value={dayOptions.today}>
+                          Hoy · {dayOptions.today}
+                        </option>
+                        <option value={dayOptions.yesterday}>
+                          Ayer · {dayOptions.yesterday}
+                        </option>
+                      </select>
+                    </Field>
+                  )}
                   <Field label="Base inicial (COP)">
                     <Amount />
                   </Field>
