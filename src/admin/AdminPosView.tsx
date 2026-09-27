@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom';
 import type { ReactNode } from 'react';
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, LayoutGrid, List } from 'lucide-react';
@@ -26,7 +27,6 @@ import {
   addItemsToTableInSupabase,
   addCustomItemToTableInSupabase,
   cancelOrderItemInSupabase,
-  closeActiveSalesSessionInSupabase,
   createPosTableInSupabase,
   defaultPosOperationalFlowSettings,
   deletePosTableInSupabase,
@@ -36,7 +36,6 @@ import {
   markOrderItemDeliveredInSupabase,
   markOrderItemPickingUpInSupabase,
   moveActiveOrderToTableInSupabase,
-  openSalesSessionInSupabase,
   recordPosPaymentInSupabase,
   replaceOrderItemInSupabase,
   sendDraftItemsToPreparationInSupabase,
@@ -225,8 +224,6 @@ export function AdminPosView() {
   const [activePaymentField, setActivePaymentField] = useState<'amount' | 'percentage' | 'received' | null>(null);
   const [paymentReference, setPaymentReference] = useState('');
   const [paymentNotes, setPaymentNotes] = useState('');
-  const [salesSessionClosingNotes, setSalesSessionClosingNotes] = useState('');
-  const [salesSessionOpeningNotes, setSalesSessionOpeningNotes] = useState('');
   const [selectedPaymentItemIds, setSelectedPaymentItemIds] = useState<string[]>([]);
   const [cashierRightPanel, setCashierRightPanel] = useState<CashierRightPanel>('summary');
   const [selectedDetachedCashierOrderId, setSelectedDetachedCashierOrderId] = useState<string | null>(null);
@@ -1928,52 +1925,6 @@ export function AdminPosView() {
     });
   };
 
-  const handleCloseActiveSalesSession = async () => {
-    await executeAction('Jornada cerrada', async () => closeActiveSalesSessionInSupabase(actor, salesSessionClosingNotes), {
-      onSuccess: (closedSession) => {
-        setPosState((current) => {
-          if (!current) {
-            return current;
-          }
-
-          const nextRecentSessions = [
-            closedSession,
-            ...current.recentSalesSessions.filter((session) => session.id !== closedSession.id),
-          ].slice(0, 10);
-
-          return {
-            ...current,
-            activeSalesSession: null,
-            recentSalesSessions: nextRecentSessions,
-          };
-        });
-        setCashierRightPanel('previous_sessions');
-        setSelectedHistoricalSessionId(closedSession.id);
-        setSalesSessionClosingNotes('');
-      },
-    });
-  };
-
-  const handleOpenSalesSession = async () => {
-    await executeAction('Jornada abierta', async () => openSalesSessionInSupabase(actor, salesSessionOpeningNotes), {
-      onSuccess: (openedSession) => {
-        setPosState((current) => {
-          if (!current) {
-            return current;
-          }
-
-          return {
-            ...current,
-            activeSalesSession: openedSession,
-            recentSalesSessions: [openedSession, ...current.recentSalesSessions.filter((session) => session.id !== openedSession.id)].slice(0, 10),
-          };
-        });
-        setCashierRightPanel('summary');
-        setSalesSessionOpeningNotes('');
-      },
-    });
-  };
-
   const closeTableSheet = ({ force = false }: { force?: boolean } = {}) => {
     if (!force && selectedOrderDraftItems.length > 0) {
       setIsCloseDraftWarningOpen(true);
@@ -3559,48 +3510,8 @@ export function AdminPosView() {
 
                 <div className="rounded-[1.2rem] border border-white/8 bg-white/[0.02] p-4">
                   <p className="text-[0.68rem] uppercase tracking-[0.22em] text-cyanGlow/75">Control de jornada</p>
-                  {posState?.activeSalesSession ? (
-                    <div className="mt-4 space-y-4">
-                      <Field label="Nota de cierre">
-                        <input
-                          value={salesSessionClosingNotes}
-                          onChange={(event) => setSalesSessionClosingNotes(event.target.value)}
-                          className={inputClassName}
-                          placeholder="Cierre madrugada, caja principal, observaciones..."
-                        />
-                      </Field>
-
-                      <button
-                        type="button"
-                        onClick={() => void handleCloseActiveSalesSession()}
-                        disabled={Boolean(busyAction) || activeSalesSessionSummary.pendingBalance > 0 || activeSalesSessionSummary.pendingPayments > 0}
-                        className={primaryButtonClassName}
-                      >
-                        Cerrar jornada
-                      </button>
-
-                      {activeSalesSessionSummary.pendingBalance > 0 || activeSalesSessionSummary.pendingPayments > 0 ? (
-                        <p className="text-sm text-amberGlow">
-                          Antes de cerrar debes dejar esta jornada sin saldo pendiente ni pagos por confirmar.
-                        </p>
-                      ) : null}
-                    </div>
-                  ) : (
-                    <div className="mt-4 space-y-4">
-                      <Field label="Nota de apertura">
-                        <input
-                          value={salesSessionOpeningNotes}
-                          onChange={(event) => setSalesSessionOpeningNotes(event.target.value)}
-                          className={inputClassName}
-                          placeholder="Prueba turno noche, caja principal, observaciones..."
-                        />
-                      </Field>
-                      <button type="button" onClick={() => void handleOpenSalesSession()} disabled={Boolean(busyAction)} className={primaryButtonClassName}>
-                        Abrir jornada ahora
-                      </button>
-                      <p className="text-sm text-mist">Tambien puede abrirse sola cuando se mueve la operacion, pero aqui tienes control explicito para pruebas y turnos reales.</p>
-                    </div>
-                  )}
+                  <Link to="/admin/cash" className={primaryButtonClassName}>Abrir caja / gastos / arqueo y cierre</Link>
+                  <p className="mt-3 text-sm text-mist">Registra la base inicial y realiza el arqueo en Caja y gastos. Debes resolver las cuentas y pagos pendientes antes del cierre.</p>
                 </div>
 
                 <div className="rounded-[1.2rem] border border-white/8 bg-white/[0.02] p-4">

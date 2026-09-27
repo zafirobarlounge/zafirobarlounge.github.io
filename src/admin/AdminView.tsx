@@ -3,7 +3,7 @@ import { AdminLayout } from './AdminLayout';
 import { useSupabaseAuth } from '../auth/SupabaseAuthProvider';
 
 export function AdminView() {
-  const { canAccessCatalog, canAccessPos, isCatalogAdmin, staffProfile } = useSupabaseAuth();
+  const { canAccessCatalog, canAccessPos, isCatalogAdmin, staffRoles, staffProfile } = useSupabaseAuth();
 
   if (canAccessPos && !canAccessCatalog) {
     return <Navigate to="/admin/pos" replace />;
@@ -14,6 +14,9 @@ export function AdminView() {
   }
 
   const availableModules = [
+    (isCatalogAdmin || staffRoles.includes('cashier') || staffRoles.includes('superadmin'))
+      ? { cta: 'Abrir caja y gastos', description: 'Base inicial, gastos, aportes, retiros y arqueos por jornada.', title: 'Caja y gastos', to: '/admin/cash', tone: 'sessions' }
+      : null,
     canAccessCatalog
       ? {
           cta: 'Abrir modulo de menu',

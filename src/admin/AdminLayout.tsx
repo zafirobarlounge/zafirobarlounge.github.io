@@ -17,7 +17,7 @@ const roleLabels: Record<string, string> = {
 };
 
 export function AdminLayout({ children }: AdminLayoutProps) {
-  const { canAccessCatalog, canAccessPos, isAuthenticated, signOut, staffProfile, staffRoles, user } = useSupabaseAuth();
+  const { canAccessCatalog, canAccessPos, isCatalogAdmin, isAuthenticated, signOut, staffProfile, staffRoles, user } = useSupabaseAuth();
   const location = useLocation();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const mobileMenuRef = useRef<HTMLDivElement | null>(null);
@@ -85,6 +85,7 @@ export function AdminLayout({ children }: AdminLayoutProps) {
                 </>
               ) : null}
             </div>
+            {(isCatalogAdmin || staffRoles.includes('cashier') || staffRoles.includes('superadmin')) && <Link to="/admin/cash" className="rounded-full border border-cyanGlow/30 px-3 py-2 text-sm text-cyanGlow">Caja y gastos</Link>}
             <div className="flex items-center gap-2">
               <div className="hidden sm:flex items-center gap-2">
                 {shouldShowAdminHubLink ? (

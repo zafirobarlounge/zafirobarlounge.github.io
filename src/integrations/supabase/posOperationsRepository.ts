@@ -212,39 +212,10 @@ export async function loadPosStateFromSupabase(options: LoadPosStateOptions = {}
   };
 }
 
-export async function openSalesSessionInSupabase(actor: PosActorContext, notes?: string) {
-  const currentOpenSession = await getOpenSalesSession();
-  if (currentOpenSession) {
-    return currentOpenSession;
-  }
-
-  const openedAt = new Date().toISOString();
-  const businessDate = deriveSalesBusinessDate(openedAt, SALES_SESSION_CUTOFF_HOUR);
-  const sessionLabel = `Jornada ${businessDate}`;
-  const supabase = getSupabaseClient();
-  const { data, error } = await supabase
-    .from('pos_sales_sessions')
-    .insert({
-      business_date: businessDate,
-      cutoff_hour: SALES_SESSION_CUTOFF_HOUR,
-      notes: notes?.trim() ?? '',
-      opened_at: openedAt,
-      opened_by_email: actor.email,
-      session_label: sessionLabel,
-      status: 'open',
-      summary: {} as never,
-    } as never)
-    .select('*')
-    .single();
-
-  throwIfError(error, 'No fue posible abrir una jornada de ventas');
-  await insertPosLog({
-    actor,
-    afterData: data,
-    eventType: 'sales_session_opened',
-    notes: `Jornada abierta: ${sessionLabel}`,
-  });
-  return mapPosSalesSessionRow(data);
+export async function openSalesSessionInSupabase(_actor: PosActorContext, _notes?: string) {
+  const { data, error } = await getSupabaseClient().rpc('pos_cash_ensure_session');
+  throwIfError(error, 'No fue posible abrir la jornada');
+  return mapPosSalesSessionRow(data as unknown as PosSalesSessionRow);
 }
 
 export async function loadPosProductOptionsFromSupabase() {
@@ -1582,97 +1553,6 @@ export async function recordPosPaymentInSupabase(orderId: string, input: RecordP
   });
 
   return mapPosPaymentRow(data);
-}
-
-export async function closeActiveSalesSessionInSupabase(actor: PosActorContext, notes?: string) {
-  const supabase = getSupabaseClient();
-  const session = await getOpenSalesSession();
-
-  if (!session) {
-    throw new Error('No hay una jornada activa para cerrar en este momento.');
-  }
-
-  const sessionPayments = await loadPaymentsBySalesSessionId(session.id);
-  const directSessionOrders = await loadOrdersForSalesSession(session.id);
-  const paymentLinkedOrderIds = Array.from(new Set(sessionPayments.map((payment) => payment.orderId)));
-  const missingOrderIds = paymentLinkedOrderIds.filter((orderId) => !directSessionOrders.some((order) => order.id === orderId));
-  const inferredOrders = missingOrderIds.length ? await loadOrdersByIds(missingOrderIds) : [];
-  const sessionOrders = dedupeOrdersById([...directSessionOrders, ...inferredOrders]).sort((left, right) => left.openedAt.localeCompare(right.openedAt));
-  const sessionOrderIds = sessionOrders.map((order) => order.id);
-  const sessionItems = sessionOrderIds.length ? await loadOrderItemsByOrderIds(sessionOrderIds) : [];
-  const itemsByOrderId = new Map<string, PosOrderItem[]>();
-  const paymentsByOrderId = new Map<string, PosPayment[]>();
-
-  for (const item of sessionItems) {
-    const bucket = itemsByOrderId.get(item.orderId) ?? [];
-    bucket.push(item);
-    itemsByOrderId.set(item.orderId, bucket);
-  }
-
-  for (const payment of sessionPayments) {
-    const bucket = paymentsByOrderId.get(payment.orderId) ?? [];
-    bucket.push(payment);
-    paymentsByOrderId.set(payment.orderId, bucket);
-  }
-
-  const ordersWithRelations = sessionOrders.map((order) => {
-    const orderItems = itemsByOrderId.get(order.id) ?? [];
-    const orderPayments = paymentsByOrderId.get(order.id) ?? [];
-    return {
-      ...order,
-      items: orderItems,
-      payments: orderPayments,
-      summary: buildOrderSummary(orderItems, orderPayments),
-    };
-  });
-
-  const ordersWithBalance = ordersWithRelations.filter(
-    (order) => order.summary.remainingBalance > 0 || order.summary.pendingPayments > 0,
-  );
-
-  if (ordersWithBalance.length) {
-    throw new Error('No puedes cerrar la jornada mientras sigan cuentas abiertas, saldos pendientes o pagos por confirmar.');
-  }
-
-  const orderIdsMissingSession = sessionOrders.filter((order) => order.salesSessionId !== session.id).map((order) => order.id);
-  if (orderIdsMissingSession.length) {
-    const { error: attachOrdersError } = await supabase
-      .from('pos_orders')
-      .update({
-        sales_session_id: session.id,
-      } as never)
-      .in('id', orderIdsMissingSession);
-
-    throwIfError(attachOrdersError, 'No fue posible terminar de vincular las cuentas a la jornada antes del cierre');
-  }
-
-  const summary = buildSalesSessionSummary(ordersWithRelations, sessionPayments);
-  const now = new Date().toISOString();
-  const { data, error } = await supabase
-    .from('pos_sales_sessions')
-    .update({
-      closed_at: now,
-      closed_by_email: actor.email,
-      notes: notes?.trim() ?? session.notes,
-      status: 'closed',
-      summary: summary as never,
-    } as never)
-    .eq('id', session.id)
-    .eq('status', 'open')
-    .select('*')
-    .single();
-
-  throwIfError(error, 'No fue posible cerrar la jornada de ventas');
-
-  await insertPosLog({
-    actor,
-    afterData: data,
-    beforeData: session,
-    eventType: 'sales_session_closed',
-    notes: `Jornada cerrada: ${session.sessionLabel}`,
-  });
-
-  return mapPosSalesSessionRow(data);
 }
 
 export async function loadSalesSessionHistoryFromSupabase(): Promise<PosSalesSessionHistoryEntry[]> {

@@ -6,6 +6,7 @@ import { AdminMenuView } from '../admin/AdminMenuView';
 import { AdminPosView } from '../admin/AdminPosView';
 import { AdminPosSettingsView } from '../admin/AdminPosSettingsView';
 import { AdminSalesSessionsView } from '../admin/AdminSalesSessionsView';
+import { AdminCashView } from '../admin/cash/AdminCashView';
 import { AdminView } from '../admin/AdminView';
 import { HomeView } from '../views/HomeView';
 import { MenuView } from '../views/MenuView';
@@ -16,6 +17,7 @@ export function AppRouter() {
       <Route path="/admin/login" element={<AdminLoginView />} />
       <Route element={<RequireAdminAuth />}>
         <Route path="/admin" element={<AdminView />} />
+        <Route path="/admin/cash" element={<AdminCashView />} />
         <Route path="/admin/pos" element={<AdminPosView />} />
         <Route path="/admin/pos-settings" element={<AdminPosSettingsView />} />
         <Route path="/admin/sales-sessions" element={<AdminSalesSessionsView />} />

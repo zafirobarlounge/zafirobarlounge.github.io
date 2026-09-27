@@ -1,17 +1,7 @@
-# Admin Placeholder
+# Administración ZAFIRO
 
-Esta carpeta queda reservada para la futura zona interna de administración de ZAFIRO.
+El panel actual incluye catálogo, POS por mesas, preparación de cocina/bar, pagos y jornadas de venta.
 
-Objetivo de esta fase:
-- separar desde ahora el espacio de la futura UI administrativa
-- no afectar la web pública actual
-- mantener intacto el flujo actual basado en `public/data/menu.json`
+El módulo de [Caja y gastos](cash/README.md) añade base inicial, gastos por origen, aportes, retiros y arqueo integrado con las jornadas existentes. Requiere revisión y aplicación manual de su migración antes de desplegar el frontend.
 
-Próximos pasos esperados en fases futuras:
-- rutas `/admin`
-- vistas internas para gestión del menú
-- formularios CRUD
-- autenticación
-- integración con una fuente persistente de datos
-
-Por ahora esta carpeta no se usa en runtime y no cambia el comportamiento público del sitio.
+La documentación antigua que describía esta carpeta como placeholder dejó de representar la aplicación actual.
