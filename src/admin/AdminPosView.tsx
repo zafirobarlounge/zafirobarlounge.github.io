@@ -3508,10 +3508,12 @@ export function AdminPosView() {
                   </div>
                 </details>
 
-                <div className="rounded-[1.2rem] border border-white/8 bg-white/[0.02] p-4">
+                <div className="flex flex-col items-start gap-3 rounded-[1.2rem] border border-white/8 bg-white/[0.02] p-4">
                   <p className="text-[0.68rem] uppercase tracking-[0.22em] text-cyanGlow/75">Control de jornada</p>
-                  <Link to="/admin/cash" className={primaryButtonClassName}>Abrir caja / gastos / arqueo y cierre</Link>
-                  <p className="mt-3 text-sm text-mist">Registra la base inicial y realiza el arqueo en Caja y gastos. Debes resolver las cuentas y pagos pendientes antes del cierre.</p>
+                  <Link to="/admin/cash" className={`${primaryButtonClassName} inline-flex min-h-[44px] max-w-full items-center justify-center text-center`}>
+                    {posState?.activeSalesSession ? 'Cerrar jornada' : 'Abrir jornada'}
+                  </Link>
+                  <p className="text-sm leading-6 text-mist">Registra la base inicial y realiza el arqueo en Caja y gastos. Debes resolver las cuentas y pagos pendientes antes del cierre.</p>
                 </div>
 
                 <div className="rounded-[1.2rem] border border-white/8 bg-white/[0.02] p-4">

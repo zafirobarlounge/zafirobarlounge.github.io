@@ -293,7 +293,7 @@ export function AdminCashView() {
             void refresh().catch((e) => setError(e.message));
           }}
         >
-          Actualizar datos
+          Recargar caja y gastos
         </button>
         {!data ? (
           <p>Cargando módulo de caja…</p>
