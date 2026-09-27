@@ -1,13 +1,17 @@
+import { loadCash } from './cash/cash.repository';
+import { csvCell, type CashData } from './cash/cash.domain';
+import { financeCsv, includeLinkedSession, paymentBreakdown, reportAccess } from './cash/sessionFinance';
+import { SessionFinanceDetail } from './cash/SessionFinanceDetail';
 import type { ReactNode } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { AdminLayout } from './AdminLayout';
 import { useSupabaseAuth } from '../auth/SupabaseAuthProvider';
 import {
   cancelClosedPaidOrderInSupabase,
   createManualSalesSessionInSupabase,
   deleteSalesSessionFromSupabase,
-  loadSalesSessionHistoryViewFromSupabase,
+  loadAuthorizedSessionReportFromSupabase,
   reassignOrderSalesSessionInSupabase,
   updateSalesSessionWindowInSupabase,
   type PosActorContext,
@@ -39,6 +43,21 @@ const paymentMethodLabels: Record<PaymentMethod, string> = {
 
 export function AdminSalesSessionsView() {
   const { isCatalogAdmin, staffProfile, staffRoles, user } = useSupabaseAuth();
+  const access = reportAccess(isCatalogAdmin, staffRoles);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const linkedId = searchParams.get('session');
+  const [cashData, setCashData] = useState<CashData | null>(null);
+  const [cashError, setCashError] = useState('');
+  const [cashLoading, setCashLoading] = useState(true);
+  const cashRequest = useRef(0);
+  async function reloadCash() {
+    const request = ++cashRequest.current;
+    setCashLoading(true); setCashError('');
+    try { const data = await loadCash(); if (request === cashRequest.current) setCashData(data); }
+    catch (e) { if (request === cashRequest.current) { setCashData(null); setCashError((e as Error).message); } }
+    finally { if (request === cashRequest.current) setCashLoading(false); }
+  }
+  useEffect(() => { if (access.read) void reloadCash(); return () => { cashRequest.current++; }; }, [access.read]);
   const actor = useMemo<PosActorContext>(
     () => ({
       email: user?.email?.trim().toLowerCase() ?? staffProfile?.email ?? '',
@@ -92,8 +111,8 @@ export function AdminSalesSessionsView() {
     return historyMonthKeys.includes(currentMonthKey) ? historyMonthKeys : [currentMonthKey, ...historyMonthKeys];
   }, [sessions]);
   const visibleSessions = useMemo(
-    () => filterSessionsByPeriod(sessions, selectedMonthKey, customDateRange),
-    [customDateRange, selectedMonthKey, sessions],
+    () => includeLinkedSession(filterSessionsByPeriod(sessions, selectedMonthKey, customDateRange), sessions, linkedId),
+    [customDateRange, selectedMonthKey, sessions, linkedId],
   );
   const visibleClosedSessions = useMemo(() => visibleSessions.filter((session) => session.status === 'closed'), [visibleSessions]);
   const visibleSessionIds = useMemo(() => new Set(visibleSessions.map((session) => session.id)), [visibleSessions]);
@@ -127,7 +146,7 @@ export function AdminSalesSessionsView() {
     setErrorMessage(null);
     setIsLoading(true);
     try {
-      const { history, closedSales, tables } = await loadSalesSessionHistoryViewFromSupabase();
+      const { history, closedSales, tables } = await loadAuthorizedSessionReportFromSupabase();
       if (!isMountedRef.current || requestId !== loadRequestIdRef.current) {
         return;
       }
@@ -154,7 +173,7 @@ export function AdminSalesSessionsView() {
 
   useEffect(() => {
     isMountedRef.current = true;
-    if (!isCatalogAdmin) {
+    if (!access.read) {
       setIsLoading(false);
     } else {
       void loadSessions();
@@ -164,7 +183,7 @@ export function AdminSalesSessionsView() {
       isMountedRef.current = false;
       loadRequestIdRef.current++;
     };
-  }, [isCatalogAdmin]);
+  }, [access.read]);
 
   useEffect(() => {
     if (!expandedSessionId) {
@@ -192,7 +211,12 @@ export function AdminSalesSessionsView() {
     }
   }, [expandedSessionId, visibleSessions]);
 
+  useEffect(() => {
+    if (linkedId && sessions.some(s => s.id === linkedId)) setExpandedSessionId(linkedId);
+  }, [linkedId, sessions]);
+
   const handleDeleteSession = async () => {
+    if (!access.manage) return;
     if (!sessionPendingDelete) {
       return;
     }
@@ -222,6 +246,7 @@ export function AdminSalesSessionsView() {
   };
 
   const openMoveOrderModal = (sourceSession: PosSalesSessionHistoryEntry, order: PosOrderWithRelations) => {
+    if (!access.manage) return;
     const defaultDestination = closedSessions.find((session) => session.id !== sourceSession.id)?.id ?? '';
     setMoveErrorMessage(null);
     setMoveDestinationSessionId(defaultDestination);
@@ -229,6 +254,7 @@ export function AdminSalesSessionsView() {
   };
 
   const handleMoveOrderSession = async () => {
+    if (!access.manage) return;
     if (!orderPendingMove) {
       return;
     }
@@ -247,6 +273,7 @@ export function AdminSalesSessionsView() {
         `${resolveOrderTableLabel(orderPendingMove.order, tablesById)} movida a ${destination?.sessionLabel ?? 'la jornada destino'}.`,
       );
       await loadSessions();
+      void reloadCash();
     } catch (error) {
       const message = error instanceof Error ? error.message : 'No fue posible mover la cuenta a otra jornada.';
       setMoveErrorMessage(message);
@@ -257,6 +284,7 @@ export function AdminSalesSessionsView() {
   };
 
   const handleCancelClosedPaidOrder = async (session: PosSalesSessionHistoryEntry, order: PosOrderWithRelations) => {
+    if (!access.manage) return;
     const tableLabel = resolveOrderTableLabel(order, tablesById);
     const reason = window.prompt(
       `Motivo para anular la venta cerrada de ${tableLabel}:`,
@@ -281,6 +309,7 @@ export function AdminSalesSessionsView() {
       await cancelClosedPaidOrderInSupabase(order.id, reason, actor, order);
       setActionMessage(`Venta anulada: ${tableLabel}.`);
       await loadSessions();
+      void reloadCash();
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'No fue posible anular la venta cerrada.');
     } finally {
@@ -289,6 +318,7 @@ export function AdminSalesSessionsView() {
   };
 
   const openCreateSessionModal = () => {
+    if (!access.manage) return;
     setSessionPendingEdit(null);
     setSessionWindowErrorMessage(null);
     setSessionWindowForm({
@@ -302,6 +332,7 @@ export function AdminSalesSessionsView() {
   };
 
   const openEditSessionModal = (session: PosSalesSessionHistoryEntry) => {
+    if (!access.manage) return;
     setIsCreateSessionModalOpen(false);
     setSessionWindowErrorMessage(null);
     setSessionPendingEdit(session);
@@ -315,6 +346,7 @@ export function AdminSalesSessionsView() {
   };
 
   const handleSaveSessionWindow = async () => {
+    if (!access.manage) return;
     const payload = {
       businessDate: sessionWindowForm.businessDate,
       closedAt: toIsoFromDateTimeLocal(sessionWindowForm.closedAt),
@@ -340,6 +372,7 @@ export function AdminSalesSessionsView() {
       }
 
       await loadSessions();
+      void reloadCash();
     } catch (error) {
       const message = error instanceof Error ? error.message : 'No fue posible guardar la jornada.';
       setSessionWindowErrorMessage(message);
@@ -350,6 +383,7 @@ export function AdminSalesSessionsView() {
   };
 
   const handleExportSummaryCsv = () => {
+    if (!cashData || cashLoading || cashError) return;
     const rows = visibleSessions.map((session) => {
       const sessionSales = visibleClosedSales.filter((order) => order.salesSessionId === session.id);
       const cashTotal = getSalesSessionCashTotal(session);
@@ -370,8 +404,15 @@ export function AdminSalesSessionsView() {
         pagos_registrados: session.paymentCount,
         pendiente: session.summary?.pendingBalance ?? 0,
         productos_vendidos: productsCount,
+        // Legacy CSV column: retain its aggregate for existing consumers.
         transferencias: transferTotal,
         vendido: session.summary?.grossSales ?? session.totalSold,
+        no_efectivo: transferTotal,
+        nequi: paymentBreakdown(session).nequi,
+        transferencia_bancaria: paymentBreakdown(session).bank_transfer,
+        tarjeta: paymentBreakdown(session).card,
+        otros_cobros: paymentBreakdown(session).other,
+        ...financeCsv(session.id, cashData),
       };
     });
 
@@ -440,11 +481,11 @@ export function AdminSalesSessionsView() {
     setActionMessage('Se descargo el detalle del periodo seleccionado.');
   };
 
-  if (!isCatalogAdmin) {
+  if (!access.read) {
     return (
       <AdminLayout>
         <section className="rounded-[1.6rem] border border-rose-300/20 bg-rose-300/10 p-6 text-rose-100">
-          Solo superadmin puede administrar el historial de jornadas.
+          Acceso restringido: solo administracion y caja pueden consultar este reporte.
         </section>
       </AdminLayout>
     );
@@ -457,20 +498,20 @@ export function AdminSalesSessionsView() {
           <p className="text-[0.72rem] uppercase tracking-[0.28em] text-cyanGlow/80">Historial POS</p>
           <h1 className="mt-3 font-display text-[2.35rem] leading-none text-ivory sm:text-[3.6rem]">Jornadas previas</h1>
           <p className="mt-4 max-w-2xl text-sm leading-7 text-mist sm:text-base">
-            Revisa cada jornada con sus ventas, productos y pagos. Las jornadas de prueba se pueden eliminar desde su detalle.
+            Revisa cada jornada con sus ventas, productos y pagos. El detalle financiero conserva la trazabilidad de cada jornada.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <button type="button" onClick={openCreateSessionModal} disabled={isLoading} className={primaryButtonClassName}>
+          {access.manage && <button type="button" onClick={openCreateSessionModal} disabled={isLoading} className={primaryButtonClassName}>
             Crear jornada manual
-          </button>
-          <button type="button" onClick={handleExportSummaryCsv} disabled={isLoading || !visibleSessions.length} className={primaryButtonClassName}>
+          </button>}
+          <button type="button" onClick={handleExportSummaryCsv} disabled={isLoading || !visibleSessions.length || cashLoading || !cashData || Boolean(cashError)} className={primaryButtonClassName}>
             Exportar resumen
           </button>
           <button type="button" onClick={handleExportDetailCsv} disabled={isLoading || !visibleSessions.length} className={ghostButtonClassName}>
             Exportar detalle
           </button>
-          <button type="button" onClick={() => void loadSessions()} disabled={isLoading} className={primaryButtonClassName}>
+          <button type="button" onClick={() => { void loadSessions(); void reloadCash(); }} disabled={isLoading} className={primaryButtonClassName}>
             Actualizar
           </button>
           <Link to="/admin" className={ghostButtonClassName}>
@@ -479,6 +520,10 @@ export function AdminSalesSessionsView() {
         </div>
       </section>
 
+      {linkedId && !isLoading && !errorMessage && !sessions.some(s => s.id === linkedId) && <p role="alert" className="mt-4 text-amberGlow">No existe una jornada accesible con el ID indicado: {linkedId}.</p>}
+      {linkedId && <p className="mt-3 text-sm text-mist">El enlace incluye la jornada solicitada aunque quede fuera del periodo seleccionado. <button className="underline" onClick={() => setSearchParams({})}>Volver al filtro del periodo</button></p>}
+      {cashLoading && <p role="status" className="mt-4 text-mist">Cargando detalle financiero...</p>}
+      {cashError && <div role="alert" className="mt-4 rounded-xl border border-rose-300/30 p-4 text-rose-100"><p>{cashError}</p><button className={ghostButtonClassName} onClick={() => void reloadCash()}>Reintentar carga de caja</button><p>Las ventas siguen disponibles. El resumen CSV espera la carga financiera.</p></div>}
       {errorMessage ? (
         <section className="mt-5 rounded-[1.2rem] border border-rose-200/20 bg-rose-200/10 px-4 py-3 text-sm text-rose-100">{errorMessage}</section>
       ) : null}
@@ -546,7 +591,7 @@ export function AdminSalesSessionsView() {
         <MetricCard label="Cobrado" value={formatCurrency(visibleSummary.collectedTotal)} insight={formatComparisonInsight(visibleSummary.collectedTotal, comparisonSummary.collectedTotal, comparisonLabel)} />
         <MetricCard label="Vendido" value={formatCurrency(visibleSummary.soldTotal)} insight={formatComparisonInsight(visibleSummary.soldTotal, comparisonSummary.soldTotal, comparisonLabel)} />
         <MetricCard label="Efectivo" value={formatCurrency(visibleSummary.cashTotal)} />
-        <MetricCard label="Transferencias" value={formatCurrency(visibleSummary.transferTotal)} />
+        <MetricCard label="Otros medios (sin efectivo)" value={formatCurrency(visibleSummary.transferTotal)} />
         <MetricCard label="Ticket prom." value={formatCurrency(visibleSummary.averageTicket)} insight={formatComparisonInsight(visibleSummary.averageTicket, comparisonSummary.averageTicket, comparisonLabel)} />
         <MetricCard label="Producto top" value={visibleSummary.topProductLabel} />
       </section>
@@ -580,6 +625,8 @@ export function AdminSalesSessionsView() {
 
             {visibleSessions.map((session) => {
               const isExpanded = expandedSessionId === session.id;
+              const reconciled = Boolean(cashData?.registers.find(r => r.sales_session_id === session.id)?.closed_at);
+              const canEdit = access.manage && Boolean(cashData) && !cashLoading && !reconciled;
               const sessionSales = visibleClosedSales.filter((order) => order.salesSessionId === session.id);
               const cashTotal = getSalesSessionCashTotal(session);
               const transferTotal = getSalesSessionTransferTotal(session);
@@ -595,7 +642,7 @@ export function AdminSalesSessionsView() {
                       sessionHeaderRefs.current[session.id] = node;
                     }}
                     type="button"
-                    onClick={() => setExpandedSessionId((current) => (current === session.id ? null : session.id))}
+                    onClick={() => { const next = isExpanded ? null : session.id; setExpandedSessionId(next); setSearchParams(next ? { session: next } : {}); }}
                     className={`w-full overflow-hidden rounded-[1.35rem] border text-left transition ${
                       isExpanded ? 'border-cyanGlow/45 bg-cyanGlow/10 shadow-[0_0_0_1px_rgba(86,211,255,0.10)]' : 'border-white/10 bg-white/[0.035] hover:border-cyanGlow/25'
                     }`}
@@ -654,11 +701,13 @@ export function AdminSalesSessionsView() {
                         <SummaryPill label="Vendido" value={formatCurrency(session.summary?.grossSales ?? session.totalSold)} />
                         <SummaryPill label="Cobrado" value={formatCurrency(session.summary?.totalCollected ?? session.totalCollected)} />
                         <SummaryPill label="Efectivo" value={formatCurrency(cashTotal)} />
-                        <SummaryPill label="Transferencias" value={formatCurrency(transferTotal)} />
+                        <SummaryPill label="Otros medios (sin efectivo)" value={formatCurrency(transferTotal)} />
                         <SummaryPill label="Pendiente" value={formatCurrency(session.summary?.pendingBalance ?? 0)} />
                         <SummaryPill label="Mesas cerradas" value={String(sessionSales.length)} />
                       </div>
 
+                      <div className="grid gap-2 sm:grid-cols-3">{Object.entries(paymentBreakdown(session)).map(([method,value]) => <SummaryPill key={method} label={paymentMethodLabels[method as PaymentMethod]} value={formatCurrency(value)} />)}</div>
+                      {!cashLoading && !cashError && cashData && <SessionFinanceDetail id={session.id} data={cashData} />}
                       {session.notes ? (
                         <div className="rounded-[1rem] border border-amberGlow/20 bg-amberGlow/10 px-4 py-3 text-sm leading-6 text-amber-100">{session.notes}</div>
                       ) : null}
@@ -671,7 +720,7 @@ export function AdminSalesSessionsView() {
                       <div className="space-y-3">
                         <div className="flex flex-wrap items-center justify-between gap-3">
                           <p className="text-[0.68rem] uppercase tracking-[0.22em] text-cyanGlow/75">Mesas cerradas</p>
-                          <div className="flex flex-wrap gap-2">
+                          {canEdit && <div className="flex flex-wrap gap-2">
                             <button type="button" onClick={() => openEditSessionModal(session)} disabled={isSessionWindowBusy} className={ghostButtonClassName}>
                               Ajustar fechas
                             </button>
@@ -686,7 +735,7 @@ export function AdminSalesSessionsView() {
                             >
                               {busySessionId === session.id ? 'Eliminando...' : 'Eliminar jornada'}
                             </button>
-                          </div>
+                          </div>}
                         </div>
 
                         {sessionSales.map((order) => (
@@ -712,6 +761,7 @@ export function AdminSalesSessionsView() {
                             </summary>
 
                             <div className="mt-4 space-y-4 border-t border-white/8 pt-4">
+                              {canEdit && <>
                               <div className="flex flex-wrap items-center justify-between gap-3 rounded-[1rem] border border-cyanGlow/15 bg-cyanGlow/8 px-3 py-3">
                                 <p className="text-sm leading-6 text-mist">Si esta mesa quedo en la jornada equivocada, muevela completa con sus pagos.</p>
                                 <button
@@ -738,6 +788,7 @@ export function AdminSalesSessionsView() {
                                 </button>
                               </div>
 
+                              </>}
                               <div>
                                 <p className="text-[0.68rem] uppercase tracking-[0.22em] text-cyanGlow/75">Productos</p>
                                 <div className="mt-3 space-y-2">
@@ -795,7 +846,7 @@ export function AdminSalesSessionsView() {
         </section>
       )}
 
-      {sessionPendingDelete ? (
+      {access.manage && sessionPendingDelete ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/72 px-4">
           <div className="w-full max-w-lg rounded-[1.4rem] border border-white/10 bg-[#0b0b0f] p-5 shadow-[0_18px_60px_rgba(0,0,0,0.45)]">
             <p className="text-[0.68rem] uppercase tracking-[0.22em] text-rose-200">Eliminar jornada</p>
@@ -832,7 +883,7 @@ export function AdminSalesSessionsView() {
         </div>
       ) : null}
 
-      {orderPendingMove ? (
+      {access.manage && orderPendingMove ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/72 px-4">
           <div className="w-full max-w-xl rounded-[1.4rem] border border-white/10 bg-[#0b0b0f] p-5 shadow-[0_18px_60px_rgba(0,0,0,0.45)]">
             <p className="text-[0.68rem] uppercase tracking-[0.22em] text-cyanGlow/80">Mover cuenta de jornada</p>
@@ -895,7 +946,7 @@ export function AdminSalesSessionsView() {
         </div>
       ) : null}
 
-      {isCreateSessionModalOpen || sessionPendingEdit ? (
+      {access.manage && (isCreateSessionModalOpen || sessionPendingEdit) ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/72 px-4">
           <div className="w-full max-w-xl rounded-[1.4rem] border border-white/10 bg-[#0b0b0f] p-5 shadow-[0_18px_60px_rgba(0,0,0,0.45)]">
             <p className="text-[0.68rem] uppercase tracking-[0.22em] text-cyanGlow/80">
@@ -1045,7 +1096,7 @@ function PaymentSplit({ cashTotal, transferTotal }: { cashTotal: number; transfe
     <div className="min-w-0 border-t border-white/8 pt-3 md:border-l md:border-t-0 md:pl-5 md:pt-0">
       <div className="flex items-center justify-between gap-3">
         <p className="text-[0.6rem] uppercase tracking-[0.18em] text-mist">Pagos</p>
-        <p className="text-[0.68rem] text-mist">{total ? `${cashPercent}% efectivo / ${transferPercent}% transf.` : 'Sin pagos'}</p>
+        <p className="text-[0.68rem] text-mist">{total ? `${cashPercent}% efectivo / ${transferPercent}% otros medios` : 'Sin pagos'}</p>
       </div>
       <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/10">
         <div className="h-full rounded-full bg-cyanGlow/80" style={{ width: `${cashPercent}%` }} />
@@ -1056,7 +1107,7 @@ function PaymentSplit({ cashTotal, transferTotal }: { cashTotal: number; transfe
           <p className="mt-1 font-semibold text-ivory">{formatCurrency(cashTotal)}</p>
         </div>
         <div>
-          <p className="text-[0.56rem] uppercase tracking-[0.18em] text-cyanGlow/70">Transferencias</p>
+          <p className="text-[0.56rem] uppercase tracking-[0.18em] text-cyanGlow/70">Otros medios</p>
           <p className="mt-1 font-semibold text-ivory">{formatCurrency(transferTotal)}</p>
         </div>
       </div>
@@ -1407,6 +1458,7 @@ function formatCurrency(value: number) {
 
 function formatDateTime(value: string) {
   return new Date(value).toLocaleString('es-CO', {
+    timeZone: 'America/Bogota',
     day: '2-digit',
     hour: '2-digit',
     minute: '2-digit',
@@ -1494,13 +1546,7 @@ function downloadCsv(fileName: string, rows: CsvRow[]) {
 }
 
 function escapeCsvCell(value: CsvValue) {
-  if (value == null) {
-    return '';
-  }
-
-  const normalized = typeof value === 'number' ? String(value) : value;
-  const escaped = normalized.replace(/"/g, '""');
-  return /[;\n\r"]/.test(escaped) ? `"${escaped}"` : escaped;
+  return csvCell(value);
 }
 
 function toDateTimeLocalValue(value: string) {

@@ -632,6 +632,26 @@ test("PostgreSQL aislado: finanzas, transiciones, RLS, protección histórica y 
         );
       },
     );
+    sql(readFileSync('supabase/migrations/202609270003_session_financial_report.sql','utf8'));
+    await t.test('reporte financiero: cajero consulta, roles operativos y anonimo denegados', () => {
+      const report=JSON.parse(sql(login()+'select public.pos_session_report();'));
+      assert.ok(report.sessions.some(s=>s.id===sid));
+      for(const role of ['waiter','kitchen','bar']) fails(login(`${role}@test.invalid`)+'select public.pos_session_report();','Acceso denegado');
+      fails('set role anon; select public.pos_session_report();','permission denied');
+    });
+    await t.test('cajero no administra jornadas, reasigna ni anula ventas por SQL o RPC; admin sigue protegido por arqueo', () => {
+      fails(login()+`update public.pos_sales_sessions set notes='changed' where id='${sid}';`,'Solo superadmin');
+      fails(login()+`insert into public.pos_sales_sessions(session_label,business_date,status,opened_by_email) values('History','2020-01-01','closed','cashier@test.invalid');`,'Solo superadmin');
+      fails(login()+`select public.create_pos_sales_session_manual('2020-01-01','2020-01-01T20:00:00Z','2020-01-02T05:00:00Z');`,'Solo superadmin');
+      fails(login()+`select public.delete_pos_sales_session('${legacy}');`,'Solo superadmin');
+      fails(login()+`select public.reassign_pos_order_sales_session('${order}','${sid}');`,'Solo superadmin');
+      const closed=sql(login('admin@test.invalid')+`insert into public.pos_orders(sales_session_id,opened_by_email,closed_at) values('${sid}','admin@test.invalid',now()) returning id;`);
+      fails(login()+`update public.pos_orders set financial_status='cancelled' where id='${closed}';`,'Solo superadmin');
+      fails(login()+`insert into public.pos_payments(order_id,sales_session_id,method,status,allocation_mode,amount_applied,created_by_email) values('${closed}','${sid}','cash','confirmed','amount',1,'cashier@test.invalid');`,'Solo superadmin');
+      fails(login('admin@test.invalid')+`update public.pos_orders set financial_status='cancelled' where id='${order}';`,'Caja cerrada');
+      const operational=sql(login()+`insert into public.pos_orders(sales_session_id,opened_by_email) values('${sid}','cashier@test.invalid') returning id;`);
+      sql(login()+`insert into public.pos_payments(order_id,sales_session_id,method,status,allocation_mode,amount_applied,created_by_email) values('${operational}','${sid}','cash','confirmed','amount',1,'cashier@test.invalid'); update public.pos_orders set closed_at=now(),financial_status='paid_total' where id='${operational}';`);
+    });
   } finally {
     execFileSync(
       exe("pg_ctl"),

@@ -156,6 +156,7 @@ function harness({
       }
     },
     require(name) {
+      if (name.includes('sessionFinance')) return { sessionDetailUrl: id => `/admin/sales-sessions?session=${encodeURIComponent(id)}` };
       if (name.includes("salesBusinessDate")) return businessDates.exports;
       if (name === "react") return hooks;
       if (name === "react/jsx-runtime")

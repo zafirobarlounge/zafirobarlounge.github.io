@@ -1,4 +1,5 @@
 import { Link } from 'react-router-dom';
+import { sessionDetailUrl } from './cash/sessionFinance';
 import type { ReactNode } from 'react';
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, LayoutGrid, List } from 'lucide-react';
@@ -3513,6 +3514,7 @@ export function AdminPosView() {
                   <Link to="/admin/cash" className={`${primaryButtonClassName} inline-flex min-h-[44px] max-w-full items-center justify-center text-center`}>
                     {posState?.activeSalesSession ? 'Cerrar jornada' : 'Abrir jornada'}
                   </Link>
+                  {posState?.activeSalesSession && <Link to={sessionDetailUrl(posState.activeSalesSession.id)} className="text-sm text-cyanGlow underline">Ver detalle de la jornada</Link>}
                   <p className="text-sm leading-6 text-mist">Registra la base inicial y realiza el arqueo en Caja y gastos. Debes resolver las cuentas y pagos pendientes antes del cierre.</p>
                 </div>
 

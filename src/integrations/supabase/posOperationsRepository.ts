@@ -1564,6 +1564,19 @@ export async function loadSalesSessionHistoryFromSupabase(): Promise<PosSalesSes
   return buildSalesSessionHistory(sessions, allOrders, allPayments, allItems);
 }
 
+export async function loadAuthorizedSessionReportFromSupabase() {
+  const { data, error } = await getSupabaseClient().rpc('pos_session_report');
+  throwIfError(error, 'No fue posible cargar el reporte. Revisa permisos y migracion 003');
+  const rows = data as unknown as { sessions: PosSalesSessionRow[]; orders: PosOrderRow[]; payments: PosPaymentRow[]; items: PosOrderItemRow[]; tables: PosTableRow[]; reconciled_session_ids: string[] };
+  const orders = buildOrdersWithRelations(rows.orders, rows.items, rows.payments);
+  const history = buildSalesSessionHistory(rows.sessions, rows.orders, rows.payments, rows.items).map(session => {
+    if (!rows.reconciled_session_ids.includes(session.id)) return session;
+    const snapshot = mapPosSalesSessionRow(rows.sessions.find(row => row.id === session.id)!).summary;
+    return { ...session, summary: snapshot, orderCount: snapshot?.orderCount ?? 0, paymentCount: snapshot?.confirmedPayments ?? 0, totalCollected: snapshot?.totalCollected ?? 0, totalSold: snapshot?.grossSales ?? 0 };
+  });
+  return { history, closedSales: orders.filter(o => o.closedAt != null), tables: buildTablesWithOrders(rows.tables, orders) };
+}
+
 export async function loadSalesSessionHistoryViewFromSupabase() {
   const supabase = getSupabaseClient();
   const [sessions, allOrders, allPayments, allItems, tables] = await Promise.all([

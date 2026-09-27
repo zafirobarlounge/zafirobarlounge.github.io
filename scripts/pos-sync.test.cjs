@@ -392,8 +392,20 @@ test('history downloads each dataset once and preserves existing summaries, clos
   assert.equal(actual.history[0].orderCount, 2);
   assert.equal(actual.history[0].totalCollected, 20000);
   const source = readFileSync(path.join(root, 'src/admin/AdminSalesSessionsView.tsx'), 'utf8');
-  assert.ok(source.includes('await loadSalesSessionHistoryViewFromSupabase()'));
+  assert.ok(source.includes('await loadAuthorizedSessionReportFromSupabase()'));
   assert.ok(!source.includes('loadPosStateFromSupabase'));
+});
+
+test('authorized report uses one RPC and the saved sales snapshot for reconciled sessions', async () => {
+  const rows=fixtures();
+  const target=rows.pos_sales_sessions[0];
+  target.summary={ orderCount:7, confirmedPayments:2, totalCollected:123, grossSales:456, pendingBalance:0, pendingPayments:0, openOrders:0, deliveredProducts:0, products:[], paymentMethods:[{method:'cash',paymentCount:2,totalAmount:123}] };
+  const names=[];
+  const repo=loadRepository({rpc:async name=>{names.push(name);return {data:{sessions:rows.pos_sales_sessions,orders:rows.pos_orders,items:rows.pos_order_items,payments:rows.pos_payments,tables:rows.pos_tables,reconciled_session_ids:[target.id]},error:null};}});
+  const report=await repo.loadAuthorizedSessionReportFromSupabase();
+  const saved=report.history.find(s=>s.id===target.id);
+  assert.equal(saved.totalCollected,123);assert.equal(saved.orderCount,7);assert.deepEqual(names,['pos_session_report']);
+  await assert.rejects(loadRepository({rpc:async()=>({data:null,error:{message:'denied'}})}).loadAuthorizedSessionReportFromSupabase(),/denied/);
 });
 
 test('history still paginates large datasets without downloading any page twice', async () => {
@@ -511,7 +523,7 @@ test('history ignores older responses and responses after unmount', async () => 
   const requests = [];
   const context = {
     isMountedRef: { current: true }, loadRequestIdRef: { current: 0 },
-    loadSalesSessionHistoryViewFromSupabase: () => new Promise((resolve) => requests.push(resolve)),
+    loadAuthorizedSessionReportFromSupabase: () => new Promise((resolve) => requests.push(resolve)),
     sessions: null, setSessions(value) { context.sessions = value; },
     setErrorMessage() {}, setIsLoading() {}, setClosedSales() {}, setTables() {}, setExpandedSessionId() {},
   };

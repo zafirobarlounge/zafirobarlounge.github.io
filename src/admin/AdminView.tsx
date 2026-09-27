@@ -35,7 +35,7 @@ export function AdminView() {
           tone: 'pos',
         }
       : null,
-    isCatalogAdmin
+    (isCatalogAdmin || staffRoles.includes('cashier') || staffRoles.includes('superadmin'))
       ? {
           cta: 'Ver jornadas',
           description: 'Historial completo de jornadas POS, resumen de ventas y anulaciones administrativas.',

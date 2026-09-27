@@ -24,6 +24,7 @@ import {
 } from "./cash.domain";
 import { loadCash, saveCash } from "./cash.repository";
 import { salesDayOptions } from "../../shared/operations/salesBusinessDate";
+import { sessionDetailUrl } from './sessionFinance';
 
 const input =
   "w-full rounded-xl border border-white/20 bg-obsidian p-3 text-ivory";
@@ -299,6 +300,7 @@ export function AdminCashView() {
           <p>Cargando módulo de caja…</p>
         ) : (
           <>
+            {selected && <Link to={sessionDetailUrl(selected.id)} className={button}>Ver detalle de la jornada</Link>}
             <Field label="Jornada">
               <select
                 className={input}

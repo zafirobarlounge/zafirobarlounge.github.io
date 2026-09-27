@@ -13,7 +13,8 @@
     "supabase:seed:build": "node scripts/generate-supabase-seed.cjs",
     "test:cash": "node --test scripts/cash-domain.test.cjs scripts/cash-ui.test.cjs",
     "test:cash:db": "node --test scripts/cash-db.test.cjs",
-    "test:pos": "node --test scripts/pos-sync.test.cjs"
+    "test:pos": "node --test scripts/pos-sync.test.cjs",
+    "test:report": "node --test scripts/session-finance.test.cjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.106.1",

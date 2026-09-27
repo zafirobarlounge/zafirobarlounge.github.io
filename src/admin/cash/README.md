@@ -43,9 +43,12 @@ La migración no añade arqueos a jornadas antiguas. Al cerrar, una cuenta/pago 
 
 ## Verificación
 
+El detalle financiero de `/admin/sales-sessions` requiere la migración incremental 003. Véanse [SQL, permisos, compatibilidad CSV, resultados y pasos de QA](../../../supabase/migrations/202609270003_session_financial_report.md). La aplicación en QA es manual; no repetir 001/002.
+
 ```sh
 npm run test:cash
 npm run test:pos
+npm run test:report
 npm run test:cash:db
 npm run build
 ```
