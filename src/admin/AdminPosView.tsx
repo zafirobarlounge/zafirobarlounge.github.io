@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { sessionDetailUrl } from './cash/sessionFinance';
+import { AdminCashView } from './cash/AdminCashView';
 import type { ReactNode } from 'react';
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, LayoutGrid, List } from 'lucide-react';
@@ -136,6 +136,7 @@ const emptyCreateTableForm: CreatePosTableInput = {
 };
 
 export function AdminPosView() {
+  const [cashModal, setCashModal] = useState<'session' | 'movement' | null>(null);
   const { hasRole, isCatalogAdmin, staffProfile, staffRoles, user } = useSupabaseAuth();
   const actor = useMemo(
     () => ({
@@ -2279,6 +2280,7 @@ export function AdminPosView() {
 
   return (
     <AdminLayout>
+      {cashModal && <AdminCashView embedded initialAction={cashModal} onClose={() => { setCashModal(null); void loadStateRef.current(false, 'cash-modal'); }} />}
       <section className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
         <div className="max-w-3xl">
           <h1 className="text-[0.72rem] font-normal uppercase tracking-[0.28em] text-cyanGlow/80">POS operativo</h1>
@@ -3511,10 +3513,11 @@ export function AdminPosView() {
 
                 <div className="flex flex-col items-start gap-3 rounded-[1.2rem] border border-white/8 bg-white/[0.02] p-4">
                   <p className="text-[0.68rem] uppercase tracking-[0.22em] text-cyanGlow/75">Control de jornada</p>
-                  <Link to="/admin/cash" className={`${primaryButtonClassName} inline-flex min-h-[44px] max-w-full items-center justify-center text-center`}>
-                    {posState?.activeSalesSession ? 'Cerrar jornada' : 'Abrir jornada'}
-                  </Link>
-                  {posState?.activeSalesSession && <Link to={sessionDetailUrl(posState.activeSalesSession.id)} className="text-sm text-cyanGlow underline">Ver detalle de la jornada</Link>}
+                  <button type="button" onClick={() => setCashModal('session')} className={`${primaryButtonClassName} inline-flex min-h-[44px] max-w-full items-center justify-center text-center`}>
+                    {posState?.activeSalesSession ? 'Arqueo y cierre de jornada' : 'Abrir jornada y caja'}
+                  </button>
+                  <button type="button" onClick={() => setCashModal('movement')} className={ghostButtonClassName}>Registrar movimiento</button>
+                  <Link to="/admin/cash" className="text-sm text-cyanGlow underline">Caja y gastos</Link>
                   <p className="text-sm leading-6 text-mist">Registra la base inicial y realiza el arqueo en Caja y gastos. Debes resolver las cuentas y pagos pendientes antes del cierre.</p>
                 </div>
 

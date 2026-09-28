@@ -47,7 +47,7 @@ const fixture = () => ({
   movements: [],
 });
 const settle = () => new Promise((resolve) => setImmediate(resolve));
-test("apertura ofrece hoy/ayer y completar base no envía una fecha distinta", async () => {
+test("apertura calcula fecha comercial automaticamente y completar base conserva fecha", async () => {
   const saved = [];
   const h = harness({
     data: { sessions: [], registers: [], movements: [] },
@@ -62,22 +62,15 @@ test("apertura ofrece hoy/ayer y completar base no envía una fecha distinta", a
   const form = nodes(tree, "form").find((f) =>
     text(f).includes("Abrir jornada y caja"),
   );
-  const date = nodes(form, "select").find(
-    (n) => n.props.name === "business_date",
-  );
   const options = businessDates.exports.salesDayOptions();
-  assert.equal(date.props.defaultValue, options.suggested);
-  assert.deepEqual(
-    nodes(date, "option").map((n) => n.props.value),
-    [options.today, options.yesterday],
-  );
+  assert.ok(!nodes(form, "select").some(n => n.props.name === 'business_date'));
   submit(form, {
     amount: "100000",
     business_date: options.yesterday,
     notes: "",
   });
   await settle();
-  assert.equal(saved[0].business_date, options.yesterday);
+  assert.equal(saved[0].business_date, options.suggested);
   const data = fixture();
   data.registers = [];
   const complete = harness({
@@ -106,6 +99,8 @@ test("apertura ofrece hoy/ayer y completar base no envía una fecha distinta", a
   assert.equal(saved[1].session, "session");
 });
 function harness({
+  initialAction = 'session',
+  embedded = false,
   role = "cashier",
   storage = new Map(),
   save = async () => ({}),
@@ -192,7 +187,7 @@ function harness({
     storage,
     render() {
       cursor = 0;
-      const tree = expand(context.exports.AdminCashView());
+      const tree = expand(context.exports.AdminCashView({ initialAction, embedded }));
       for (const effect of effects) effect();
       effects = [];
       mounted = true;
@@ -200,6 +195,32 @@ function harness({
     },
   };
 }
+test('consulta mensual limita jornadas y movimientos; caja no muestra enlace al reporte', async () => {
+  const data=fixture();
+  data.sessions.push({...data.sessions[0],id:'old',session_label:'Antigua',business_date:'2020-02-01',status:'closed'});
+  data.movements=[{id:'m',sales_session_id:null,kind:'expense',origin:'owner',method:'cash',category:'other',concept:'Gasto antiguo',amount:10,expense_date:'2020-02-01',created_at:'2020-02-01T12:00:00Z',created_by:'test'}];
+  const h=harness({data,initialAction:null}); h.render(); await settle();
+  let tree=h.render();
+  assert.equal(nodes(tree,'form').length,0);
+  assert.ok(!nodes(tree,'option').some(n=>n.props.value==='old'));
+  assert.ok(!nodes(tree,'a').some(n=>String(n.props.to).includes('sales-sessions')));
+  nodes(tree,'input').find(n=>n.props.type==='month').props.onChange({target:{value:'2020-02'}});
+  tree=h.render();
+  assert.ok(nodes(tree,'option').some(n=>n.props.value==='old'));
+  assert.ok(!nodes(tree,'option').some(n=>n.props.value==='session'));
+  assert.match(text(tree),/Gasto antiguo/);
+});
+test('movimiento incrustado en POS abre solamente su modal y usa la jornada activa', async () => {
+  const saves=[];
+  const h=harness({embedded:true,initialAction:'movement',save:async(_,p)=>{saves.push(p);return {};}});
+  h.render(); await settle(); const tree=h.render();
+  assert.equal(nodes(tree,'layout').length,0);
+  assert.equal(nodes(tree,'div').filter(n=>n.props.role==='dialog').length,1);
+  assert.equal(nodes(tree,'form').length,1);
+  submit(nodes(tree,'form')[0],{amount:'20',concept:'Taxi',category:'transport',date:'2026-09-27',notes:''});
+  await settle(); assert.equal(saves[0].session,'session');
+  assert.equal(h.render(),null);
+});
 function nodes(tree, type) {
   if (Array.isArray(tree)) return tree.flatMap((x) => nodes(x, type));
   if (!tree || typeof tree !== "object") return [];
@@ -255,6 +276,7 @@ test("doble clic y recarga tras fallo de red conservan UUID y no anuncian éxito
     ids = [];
   let reject;
   const h = harness({
+    initialAction: 'movement',
     storage,
     save: (id) => {
       ids.push(id);

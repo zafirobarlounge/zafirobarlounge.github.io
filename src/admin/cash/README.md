@@ -43,6 +43,16 @@ La migración no añade arqueos a jornadas antiguas. Al cerrar, una cuenta/pago 
 
 ## Verificación
 
+### Consulta mensual y modales del POS
+
+Caja y gastos inicia en el mes actual de Bogotá. El selector de mes limita las jornadas por fecha comercial y los movimientos por fecha del gasto, incluidos los que no tienen jornada. Al cambiar el mes se limpian jornada/rango; al elegir una jornada se limita la consulta a su UUID. La exportación respeta estos filtros. La consulta RPC existente sigue descargando el historial completo: este cambio mejora la navegación, no implementa paginación del servidor.
+
+POS > Control de jornada abre el mismo formulario de caja en un modal: Abrir jornada y caja, o Arqueo y cierre de jornada. Debajo, Registrar movimiento abre su propio modal. Si la jornada automática no tiene base, primero solicita completarla sin cambiar su fecha. El enlace Caja y gastos lleva a `/admin/cash`. En esa pantalla el enlace al reporte detallado solo se muestra a administración; los permisos existentes de consulta del reporte para cajero no se revocan.
+
+La fecha de apertura operativa se calcula al enviar: antes de 06:00 Bogotá, ayer; desde 06:00, hoy. No hay selector manual de fecha en este modal. La creación histórica mantiene su formulario separado. Al guardar desde POS se cierra el modal y se recarga el estado operativo; la idempotencia y recuperación de solicitudes pendientes se conservan.
+
+Validación local: 57 pruebas de caja/POS/reporte aprobadas y build correcto. Incluye mes sin jornadas, gastos sin jornada, modalidad incrustada, apertura automática, conservación de base/fecha, permisos, doble clic y reintento de red. Interfaz probada con mocks; no se probó Auth real. Sin SQL nuevo ni modificaciones de datos remotos. Para QA: cambiar de mes, abrir cada modal desde POS, completar una base pendiente y confirmar que al volver se refresca el estado.
+
 Los ajustes posteriores al cierre se documentan en [migración 004: alcance, SQL y QA](../../../supabase/migrations/202609270004_session_adjustments.md). Requieren aplicar 004 manualmente antes de usar el frontend actualizado.
 
 El detalle financiero de `/admin/sales-sessions` requiere la migración incremental 003. Véanse [SQL, permisos, compatibilidad CSV, resultados y pasos de QA](../../../supabase/migrations/202609270003_session_financial_report.md). La aplicación en QA es manual; no repetir 001/002.

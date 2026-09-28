@@ -72,12 +72,14 @@ function Amount({
   );
 }
 
-export function AdminCashView() {
+export function AdminCashView({ embedded = false, initialAction = null, onClose }: { embedded?: boolean; initialAction?: 'session' | 'movement' | null; onClose?: () => void } = {}) {
   const { isCatalogAdmin, staffRoles, user } = useSupabaseAuth();
   const admin = isCatalogAdmin || staffRoles.includes("superadmin");
   const allowed = admin || staffRoles.includes("cashier");
   const [data, setData] = useState<CashData | null>(null);
   const [sessionId, setSessionId] = useState("");
+  const [month, setMonth] = useState(() => bogotaToday().slice(0, 7));
+  const [modal, setModal] = useState<'session' | 'movement' | null>(initialAction);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -92,7 +94,7 @@ export function AdminCashView() {
     category: "",
     method: "",
     origin: "",
-    session: "selected",
+    session: "all",
   });
   const inFlight = useRef(false);
   const pendingKey = `zafiro-cash-pending:${user?.id ?? ""}`;
@@ -113,17 +115,30 @@ export function AdminCashView() {
     setSessionId(
       (current) =>
         current ||
-        next.sessions.find((s) => s.status === "open")?.id ||
-        next.sessions[0]?.id ||
+        next.sessions.find((s) => (embedded || s.business_date.startsWith(month)) && s.status === "open")?.id ||
+        (embedded ? '' : next.sessions.find(s => s.business_date.startsWith(month))?.id) ||
         "",
     );
   }
   useEffect(() => {
     if (allowed) void refresh().catch((e) => setError(e.message));
   }, [allowed]);
+  useEffect(() => {
+    if (!modal || typeof document === 'undefined') return;
+    const previous = document.activeElement as HTMLElement | null;
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = overflow; previous?.focus(); };
+  }, [modal]);
   if (!allowed) return <Navigate to="/admin/pos" replace />;
   const selected = data?.sessions.find((s) => s.id === sessionId);
   const active = data?.sessions.find((s) => s.status === "open");
+  const monthSessions = (data?.sessions ?? []).filter(s => s.business_date.startsWith(month));
+  function closeModal() { if (busy) return; setModal(null); onClose?.(); }
+  function openModal(action: 'session' | 'movement') {
+    if (active) setMonth(active.business_date.slice(0, 7));
+    setSessionId(active?.id ?? ''); setCounted(''); setError(''); setModal(action);
+  }
   const register = data?.registers.find(
     (c) => c.sales_session_id === sessionId,
   );
@@ -136,6 +151,7 @@ export function AdminCashView() {
       : null;
   const movements = (data?.movements ?? []).filter(
     (m) =>
+      m.expense_date.startsWith(month) &&
       (filters.session === "all" ||
         (filters.session === "none"
           ? !m.sales_session_id
@@ -179,6 +195,8 @@ export function AdminCashView() {
       if (payload.action === "open")
         setSessionId(String(result.sales_session_id));
       setNotice("Operación guardada.");
+      setModal(null);
+      if (payload.action === 'open') setMonth(salesDayOptions().suggested.slice(0, 7));
       try {
         await refresh();
       } catch (e) {
@@ -186,6 +204,7 @@ export function AdminCashView() {
           `Se guardó, pero no se pudo actualizar la vista: ${(e as Error).message}`,
         );
       }
+      onClose?.();
     } catch (e) {
       if ((e as { confirmedRejection?: boolean }).confirmedRejection) {
         localStorage.removeItem(pendingKey);
@@ -213,7 +232,7 @@ export function AdminCashView() {
       action,
       session: sessionId || null,
     };
-    if (action === "open" && !active) payload.session = null;
+    if (action === "open" && !active) { payload.session = null; payload.business_date = salesDayOptions().suggested; }
     if (action === "close") payload.expected = expected;
     if (action === "movement") {
       payload.kind = kind;
@@ -242,150 +261,23 @@ export function AdminCashView() {
     anchor.click();
     URL.revokeObjectURL(url);
   }
-  return (
-    <AdminLayout>
-      <div className="space-y-6">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h1 className="font-display text-3xl">Caja y gastos</h1>
-            <p className="mt-2 text-mist">
-              Pesos colombianos · Fechas de Bogotá · Base, recaudo y movimientos
-              separados de ventas.
-            </p>
-          </div>
-          <Link className={button} to="/admin/pos">
-            Volver al POS
-          </Link>
-        </div>
-        {error && (
-          <p
-            role="alert"
-            className="rounded-xl bg-rose-500/10 p-4 text-rose-200"
-          >
-            {error}
-          </p>
-        )}
-        {notice && (
-          <p role="status" className="text-cyanGlow">
-            {notice}
-          </p>
-        )}
-        {pending && (
-          <div className={panel}>
-            <p>
-              Operación pendiente de confirmar:{" "}
-              {String(pending.payload.concept ?? pending.payload.action)}. El
-              reintento utiliza la misma solicitud para evitar duplicados.
-            </p>
-            <button
-              className={button}
-              disabled={busy}
-              onClick={() => void run(pending.payload)}
-            >
-              Reintentar operación pendiente
-            </button>
-          </div>
-        )}
-        <button
-          className={button}
-          disabled={busy}
-          onClick={() => {
-            setError("");
-            void refresh().catch((e) => setError(e.message));
-          }}
-        >
-          Recargar caja y gastos
-        </button>
-        {!data ? (
-          <p>Cargando módulo de caja…</p>
-        ) : (
-          <>
-            {selected && <Link to={sessionDetailUrl(selected.id)} className={button}>Ver detalle de la jornada</Link>}
-            <Field label="Jornada">
-              <select
-                className={input}
-                value={sessionId}
-                onChange={(e) => {
-                  setSessionId(e.target.value);
-                  setCounted("");
-                }}
-                disabled={busy}
-              >
-                <option value="">Selecciona una jornada</option>
-                {data.sessions.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.session_label} ·{" "}
-                    {s.status === "open" ? "Abierta" : "Cerrada"}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            {selected && (
-              <section className={panel}>
-                <h2 className="text-xl">Arqueo · {selected.business_date}</h2>
-                <div className="grid gap-4 sm:grid-cols-3 lg:grid-cols-6">
-                  {[
-                    [
-                      "Base inicial",
-                      components?.opening == null
-                        ? "Sin registrar"
-                        : money(components.opening),
-                    ],
-                    ["Cobros netos en efectivo", money(components?.cash ?? 0)],
-                    ["Aportes", money(components?.contributions ?? 0)],
-                    ["Gastos desde caja", money(components?.expenses ?? 0)],
-                    ["Retiros", money(components?.withdrawals ?? 0)],
-                    [
-                      "Efectivo esperado",
-                      expected === null ? "Sin registrar" : money(expected),
-                    ],
-                  ].map(([label, value]) => (
-                    <div key={label}>
-                      <p className="text-sm text-mist">{label}</p>
-                      <p className="mt-2 text-lg">{value}</p>
-                    </div>
-                  ))}
-                </div>
-                {register ? (
-                  <p className="text-sm text-mist">
-                    Base registrada por {register.opened_by} ·{" "}
-                    {dateTime(register.opened_at)} · {register.opening_notes}
-                  </p>
-                ) : (
-                  <p className="text-mist">
-                    Apertura y arqueo sin registrar. No se asignan bases ni
-                    conteos históricos automáticamente.
-                  </p>
-                )}
-                {register?.closed_at && (
-                  <div className="space-y-2 border-t border-white/10 pt-4">
-                    <p>
-                      Contado: {money(register.counted!)} · Diferencia:{" "}
-                      {money(register.difference!)} (
-                      {register.difference! < 0
-                        ? "Faltante"
-                        : register.difference! > 0
-                          ? "Sobrante"
-                          : "Sin diferencia"}
-                      )
-                    </p>
-                    <p>
-                      {register.difference_reason} {register.closing_notes}
-                    </p>
-                    <p className="text-sm text-mist">
-                      Cerrado por {register.closed_by} ·{" "}
-                      {dateTime(register.closed_at)}
-                    </p>
-                    <p className="text-sm text-mist">
-                      El arqueo protege la jornada, sus cuentas, pagos y
-                      productos frente a cambios posteriores.
-                    </p>
-                  </div>
-                )}
-              </section>
-            )}
-            <div className="grid items-start gap-6 lg:grid-cols-2">
-              {(!active || (isActive && !register)) && (
+  const operationDialog = modal && (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/75 p-4">
+      <div role="dialog" aria-modal="true" onKeyDown={e => {
+        if (e.key === 'Escape') { e.stopPropagation(); closeModal(); }
+        if (e.key === 'Tab') {
+          const items = Array.from(e.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled)'));
+          const first = items[0], last = items[items.length - 1];
+          if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); }
+          else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
+        }
+      }} aria-label={modal === 'movement' ? 'Registrar movimiento' : !active ? 'Abrir jornada y caja' : 'Arqueo y cierre de jornada'} className="max-h-[90dvh] w-full max-w-xl overflow-y-auto rounded-2xl border border-white/20 bg-obsidian p-4">
+        <button autoFocus type="button" className={button} disabled={busy} onClick={closeModal}>Volver</button>
+        {error && <p role="alert" className="my-3 text-rose-200">{error}</p>}
+        {pending && <button type="button" disabled={busy} className={button} onClick={() => void run(pending.payload)}>Reintentar operación pendiente</button>}
+        {!data ? <p>Cargando caja...</p> : <>
+            <div className="space-y-4">
+              {(modal === "session" && (!active || (isActive && !register))) && (
                 <form className={panel} onSubmit={(e) => submit(e, "open")}>
                   <h2 className="text-xl">
                     {active
@@ -403,22 +295,7 @@ export function AdminCashView() {
                       las ventas cobradas después
                     </p>
                   ) : (
-                    <Field label="Fecha de la jornada">
-                      <select
-                        key={dayOptions.today}
-                        className={input}
-                        name="business_date"
-                        required
-                        defaultValue={dayOptions.suggested}
-                      >
-                        <option value={dayOptions.today}>
-                          Hoy · {dayOptions.today}
-                        </option>
-                        <option value={dayOptions.yesterday}>
-                          Ayer · {dayOptions.yesterday}
-                        </option>
-                      </select>
-                    </Field>
+                    <p className="text-sm text-mist">Fecha de la jornada: {dayOptions.suggested} (automatica, corte a las 06:00 en Bogota).</p>
                   )}
                   <Field label="Base inicial (COP)">
                     <Amount />
@@ -431,7 +308,7 @@ export function AdminCashView() {
                   </button>
                 </form>
               )}
-              <form className={panel} onSubmit={(e) => submit(e, "movement")}>
+              {modal === "movement" && <form className={panel} onSubmit={(e) => submit(e, "movement")}>
                 <h2 className="text-xl">Registrar movimiento</h2>
                 <Field label="Tipo">
                   <select
@@ -530,8 +407,8 @@ export function AdminCashView() {
                 >
                   Guardar movimiento
                 </button>
-              </form>
-              {isActive && register && (
+              </form>}
+              {modal === "session" && isActive && register && (
                 <form className={panel} onSubmit={(e) => submit(e, "close")}>
                   <h2 className="text-xl">Arqueo y cierre de jornada</h2>
                   <p>
@@ -572,6 +449,168 @@ export function AdminCashView() {
                 </form>
               )}
             </div>
+
+        </>}
+      </div>
+    </div>
+  );
+  if (embedded) return operationDialog;
+  return (
+    <AdminLayout>
+      <div className="space-y-6">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h1 className="font-display text-3xl">Caja y gastos</h1>
+            <p className="mt-2 text-mist">
+              Pesos colombianos · Fechas de Bogotá · Base, recaudo y movimientos
+              separados de ventas.
+            </p>
+          </div>
+          <Link className={button} to="/admin/pos">
+            Volver al POS
+          </Link>
+        </div>
+        {error && (
+          <p
+            role="alert"
+            className="rounded-xl bg-rose-500/10 p-4 text-rose-200"
+          >
+            {error}
+          </p>
+        )}
+        {notice && (
+          <p role="status" className="text-cyanGlow">
+            {notice}
+          </p>
+        )}
+        {pending && (
+          <div className={panel}>
+            <p>
+              Operación pendiente de confirmar:{" "}
+              {String(pending.payload.concept ?? pending.payload.action)}. El
+              reintento utiliza la misma solicitud para evitar duplicados.
+            </p>
+            <button
+              className={button}
+              disabled={busy}
+              onClick={() => void run(pending.payload)}
+            >
+              Reintentar operación pendiente
+            </button>
+          </div>
+        )}
+        <button
+          className={button}
+          disabled={busy}
+          onClick={() => {
+            setError("");
+            void refresh().catch((e) => setError(e.message));
+          }}
+        >
+          Recargar caja y gastos
+        </button>
+        {!data ? (
+          <p>Cargando módulo de caja…</p>
+        ) : (
+          <>
+            <div className="flex flex-col items-start gap-3">
+              <button className={button} disabled={busy} onClick={() => openModal('session')}>{active ? 'Arqueo y cierre de jornada' : 'Abrir jornada y caja'}</button>
+              <button className={button} disabled={busy} onClick={() => openModal('movement')}>Registrar movimiento</button>
+              {admin && selected && <Link to={sessionDetailUrl(selected.id)} className={button}>Ver detalle de la jornada</Link>}
+            </div>
+            <Field label="Mes de consulta">
+              <input type="month" className={input} value={month} disabled={busy} onChange={e => {
+                if (!e.target.value) return;
+                setMonth(e.target.value); setSessionId(''); setCounted('');
+                setFilters(f => ({ ...f, session: 'all', start: '', end: '' }));
+              }} />
+            </Field>
+            {!monthSessions.length && <p className="text-mist">No hay jornadas en este mes. Puedes consultar los gastos sin jornada.</p>}
+            <Field label="Jornada">
+              <select
+                className={input}
+                value={sessionId}
+                onChange={(e) => {
+                  setSessionId(e.target.value);
+                  setFilters(f => ({ ...f, session: e.target.value ? 'selected' : 'all' }));
+                  setCounted("");
+                }}
+                disabled={busy}
+              >
+                <option value="">Selecciona una jornada</option>
+                {(modal ? data.sessions.filter(s => s.id === sessionId) : monthSessions).map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.session_label} ·{" "}
+                    {s.status === "open" ? "Abierta" : "Cerrada"}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            {selected && (
+              <section className={panel}>
+                <h2 className="text-xl">Arqueo · {selected.business_date}</h2>
+                <div className="grid gap-4 sm:grid-cols-3 lg:grid-cols-6">
+                  {[
+                    [
+                      "Base inicial",
+                      components?.opening == null
+                        ? "Sin registrar"
+                        : money(components.opening),
+                    ],
+                    ["Cobros netos en efectivo", money(components?.cash ?? 0)],
+                    ["Aportes", money(components?.contributions ?? 0)],
+                    ["Gastos desde caja", money(components?.expenses ?? 0)],
+                    ["Retiros", money(components?.withdrawals ?? 0)],
+                    [
+                      "Efectivo esperado",
+                      expected === null ? "Sin registrar" : money(expected),
+                    ],
+                  ].map(([label, value]) => (
+                    <div key={label}>
+                      <p className="text-sm text-mist">{label}</p>
+                      <p className="mt-2 text-lg">{value}</p>
+                    </div>
+                  ))}
+                </div>
+                {register ? (
+                  <p className="text-sm text-mist">
+                    Base registrada por {register.opened_by} ·{" "}
+                    {dateTime(register.opened_at)} · {register.opening_notes}
+                  </p>
+                ) : (
+                  <p className="text-mist">
+                    Apertura y arqueo sin registrar. No se asignan bases ni
+                    conteos históricos automáticamente.
+                  </p>
+                )}
+                {register?.closed_at && (
+                  <div className="space-y-2 border-t border-white/10 pt-4">
+                    <p>
+                      Contado: {money(register.counted!)} · Diferencia:{" "}
+                      {money(register.difference!)} (
+                      {register.difference! < 0
+                        ? "Faltante"
+                        : register.difference! > 0
+                          ? "Sobrante"
+                          : "Sin diferencia"}
+                      )
+                    </p>
+                    <p>
+                      {register.difference_reason} {register.closing_notes}
+                    </p>
+                    <p className="text-sm text-mist">
+                      Cerrado por {register.closed_by} ·{" "}
+                      {dateTime(register.closed_at)}
+                    </p>
+                    <p className="text-sm text-mist">
+                      El arqueo protege la jornada, sus cuentas, pagos y
+                      productos frente a cambios posteriores.
+                    </p>
+                  </div>
+                )}
+              </section>
+            )}
+            {operationDialog}
             <section className={panel}>
               <h2 className="text-xl">Consulta de movimientos y gastos</h2>
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -585,7 +624,7 @@ export function AdminCashView() {
                   >
                     <option value="selected">Jornada seleccionada</option>
                     <option value="all">
-                      Todas las jornadas y gastos sin jornada
+                      Todas las jornadas del mes y gastos sin jornada
                     </option>
                     <option value="none">Sin jornada</option>
                   </select>
