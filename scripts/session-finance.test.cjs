@@ -134,7 +134,10 @@ function reportHarness({
   cashFails = false,
   reconciled = false,
   query = id,
+  history,
+  sales = [],
 } = {}) {
+  const downloads = [];
   let cursor = 0,
     states = [],
     effects = [],
@@ -194,6 +197,9 @@ function reportHarness({
     Map,
     Set,
     URLSearchParams,
+    Blob,
+    URL: { createObjectURL: blob => { downloads.push(blob); return 'blob:test'; }, revokeObjectURL() {} },
+    document: { createElement: () => ({ click() {} }) },
     window: { setTimeout: () => {}, scrollTo: () => {} },
     require(name) {
       if (name === "react") return hooks;
@@ -220,7 +226,7 @@ function reportHarness({
         return {
           loadAuthorizedSessionReportFromSupabase: async () => {
             reads++;
-            return { history: [session], closedSales: [], tables: [] };
+            return { history: history ?? [session], closedSales: sales, tables: [] };
           },
         };
       if (name.includes("cash.repository"))
@@ -260,6 +266,7 @@ function reportHarness({
       return t;
     },
     counts: () => [reads, cashReads],
+    downloads,
   };
 }
 function nodes(n, type) {
@@ -338,4 +345,26 @@ test("roles denegados no cargan datos; ID inexistente y error caja son explícit
       .disabled,
     true,
   );
+});
+
+
+test('linked detail outside period never changes metrics, comparisons or either CSV', async () => {
+  const makeSession=(sid,date,amount)=>({id:sid,businessDate:date,sessionLabel:sid,status:'closed',openedAt:date+'T23:00:00Z',closedAt:date+'T23:59:00Z',updatedAt:date+'T23:59:00Z',notes:'',totalSold:amount,totalCollected:amount,orderCount:1,paymentCount:1,summary:{grossSales:amount,totalCollected:amount,orderCount:1,confirmedPayments:1,pendingBalance:0,products:[],paymentMethods:[{method:'cash',totalAmount:amount,paymentCount:1}]}});
+  const history=[makeSession('outside','2020-01-10',90000),makeSession('inside','2020-02-10',10000)];
+  const sales=history.map(s=>({id:'order-'+s.id,salesSessionId:s.id,closedAt:s.closedAt,openedAt:s.openedAt,financialStatus:'paid_total',tableNameSnapshot:s.id,tableCodeSnapshot:s.id,summary:{totalDue:s.totalSold,totalPaid:s.totalSold,remainingBalance:0},items:[],payments:[{id:'pay-'+s.id,status:'confirmed',method:'cash',amountApplied:s.totalCollected}]}));
+  const results=[];
+  for (const query of [null,'outside']) {
+    const h=reportHarness({history,sales,query}); h.render(); await settle(); h.render(); await settle();
+    let tree=h.render();
+    nodes(tree,'select').find(n=>nodes(n,'option').some(o=>o.props.value==='2020-02')).props.onChange({target:{value:'2020-02'}});
+    tree=h.render(); h.render(); tree=h.render();
+    const metrics=nodes(tree,'article').filter(n=>String(n.props.className).includes('sm:p-5')).map(text);
+    for(const label of ['Exportar resumen','Exportar detalle']) nodes(tree,'button').find(n=>text(n)===label).props.onClick();
+    const csv=await Promise.all(h.downloads.map(b=>b.text()));
+    assert.equal(csv.length,2);
+    for(const output of csv) { assert.match(output,/inside/); assert.doesNotMatch(output,/outside/); }
+    if(query) { assert.match(text(tree),/Fuera del per/); assert.ok(nodes(tree,'finance').some(n=>n.props.children==='outside')); assert.match(text(tree),/order-outside|outside/); }
+    results.push({metrics,csv});
+  }
+  assert.deepEqual(results[0],results[1]);
 });

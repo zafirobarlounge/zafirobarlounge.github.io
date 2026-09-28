@@ -36,6 +36,27 @@ function evaluate(source, context) {
   return vm.runInNewContext(compiled, context);
 }
 
+test('POS financial detail link is gated to cashier/admin and targets active session UUID', () => {
+  const file=parse(posPath);
+  let link, permission;
+  function visit(n) {
+    if(ts.isVariableDeclaration(n) && n.name.getText(file)==='canOperateCashier') permission=n.initializer.getText(file);
+    if(ts.isJsxExpression(n) && n.expression?.getText(file).startsWith('canOperateCashier && posState?.activeSalesSession &&')) link=n.expression.getText(file);
+    ts.forEachChild(n,visit);
+  }
+  visit(file); assert.ok(link); assert.ok(permission);
+  const financeSource=readFileSync(path.join(root,'src/admin/cash/sessionFinance.ts'),'utf8');
+  const finance={exports:{},require:()=>({})}; evaluate(financeSource,finance);
+  for(const role of ['cashier','superadmin','waiter','kitchen','bar',null]) {
+    const canOperateCashier=evaluate(permission,{actor:{roles:role?[role]:[]},hasRole:r=>r===role});
+    const context={exports:{},canOperateCashier,posState:{activeSalesSession:{id:'uuid-active'}},sessionDetailUrl:finance.exports.sessionDetailUrl,Link:'a',require:()=>({jsx:(type,props)=>({type,props})})};
+    const result=evaluate(link,context);
+    if(role==='cashier'||role==='superadmin') assert.equal(result.props.to,'/admin/sales-sessions?session=uuid-active');
+    else assert.equal(result,false);
+    assert.ok(!evaluate(link,{...context,posState:{activeSalesSession:null}}));
+  }
+});
+
 function loadRepository(client) {
   const context = {
     exports: {},

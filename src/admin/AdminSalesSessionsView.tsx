@@ -111,9 +111,11 @@ export function AdminSalesSessionsView() {
     return historyMonthKeys.includes(currentMonthKey) ? historyMonthKeys : [currentMonthKey, ...historyMonthKeys];
   }, [sessions]);
   const visibleSessions = useMemo(
-    () => includeLinkedSession(filterSessionsByPeriod(sessions, selectedMonthKey, customDateRange), sessions, linkedId),
-    [customDateRange, selectedMonthKey, sessions, linkedId],
+    () => filterSessionsByPeriod(sessions, selectedMonthKey, customDateRange),
+    [customDateRange, selectedMonthKey, sessions],
   );
+  const detailSessions = useMemo(() => includeLinkedSession(visibleSessions, sessions, linkedId), [visibleSessions, sessions, linkedId]);
+  const linkedOutsidePeriod = Boolean(linkedId && sessions.some(s => s.id === linkedId) && !visibleSessions.some(s => s.id === linkedId));
   const visibleClosedSessions = useMemo(() => visibleSessions.filter((session) => session.status === 'closed'), [visibleSessions]);
   const visibleSessionIds = useMemo(() => new Set(visibleSessions.map((session) => session.id)), [visibleSessions]);
   const visibleClosedSales = useMemo(
@@ -201,15 +203,15 @@ export function AdminSalesSessionsView() {
   }, [expandedSessionId]);
 
   useEffect(() => {
-    if (!visibleSessions.length) {
+    if (!detailSessions.length) {
       setExpandedSessionId(null);
       return;
     }
 
-    if (expandedSessionId && !visibleSessions.some((session) => session.id === expandedSessionId)) {
-      setExpandedSessionId(visibleSessions[0].id);
+    if (expandedSessionId && !detailSessions.some((session) => session.id === expandedSessionId)) {
+      setExpandedSessionId(detailSessions[0].id);
     }
-  }, [expandedSessionId, visibleSessions]);
+  }, [expandedSessionId, detailSessions]);
 
   useEffect(() => {
     if (linkedId && sessions.some(s => s.id === linkedId)) setExpandedSessionId(linkedId);
@@ -524,7 +526,7 @@ export function AdminSalesSessionsView() {
       </section>
 
       {linkedId && !isLoading && !errorMessage && !sessions.some(s => s.id === linkedId) && <p role="alert" className="mt-4 text-amberGlow">No existe una jornada accesible con el ID indicado: {linkedId}.</p>}
-      {linkedId && <p className="mt-3 text-sm text-mist">El enlace incluye la jornada solicitada aunque quede fuera del periodo seleccionado. <button className="underline" onClick={() => setSearchParams({})}>Volver al filtro del periodo</button></p>}
+      {linkedOutsidePeriod && <p className="mt-3 text-sm text-mist">La jornada del enlace está fuera del período. Abrir su detalle no cambia los totales, comparaciones ni exportaciones: cada cálculo conserva sus filtros de período. <button className="underline" onClick={() => setSearchParams({})}>Volver al filtro del periodo</button></p>}
       {cashLoading && <p role="status" className="mt-4 text-mist">Cargando detalle financiero...</p>}
       {cashError && <div role="alert" className="mt-4 rounded-xl border border-rose-300/30 p-4 text-rose-100"><p>{cashError}</p><button className={ghostButtonClassName} onClick={() => void reloadCash()}>Reintentar carga de caja</button><p>Las ventas siguen disponibles. El resumen CSV espera la carga financiera.</p></div>}
       {errorMessage ? (
@@ -626,11 +628,11 @@ export function AdminSalesSessionsView() {
 
             {!visibleSessions.length ? <EmptyState message="No hay jornadas en este periodo." /> : null}
 
-            {visibleSessions.map((session) => {
+            {detailSessions.map((session) => {
               const isExpanded = expandedSessionId === session.id;
               const reconciled = Boolean(cashData?.registers.find(r => r.sales_session_id === session.id)?.closed_at);
               const canEdit = access.manage && Boolean(cashData) && !cashLoading && session.status === 'closed';
-              const sessionSales = visibleClosedSales.filter((order) => order.salesSessionId === session.id);
+              const sessionSales = closedSales.filter((order) => order.salesSessionId === session.id && isPaidClosedSale(order));
               const cashTotal = getSalesSessionCashTotal(session);
               const transferTotal = getSalesSessionTransferTotal(session);
               const productsCount = getSalesSessionProductsCount(session);
@@ -640,6 +642,7 @@ export function AdminSalesSessionsView() {
 
               return (
                 <article key={session.id} className="space-y-3">
+                  {!visibleSessionIds.has(session.id) && <p className="text-sm text-amberGlow">Detalle solicitado · Fuera del período</p>}
                   <button
                     ref={(node) => {
                       sessionHeaderRefs.current[session.id] = node;

@@ -181,7 +181,7 @@ export function AdminCashView({ embedded = false, initialAction = null, onClose 
       : null;
   const movements = (data?.movements ?? []).filter(
     (m) =>
-      m.expense_date.startsWith(month) &&
+      (filters.session === 'selected' || m.expense_date.startsWith(month)) &&
       (filters.session === "all" ||
         (filters.session === "none"
           ? !m.sales_session_id
@@ -561,7 +561,7 @@ export function AdminCashView({ embedded = false, initialAction = null, onClose 
             <div className="flex flex-col items-start gap-3">
               <button className={button} disabled={busy} onClick={() => openModal('session')}>{active ? 'Arqueo y cierre de jornada' : 'Abrir jornada y caja'}</button>
               <button className={button} disabled={busy} onClick={() => openModal('movement')}>Registrar movimiento</button>
-              {admin && selected && <Link to={sessionDetailUrl(selected.id)} className={button}>Ver detalle de la jornada</Link>}
+              {allowed && selected && <Link to={sessionDetailUrl(selected.id)} className={button}>Ver detalle de la jornada</Link>}
             </div>
             <Field label="Mes de consulta">
               <input type="month" className={input} value={month} disabled={busy} onChange={e => {
@@ -658,6 +658,9 @@ export function AdminCashView({ embedded = false, initialAction = null, onClose 
             {operationDialog}
             <section className={panel}>
               <h2 className="text-xl">Consulta de movimientos y gastos</h2>
+              <p className="text-sm text-mist">{filters.session === 'selected'
+                ? 'Movimientos de la jornada seleccionada por su ID, aunque su fecha de gasto pertenezca a otro mes. El mes solo sirve para localizar jornadas; los filtros adicionales y el CSV respetan este criterio.'
+                : 'Movimientos del mes elegido según la fecha del gasto. Los filtros adicionales y el CSV respetan este criterio.'}</p>
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 <Field label="Ámbito">
                   <select

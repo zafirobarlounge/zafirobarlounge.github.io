@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom';
 import { AdminCashView } from './cash/AdminCashView';
+import { sessionDetailUrl } from './cash/sessionFinance';
 import type { ReactNode } from 'react';
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, LayoutGrid, List } from 'lucide-react';
@@ -3518,6 +3519,7 @@ export function AdminPosView() {
                   </button>
                   <button type="button" onClick={() => setCashModal('movement')} className={ghostButtonClassName}>Registrar movimiento</button>
                   <Link to="/admin/cash" className="text-sm text-cyanGlow underline">Caja y gastos</Link>
+                  {canOperateCashier && posState?.activeSalesSession && <Link to={sessionDetailUrl(posState.activeSalesSession.id)} className="text-sm text-cyanGlow underline">Ver detalle de la jornada</Link>}
                   <p className="text-sm leading-6 text-mist">Registra la base inicial y realiza el arqueo en Caja y gastos. Debes resolver las cuentas y pagos pendientes antes del cierre.</p>
                 </div>
 

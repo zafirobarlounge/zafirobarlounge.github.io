@@ -117,6 +117,7 @@ function harness({
   save = async () => ({}),
   data = fixture(),
 } = {}) {
+  const downloads = [];
   let cursor = 0,
     states = [],
     effects = [],
@@ -146,6 +147,9 @@ function harness({
     exports: {},
     Intl,
     Date,
+    Blob,
+    URL: { createObjectURL: blob => { downloads.push(blob); return 'blob:test'; }, revokeObjectURL() {} },
+    document: { body: { style: {} }, createElement: () => ({ click() {} }) },
     crypto: { randomUUID },
     window: { confirm: () => true },
     localStorage: {
@@ -196,6 +200,7 @@ function harness({
   };
   return {
     storage,
+    downloads,
     render() {
       cursor = 0;
       const tree = expand(context.exports.AdminCashView({ initialAction, embedded, onClose }));
@@ -229,7 +234,7 @@ test('guardar base pendiente cambia automaticamente al arqueo sin cerrar el moda
     assert.equal(nodes(tree,'div').filter(n=>n.props.role==='dialog').length,1);
   }
 });
-test('consulta mensual limita jornadas y movimientos; caja no muestra enlace al reporte', async () => {
+test('consulta mensual limita jornadas y movimientos; cajero tiene enlace al UUID seleccionado', async () => {
   const data=fixture();
   data.sessions.push({...data.sessions[0],id:'old',session_label:'Antigua',business_date:'2020-02-01',status:'closed'});
   data.movements=[{id:'m',sales_session_id:null,kind:'expense',origin:'owner',method:'cash',category:'other',concept:'Gasto antiguo',amount:10,expense_date:'2020-02-01',created_at:'2020-02-01T12:00:00Z',created_by:'test'}];
@@ -237,7 +242,7 @@ test('consulta mensual limita jornadas y movimientos; caja no muestra enlace al 
   let tree=h.render();
   assert.equal(nodes(tree,'form').length,0);
   assert.ok(!nodes(tree,'option').some(n=>n.props.value==='old'));
-  assert.ok(!nodes(tree,'a').some(n=>String(n.props.to).includes('sales-sessions')));
+  assert.equal(nodes(tree,'a').find(n=>text(n)==='Ver detalle de la jornada').props.to,'/admin/sales-sessions?session=session');
   nodes(tree,'input').find(n=>n.props.type==='month').props.onChange({target:{value:'2020-02'}});
   tree=h.render();
   assert.ok(nodes(tree,'option').some(n=>n.props.value==='old'));
@@ -376,4 +381,27 @@ test("interfaz bloquea roles operativos y no inventa arqueos históricos", async
       text(f).includes("Arqueo y cierre de jornada"),
     ),
   );
+});
+
+
+test('selected UUID includes next-month dawn; all/none and CSV use expense month', async () => {
+  for(const role of ['cashier','superadmin']) {
+    const data=fixture(); data.sessions[0].business_date='2026-09-30';
+    const movement=(id,date,sid)=>({id,sales_session_id:sid,kind:'expense',origin:'register',method:'cash',category:'other',concept:id,amount:10,expense_date:date,created_at:date+'T06:00:00Z',created_by:'test'});
+    data.movements=[movement('September','2026-09-30','session'),movement('Dawn','2026-10-01','session'),movement('Unassigned','2026-09-30',null),movement('OtherUUID','2026-09-30','other')];
+    const h=harness({data,role,initialAction:null}); h.render(); await settle();
+    let tree=h.render();
+    assert.equal(nodes(tree,'a').find(n=>text(n)==='Ver detalle de la jornada').props.to,'/admin/sales-sessions?session=session');
+    const scope=()=>nodes(tree,'select').find(n=>nodes(n,'option').some(o=>o.props.value==='all'));
+    for(const [mode,expected] of [['selected',['September','Dawn']],['all',['September','Unassigned','OtherUUID']],['none',['Unassigned']]]) {
+      scope().props.onChange({target:{value:mode}}); tree=h.render();
+      const cards=nodes(tree,'article').map(text).join('|');
+      nodes(tree,'button').find(n=>text(n)==='Exportar detalle CSV').props.onClick();
+      const csv=await h.downloads.at(-1).text();
+      for(const name of ['September','Dawn','Unassigned','OtherUUID']) {
+        assert.equal(cards.includes(name),expected.includes(name),mode+name);
+        assert.equal(csv.includes(name),expected.includes(name),'CSV '+mode+name);
+      }
+    }
+  }
 });
