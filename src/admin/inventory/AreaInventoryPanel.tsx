@@ -284,7 +284,7 @@ export function AreaInventoryPanel({ area }: { area: InventoryArea }) {
             <>
               <div className="flex flex-wrap items-center justify-between gap-3 rounded-[1rem] border border-cyanGlow/15 bg-cyanGlow/[0.05] px-4 py-3">
                 <p className="text-sm font-medium text-ivory">{summaryText}</p>
-                <button type="button" className={ghostButton} disabled={loading} onClick={() => void refresh()}>{loading ? 'Actualizando…' : 'Actualizar'}</button>
+                <button type="button" className={ghostButton} disabled={loading} onClick={() => void refresh()}>{loading ? 'Recargando…' : 'Recargar inventario'}</button>
               </div>
 
               <div className="mt-4 grid gap-3 rounded-[1.1rem] border border-white/10 bg-black/15 p-4 sm:grid-cols-2">

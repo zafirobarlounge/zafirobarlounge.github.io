@@ -129,6 +129,7 @@ test('inventario del área inicia cerrado y solo solicita datos al primer despli
   assert.doesNotMatch(panel, /useEffect\(\(\) => \{\s*void refresh/);
   assert.match(panel, /expanded \? 'Ocultar inventario' : 'Ver inventario'/);
   assert.match(panel, /disabled=\{loading\} onClick=\{\(\) => void refresh\(\)\}/);
+  assert.match(panel, /loading \? 'Recargando…' : 'Recargar inventario'/);
   assert.match(panel, /await saveInventoryCommand[\s\S]*await refresh\(\)/);
 });
 
