@@ -266,6 +266,32 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
       assert.equal(sql(`select sum(quantity_delta) from public.inventory_movements where item_id='${bread.id}';`), '10.000');
     });
 
+    await t.test('recepcion distinta y parcial conserva pendientes por cantidad base', () => {
+      const soda = command('admin@test.invalid', { action: 'save_item', name: 'Coca-Cola 400 ml', base_unit: 'unit', precision_scale: 0, areas: ['bar'] });
+      const p12 = command('admin@test.invalid', { action: 'save_presentation', item_id: soda.id, name: 'Paca x12', content_per_package: 12, content_unit: 'unit' });
+      const p24 = command('admin@test.invalid', { action: 'save_presentation', item_id: soda.id, name: 'Paca x24', content_per_package: 24, content_unit: 'unit' });
+      command('cashier@test.invalid', { action: 'initial_count', item_id: soda.id, quantity: 0, reason: 'Inicio QA' });
+
+      const requestNotes = `zafiro-presentation-v1:${JSON.stringify({ presentation:{ presentation_id:p12.id,presentation_name:'Paca x12',content_per_package:12,content_unit:'unit',package_quantity:2 },notes:'Reposicion QA' })}`;
+      const movementsBeforeRequest = sql(`select count(*) from public.inventory_movements where item_id='${soda.id}';`);
+      const differentPresentationRequest = command('bar@test.invalid', { action: 'submit', kind: 'replenishment', area: 'bar', status: 'sent', lines: [{ item_id: soda.id, requested_quantity: 24, notes: requestNotes }] });
+      assert.equal(sql(`select count(*) from public.inventory_movements where item_id='${soda.id}';`), movementsBeforeRequest);
+      const differentPresentationLine = sql(`select id from public.inventory_submission_lines where submission_id='${differentPresentationRequest.id}';`);
+      command('cashier@test.invalid', { action: 'review_submission', submission_id: differentPresentationRequest.id, status: 'approved', lines: [{ line_id: differentPresentationLine, approved_quantity: 24 }] });
+      const differentPresentationReceipt = command('cashier@test.invalid', { action: 'receive', supplier: 'Proveedor x24', lines: [{ item_id: soda.id, presentation_id: p24.id, package_quantity: 1, submission_line_id: differentPresentationLine }] });
+      assert.equal(sql(`select presentation_name_snapshot from public.inventory_receipt_lines where receipt_id='${differentPresentationReceipt.id}';`), 'Paca x24');
+      assert.equal(sql(`select received_quantity from public.inventory_submission_lines where id='${differentPresentationLine}';`), '24.000');
+      assert.equal(sql(`select status from public.inventory_submissions where id='${differentPresentationRequest.id}';`), 'received');
+
+      const partialRequest = command('bar@test.invalid', { action: 'submit', kind: 'replenishment', area: 'bar', status: 'sent', lines: [{ item_id: soda.id, requested_quantity: 24, notes: requestNotes }] });
+      const partialLine = sql(`select id from public.inventory_submission_lines where submission_id='${partialRequest.id}';`);
+      command('cashier@test.invalid', { action: 'review_submission', submission_id: partialRequest.id, status: 'approved', lines: [{ line_id: partialLine, approved_quantity: 24 }] });
+      command('cashier@test.invalid', { action: 'receive', supplier: 'Entrega parcial', lines: [{ item_id: soda.id, presentation_id: p12.id, package_quantity: 1, submission_line_id: partialLine }] });
+      assert.equal(sql(`select received_quantity from public.inventory_submission_lines where id='${partialLine}';`), '12.000');
+      assert.equal(sql(`select approved_quantity-received_quantity from public.inventory_submission_lines where id='${partialLine}';`), '12.000');
+      assert.equal(sql(`select status from public.inventory_submissions where id='${partialRequest.id}';`), 'partially_received');
+    });
+
     await t.test('importación inicial es administrativa, transaccional, idempotente y no inventa movimientos', () => {
       const payload = {
         articles: [{ code:'IMPORT_PAN',name:'Pan importado',area:'kitchen',base_unit:'unit',initial_quantity:null,initial_unit_cost:1200,minimum_quantity:null,target_quantity:null,notes:'QA' }],
