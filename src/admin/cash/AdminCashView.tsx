@@ -113,7 +113,7 @@ export function AdminCashView({ embedded = false, initialAction = null, onClose 
     category: "",
     method: "",
     origin: "",
-    session: "all",
+    session: "selected",
   });
   const inFlight = useRef(false);
   const pendingKey = `zafiro-cash-pending:${user?.id ?? ""}`;
@@ -126,11 +126,20 @@ export function AdminCashView({ embedded = false, initialAction = null, onClose 
     }
   });
   const loadVersion = useRef(0);
+  const initialSelection = useRef(true);
   async function refresh() {
     const version = ++loadVersion.current;
     const next = await loadCash();
     if (version !== loadVersion.current) return;
     setData(next);
+    const currentSession = next.sessions.find(s => s.status === 'open');
+    if (initialSelection.current && currentSession) {
+      initialSelection.current = false;
+      setSessionId(currentSession.id);
+      setMonth(currentSession.business_date.slice(0, 7));
+      return;
+    }
+    initialSelection.current = false;
     setSessionId(
       (current) =>
         current ||
