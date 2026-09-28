@@ -58,6 +58,16 @@ test('filtro de presentaciones excluye el articulo anterior y selecciona la coin
   assert.equal(empty.selectedItemId, '');
 });
 
+test('mensajes operativos de inventario vencen y las validaciones permanecen visibles', () => {
+  assert.equal(domain.exports.getInventoryMessageDuration(false), 5000);
+  assert.equal(domain.exports.getInventoryMessageDuration(true), 8000);
+  const view = readFileSync('src/admin/inventory/AdminInventoryView.tsx', 'utf8');
+  assert.match(view, /getInventoryMessageDuration\(Boolean\(error\)\)/);
+  assert.match(view, /getInventoryMessageDuration\(true\)/);
+  assert.match(view, /window\.clearTimeout/);
+  assert.match(view, /const errors=\[\.\.\.\(parsed\?\.errors/);
+});
+
 test('importador XLSX se limita a configuración administrativa y exige vista previa', () => {
   const view = readFileSync('src/admin/inventory/AdminInventoryView.tsx', 'utf8');
   const repository = readFileSync('src/admin/inventory/inventory.repository.ts', 'utf8');

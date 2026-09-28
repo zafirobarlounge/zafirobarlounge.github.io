@@ -162,6 +162,10 @@ export const submissionKindLabels: Record<InventorySubmissionKind, string> = {
   replenishment: 'Solicitud de reposición', count: 'Conteo físico', damage: 'Daño o pérdida',
 };
 
+export function getInventoryMessageDuration(hasError: boolean) {
+  return hasError ? 8000 : 5000;
+}
+
 const submissionPresentationSnapshotPrefix = 'zafiro-presentation-v1:';
 
 export function encodeInventorySubmissionLineNotes(notes: string, presentation?: InventoryReplenishmentPresentationSnapshot | null) {

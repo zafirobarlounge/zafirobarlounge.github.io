@@ -4,7 +4,7 @@ import * as XLSX from 'xlsx';
 import { AdminLayout } from '../AdminLayout';
 import { useSupabaseAuth } from '../../auth/SupabaseAuthProvider';
 import {
-  filterInventoryStockItems, formatConfiguredInventoryQuantity, formatInventoryMoneyInput, formatInventoryQuantity, getInventoryItemSearchSelection, inventoryItemMatchesSearch, inventoryMoneyInput, inventoryMovementCsv, inventoryUnitLabels, movementLabels, parseInventorySubmissionLineNotes, receiptCostPreview, submissionKindLabels,
+  filterInventoryStockItems, formatConfiguredInventoryQuantity, formatInventoryMoneyInput, formatInventoryQuantity, getInventoryItemSearchSelection, getInventoryMessageDuration, inventoryItemMatchesSearch, inventoryMoneyInput, inventoryMovementCsv, inventoryUnitLabels, movementLabels, parseInventorySubmissionLineNotes, receiptCostPreview, submissionKindLabels,
   type InventoryArea, type InventoryData, type InventoryItem, type InventoryStockAreaFilter, type InventoryStockOrder, type InventoryStockStatusFilter, type InventorySubmission, type InventorySubmissionKind, type InventoryUnit,
 } from './inventory.domain';
 import { createInventoryTemplateWorkbook, inventoryImportFingerprint, parseInventoryWorkbook, type ParsedInventoryImport } from './inventory-import';
@@ -42,9 +42,17 @@ export function AdminInventoryView() {
     finally { setLoading(false); }
   }, []);
   useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => {
+    if (!notice && !error) return undefined;
+    const timer = window.setTimeout(() => {
+      setNotice(null);
+      setError(null);
+    }, getInventoryMessageDuration(Boolean(error)));
+    return () => window.clearTimeout(timer);
+  }, [error, notice]);
 
   const run = async (payload: Record<string, unknown>, message: string) => {
-    setBusy(true); setError(null);
+    setBusy(true); setError(null); setNotice(null);
     try {
       await saveInventoryCommand(crypto.randomUUID(), payload);
       setNotice(message); setModal(null); setSelectedItemId(null); await refresh();
@@ -215,6 +223,7 @@ function InventoryImportDialog({ onClose, onImported }: { onClose: () => void; o
   const [parsed,setParsed]=useState<ParsedInventoryImport|null>(null); const [preview,setPreview]=useState<InventoryImportServerPreview|null>(null);
   const [fingerprint,setFingerprint]=useState(''); const [requestId,setRequestId]=useState(''); const [fileName,setFileName]=useState('');
   const [busy,setBusy]=useState(false); const [loadError,setLoadError]=useState<string|null>(null);
+  useEffect(()=>{if(!loadError)return undefined;const timer=window.setTimeout(()=>setLoadError(null),getInventoryMessageDuration(true));return()=>window.clearTimeout(timer);},[loadError]);
   const inspect=async(file:File|undefined)=>{ if(!file)return; setBusy(true);setLoadError(null);setPreview(null);setParsed(null);setFileName(file.name);setRequestId(crypto.randomUUID()); try{ const buffer=await file.arrayBuffer(); const nextParsed=parseInventoryWorkbook(buffer); setParsed(nextParsed);setFingerprint(await inventoryImportFingerprint(buffer)); if(!nextParsed.errors.length)setPreview(await previewInventoryImport(nextParsed.payload)); }catch(reason){setLoadError(reason instanceof Error?reason.message:'No se pudo leer el archivo XLSX.');}finally{setBusy(false);} };
   const errors=[...(parsed?.errors??[]),...(preview?.errors??[])]; const warnings=[...(parsed?.warnings??[]),...(preview?.warnings??[])];
   const confirm=async()=>{ if(!parsed||!preview||errors.length||!fingerprint||!requestId)return; setBusy(true);setLoadError(null); try{ const result=await commitInventoryImport(requestId,fingerprint,parsed.payload); await onImported(`Importación completada: ${result.created_articles} artículos, ${result.created_presentations} presentaciones, ${result.created_menu_associations} asociaciones y ${result.created_initial_counts} conteos iniciales.`); }catch(reason){setLoadError(reason instanceof Error?reason.message:'No se pudo importar el archivo.');}finally{setBusy(false);} };

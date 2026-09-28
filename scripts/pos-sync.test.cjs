@@ -9,6 +9,7 @@ const root = path.resolve(__dirname, '..');
 const repositoryPath = 'src/integrations/supabase/posOperationsRepository.ts';
 const posPath = 'src/admin/AdminPosView.tsx';
 const areaInventoryPath = 'src/admin/inventory/AreaInventoryPanel.tsx';
+const inventoryDomainPath = 'src/admin/inventory/inventory.domain.ts';
 const settingsPath = 'src/admin/AdminPosSettingsView.tsx';
 const parse = (file) => ts.createSourceFile(file, readFileSync(path.join(root, file), 'utf8'), ts.ScriptTarget.Latest, true);
 const plain = (value) => JSON.parse(JSON.stringify(value));
@@ -132,7 +133,7 @@ test('inventario del área inicia cerrado y solo solicita datos al primer despli
 });
 
 test('mensajes del inventario del área usan los tiempos definidos en POS', () => {
-  const duration = loadNamedHelpers(areaInventoryPath, ['getAreaInventoryMessageDuration']);
+  const duration = loadNamedHelpers(inventoryDomainPath, ['getInventoryMessageDuration']);
   assert.equal(duration(false), 5000);
   assert.equal(duration(true), 8000);
   const panel = readFileSync(path.join(root, areaInventoryPath), 'utf8');

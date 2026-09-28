@@ -3,6 +3,7 @@ import {
   formatConfiguredInventoryQuantity,
   formatInventoryQuantity,
   encodeInventorySubmissionLineNotes,
+  getInventoryMessageDuration,
   inventoryItemMatchesSearch,
   inventoryUnitLabels,
   submissionKindLabels,
@@ -19,10 +20,6 @@ import { loadInventory, saveInventoryCommand } from './inventory.repository';
 export type AreaInventoryStatusFilter = 'all' | 'low' | 'depleted' | 'uncounted';
 export type AreaInventoryItemState = Exclude<AreaInventoryStatusFilter, 'all'> | 'available';
 export type AreaInventoryToggleAction = 'close' | 'open' | 'open-and-load';
-
-export function getAreaInventoryMessageDuration(hasError: boolean) {
-  return hasError ? 8000 : 5000;
-}
 
 const statusLabels: Record<string, string> = {
   approved: 'Aprobada',
@@ -170,7 +167,7 @@ export function AreaInventoryPanel({ area }: { area: InventoryArea }) {
     const timer = window.setTimeout(() => {
       setNotice(null);
       setError(null);
-    }, getAreaInventoryMessageDuration(Boolean(error)));
+    }, getInventoryMessageDuration(Boolean(error)));
     return () => window.clearTimeout(timer);
   }, [error, notice]);
 
