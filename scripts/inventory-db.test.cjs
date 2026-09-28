@@ -37,6 +37,7 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
   try {
     for (const file of ['tests/cash-local-bootstrap.sql', 'supabase/schema.sql', 'supabase/pos-schema.sql', 'supabase/migrations/202609270001_cash_management.sql', 'supabase/migrations/202609270002_sales_business_date.sql', 'supabase/migrations/202609270003_session_financial_report.sql', 'supabase/migrations/202609270004_session_adjustments.sql', 'supabase/migrations/202609270005_inventory.sql', 'supabase/migrations/202609280006_inventory_cost_valuation.sql', 'supabase/migrations/202609280007_inventory_initial_import.sql']) sql(readFileSync(file, 'utf8'));
     const legacyItemId = randomUUID(), legacyReceiptA = randomUUID(), legacyReceiptB = randomUUID();
+    const historicalItemId = randomUUID(), historicalSubmissionId = randomUUID(), historicalSubmissionLineId = randomUUID(), historicalReceiptId = randomUUID();
     sql(`insert into public.inventory_items(id,name,base_unit,precision_scale,tracking_started_at,created_by,updated_by) values('${legacyItemId}','Compatibilidad costo','unit',0,now(),'legacy@test.invalid','legacy@test.invalid');
       insert into public.inventory_item_valuations(item_id,current_quantity,average_unit_cost,inventory_value) values('${legacyItemId}',7,11,77);
       insert into public.inventory_receipts(id,request_id,total_cost,received_at,received_by) values('${legacyReceiptA}','${randomUUID()}',20,'2026-09-20T18:00:00Z','legacy@test.invalid'),('${legacyReceiptB}','${randomUUID()}',25,'2026-09-21T18:00:00Z','legacy@test.invalid');
@@ -49,6 +50,13 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
       movements: sql(`select count(*) from public.inventory_movements where item_id='${legacyItemId}';`),
     };
     sql(readFileSync('supabase/migrations/202609280008_inventory_last_purchase_cost.sql', 'utf8'));
+    sql(`insert into public.inventory_items(id,name,base_unit,precision_scale,tracking_started_at,created_by,updated_by) values('${historicalItemId}','Recepción vinculada anterior','unit',0,now(),'legacy@test.invalid','legacy@test.invalid');
+      insert into public.inventory_item_valuations(item_id,current_quantity) values('${historicalItemId}',12);
+      insert into public.inventory_submissions(id,request_id,kind,area,status,submitted_at,created_by) values('${historicalSubmissionId}','${randomUUID()}','replenishment','kitchen','received',now(),'legacy@test.invalid');
+      insert into public.inventory_submission_lines(id,submission_id,item_id,requested_quantity,approved_quantity,received_quantity) values('${historicalSubmissionLineId}','${historicalSubmissionId}','${historicalItemId}',12,12,12);
+      insert into public.inventory_receipts(id,request_id,total_cost,received_at,received_by) values('${historicalReceiptId}','${randomUUID()}',12000,now(),'legacy@test.invalid');
+      insert into public.inventory_receipt_lines(receipt_id,item_id,base_quantity,unit_cost,submission_line_id,line_total_cost,base_unit_cost) values('${historicalReceiptId}','${historicalItemId}',12,1000,'${historicalSubmissionLineId}',12000,1000);`);
+    sql(readFileSync('supabase/migrations/202609280009_inventory_receipt_request_application.sql', 'utf8'));
     sql(`insert into public.admin_users(email) values ('admin@test.invalid');
       insert into public.staff_profiles(email,full_name,is_active) values ('cashier@test.invalid','Caja',true),('bar@test.invalid','Bar',true),('kitchen@test.invalid','Cocina',true),('waiter@test.invalid','Mesero',true),('inactive@test.invalid','Inactivo',false);
       insert into public.staff_role_assignments(email,role) values ('cashier@test.invalid','cashier'),('bar@test.invalid','bar'),('kitchen@test.invalid','kitchen'),('waiter@test.invalid','waiter'),('inactive@test.invalid','cashier');
@@ -62,6 +70,8 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
       assert.equal(sql(`select count(*) from public.inventory_receipts where id in ('${legacyReceiptA}','${legacyReceiptB}');`), compatibilityBefore.receipts);
       assert.equal(sql(`select count(*) from public.inventory_receipt_lines where item_id='${legacyItemId}';`), compatibilityBefore.lines);
       assert.equal(sql(`select count(*) from public.inventory_movements where item_id='${legacyItemId}';`), compatibilityBefore.movements);
+      assert.equal(Number(sql(`select applied_submission_quantity from public.inventory_receipt_lines where receipt_id='${historicalReceiptId}';`)), 12);
+      assert.equal(sql(`select count(*) from public.inventory_receipt_lines where item_id='${legacyItemId}' and applied_submission_quantity is not null;`), '0');
     });
     await t.test('solo admin configura artículos y varias presentaciones compatibles', () => {
       bread = command('admin@test.invalid', { action: 'save_item', name: 'Pan', base_unit: 'unit', precision_scale: 0, minimum_quantity: 4, target_quantity: 18, areas: ['kitchen'] });
@@ -90,12 +100,62 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
       const snapshot = JSON.parse(sql(`select row_to_json(l) from public.inventory_receipt_lines l where receipt_id='${receipt.id}';`));
       assert.equal(Number(snapshot.base_quantity), 12);
       assert.equal(Number(snapshot.content_per_package_snapshot), 6);
+      assert.equal(snapshot.applied_submission_quantity, null);
       assert.equal(sql(`select sum(quantity_delta) from public.inventory_movements where item_id='${bread.id}';`), '12.000');
       const expense = randomUUID();
       sql(`insert into public.pos_cash_movements(id,kind,concept,category,amount,expense_date,method,origin,created_by) values('${expense}','expense','Compra QA','supplies',1000,'2026-09-27','bank_transfer','business','cashier@test.invalid');`);
       fails(login('cashier@test.invalid') + `select public.inventory_command('${randomUUID()}',${quote(JSON.stringify({ action: 'receive', expense_movement_id: expense, total_cost: 999, lines: [{ item_id: bread.id, base_quantity: 1 }] }))}::jsonb);`, 'no coincide');
       command('cashier@test.invalid', { action: 'receive', expense_movement_id: expense, total_cost: 1000, lines: [{ item_id: bread.id, base_quantity: 1, line_total_cost: 1000 }] });
       fails(login('cashier@test.invalid') + `select public.inventory_command('${randomUUID()}',${quote(JSON.stringify({ action: 'receive', expense_movement_id: expense, total_cost: 1000, lines: [{ item_id: bread.id, base_quantity: 1, line_total_cost: 1000 }] }))}::jsonb);`, 'duplicate key');
+    });
+
+    await t.test('recepciones aplican hasta el pendiente y conservan completo el ingreso, costo y presentación real', () => {
+      const createApprovedRequest = (name) => {
+        const requestItem = command('admin@test.invalid', { action: 'save_item', name, base_unit: 'unit', precision_scale: 0, areas: ['kitchen'] });
+        command('cashier@test.invalid', { action: 'initial_count', item_id: requestItem.id, quantity: 0, reason: 'Inicio prueba recepción' });
+        const submission = command('kitchen@test.invalid', { action: 'submit', kind: 'replenishment', area: 'kitchen', status: 'sent', lines: [{ item_id: requestItem.id, requested_quantity: 12, notes: '' }] });
+        const lineId = sql(`select id from public.inventory_submission_lines where submission_id='${submission.id}';`);
+        command('cashier@test.invalid', { action: 'review_submission', submission_id: submission.id, status: 'approved', notes: 'Aprobada', lines: [{ line_id: lineId, approved_quantity: 12 }] });
+        return { item: requestItem, submissionId: submission.id, lineId };
+      };
+      const assertRequestReceipt = ({ item, submissionId, lineId }, received, expectedStatus, expectedApplied, expectedPending, extraLine = {}) => {
+        const receipt = command('cashier@test.invalid', { action: 'receive', total_cost: extraLine.actual_package_cost ?? null, lines: [{ item_id: item.id, base_quantity: received, submission_line_id: lineId, ...extraLine }] });
+        const receiptLine = JSON.parse(sql(`select row_to_json(l) from public.inventory_receipt_lines l where receipt_id='${receipt.id}';`));
+        assert.equal(Number(receiptLine.base_quantity), received);
+        assert.equal(Number(receiptLine.applied_submission_quantity), expectedApplied);
+        assert.equal(Number(sql(`select received_quantity from public.inventory_submission_lines where id='${lineId}';`)), expectedApplied);
+        assert.equal(sql(`select status from public.inventory_submissions where id='${submissionId}';`), expectedStatus);
+        assert.equal(12 - Number(sql(`select received_quantity from public.inventory_submission_lines where id='${lineId}';`)), expectedPending);
+        assert.equal(Number(sql(`select current_quantity from public.inventory_item_valuations where item_id='${item.id}';`)), received);
+        assert.equal(sql(`select count(*) from public.inventory_movements where receipt_id='${receipt.id}' and movement_type='purchase_receipt';`), '1');
+        return { receipt, receiptLine };
+      };
+
+      assertRequestReceipt(createApprovedRequest('Solicitud recibe 8'), 8, 'partially_received', 8, 4);
+      assertRequestReceipt(createApprovedRequest('Solicitud recibe 12'), 12, 'received', 12, 0);
+
+      const over = createApprovedRequest('Solicitud x12 recibe x24');
+      const requestedPresentation = command('admin@test.invalid', { action: 'save_presentation', item_id: over.item.id, name: 'Paca x12 solicitada', content_per_package: 12, content_unit: 'unit' });
+      const actualPresentation = command('admin@test.invalid', { action: 'save_presentation', item_id: over.item.id, name: 'Paca x24 real', content_per_package: 24, content_unit: 'unit' });
+      assert.ok(requestedPresentation.id);
+      const receipt = command('cashier@test.invalid', { action: 'receive', total_cost: 64000, lines: [{ item_id: over.item.id, presentation_id: actualPresentation.id, package_quantity: 1, actual_package_cost: 64000, submission_line_id: over.lineId }] });
+      const overLine = JSON.parse(sql(`select row_to_json(l) from public.inventory_receipt_lines l where receipt_id='${receipt.id}';`));
+      assert.equal(Number(overLine.base_quantity), 24);
+      assert.equal(Number(overLine.applied_submission_quantity), 12);
+      assert.equal(overLine.presentation_name_snapshot, 'Paca x24 real');
+      assert.equal(Number(overLine.line_total_cost), 64000);
+      assert.ok(Math.abs(Number(overLine.base_unit_cost) - (64000 / 24)) < 0.0000001);
+      assert.equal(Number(sql(`select received_quantity from public.inventory_submission_lines where id='${over.lineId}';`)), 12);
+      assert.equal(sql(`select status from public.inventory_submissions where id='${over.submissionId}';`), 'received');
+      assert.equal(Number(sql(`select current_quantity from public.inventory_item_valuations where item_id='${over.item.id}';`)), 24);
+      assert.equal(Number(sql(`select quantity_delta from public.inventory_movements where receipt_id='${receipt.id}';`)), 24);
+      assert.equal(sql(`select count(*) from public.inventory_movements where receipt_id='${receipt.id}';`), '1');
+      assert.equal(Number(sql(`select (metadata->>'excess_quantity')::numeric from public.inventory_movements where receipt_id='${receipt.id}';`)), 12);
+
+      const invalidReceiptId = randomUUID();
+      sql(`insert into public.inventory_receipts(id,request_id,received_at,received_by) values('${invalidReceiptId}','${randomUUID()}',now(),'cashier@test.invalid');`);
+      fails(`insert into public.inventory_receipt_lines(receipt_id,item_id,base_quantity,submission_line_id,applied_submission_quantity) values('${invalidReceiptId}','${over.item.id}',1,'${over.lineId}',2);`, 'inventory_receipt_lines_submission_application_check');
+      assert.equal(sql(`select count(*) from public.inventory_receipt_lines where receipt_id='${invalidReceiptId}';`), '0');
     });
 
     await t.test('costos por presentación, snapshots y promedio ponderado móvil', () => {
@@ -258,7 +318,7 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
       assert.equal(sql(`select status from public.inventory_submissions where id='${request.id}';`), 'partially_received');
       command('cashier@test.invalid', { action: 'receive', supplier: 'Saldo QA', lines: [{ item_id: bread.id, base_quantity: 2, submission_line_id: requestLine }] });
       assert.equal(sql(`select status from public.inventory_submissions where id='${request.id}';`), 'received');
-      fails(login('cashier@test.invalid') + `select public.inventory_command('${randomUUID()}',${quote(JSON.stringify({ action: 'receive', lines: [{ item_id: bread.id, base_quantity: 1, submission_line_id: requestLine }] }))}::jsonb);`, 'supera la cantidad aprobada');
+      fails(login('cashier@test.invalid') + `select public.inventory_command('${randomUUID()}',${quote(JSON.stringify({ action: 'receive', lines: [{ item_id: bread.id, base_quantity: 1, submission_line_id: requestLine }] }))}::jsonb);`, 'no corresponde a una solicitud aprobada');
       const count = command('kitchen@test.invalid', { action: 'submit', kind: 'count', area: 'kitchen', status: 'sent', lines: [{ item_id: bread.id, observed_quantity: 9 }] });
       command('cashier@test.invalid', { action: 'correction', item_id: bread.id, quantity_delta: 1, reason: 'Movimiento posterior al conteo' });
       const countLine = sql(`select id from public.inventory_submission_lines where submission_id='${count.id}';`);

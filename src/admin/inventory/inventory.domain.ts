@@ -121,6 +121,8 @@ export interface InventoryReceiptLine {
   content_unit_snapshot: InventoryUnit | null;
   package_quantity: number | null;
   base_quantity: number;
+  submission_line_id: string | null;
+  applied_submission_quantity: number | null;
   actual_package_cost: number | null;
   line_total_cost: number | null;
   base_unit_cost: number | null;
@@ -258,6 +260,19 @@ export function receiptCostPreview(quantity: number, contentPerPackage: number, 
   const baseQuantity = quantity * contentPerPackage;
   const lineTotal = mode === 'package' ? quantity * cost : mode === 'line_total' ? cost : baseQuantity * cost;
   return { baseQuantity, lineTotal, baseUnitCost: baseQuantity > 0 ? lineTotal / baseQuantity : 0 };
+}
+
+export function receiptRequestApplicationPreview(approvedQuantity: number, receivedQuantity: number, receiptBaseQuantity: number) {
+  const pending = Math.max(approvedQuantity - receivedQuantity, 0);
+  const received = Math.max(receiptBaseQuantity, 0);
+  const applied = Math.min(pending, received);
+  return {
+    pending,
+    received,
+    applied,
+    excess: Math.max(received - applied, 0),
+    pendingAfter: Math.max(pending - applied, 0),
+  };
 }
 
 export function csvCell(value: unknown) {

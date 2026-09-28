@@ -121,6 +121,16 @@ test('vista previa calcula presentación, total y costo base sin usar redondeo c
   assert.equal(decimal.value, 24.95);
 });
 
+test('vista previa separa recibido, aplicado, excedente y pendiente de solicitud', () => {
+  assert.deepEqual(JSON.parse(JSON.stringify(domain.exports.receiptRequestApplicationPreview(12, 0, 8))), { pending:12,received:8,applied:8,excess:0,pendingAfter:4 });
+  assert.deepEqual(JSON.parse(JSON.stringify(domain.exports.receiptRequestApplicationPreview(12, 0, 12))), { pending:12,received:12,applied:12,excess:0,pendingAfter:0 });
+  assert.deepEqual(JSON.parse(JSON.stringify(domain.exports.receiptRequestApplicationPreview(12, 0, 24))), { pending:12,received:24,applied:12,excess:12,pendingAfter:0 });
+  assert.deepEqual(JSON.parse(JSON.stringify(domain.exports.receiptRequestApplicationPreview(12, 8, 8))), { pending:4,received:8,applied:4,excess:4,pendingAfter:0 });
+  const view = readFileSync('src/admin/inventory/AdminInventoryView.tsx', 'utf8');
+  for (const label of ['Pendiente de solicitud','Cantidad realmente recibida','Aplicado a solicitud','Excedente de esta entrada','Pendiente después de guardar']) assert.match(view, new RegExp(label));
+  assert.match(view, /line\.applied_submission_quantity/);
+});
+
 test('CSV de inventario protege fórmulas y conserva referencias', () => {
   const csv = domain.exports.inventoryMovementCsv([{
     id: 'movement', item_id: 'item', item_name: '=IMPORTXML("x")', movement_type: 'correction', quantity_delta: -2,
@@ -148,8 +158,8 @@ test('rutas y navegación exponen inventario solo a roles previstos', () => {
 
 test('interfaz muestra conversión congelada y separa recepción de gasto', () => {
   const view = readFileSync('src/admin/inventory/AdminInventoryView.tsx', 'utf8');
-  assert.match(view, /Recibirás/);
-  assert.match(view, /conversión y estos costos quedarán congelados/);
+  assert.match(view, /Cantidad realmente recibida/);
+  assert.match(view, /presentación real, su conversión y los costos de toda la entrada quedarán congelados/);
   assert.match(view, /La recepción no crea gastos automáticamente/);
   assert.match(view, /Recepción directa en unidad base/);
   assert.match(view, /Costo real por paquete o envase/);
@@ -210,4 +220,15 @@ test('migración 008 usa último costo real sin reescribir cantidades ni histori
   assert.doesNotMatch(sql, /update public\.inventory_receipt_lines/);
   assert.doesNotMatch(sql, /update public\.inventory_movements/);
   assert.doesNotMatch(sql, /update public\.inventory_pos_consumption_lines set last_unit_cost_snapshot/);
+});
+
+test('migración 009 conserva recepción completa y limita aplicación a la solicitud', () => {
+  const migration = readFileSync('supabase/migrations/202609280009_inventory_receipt_request_application.sql', 'utf8');
+  assert.match(migration, /add column applied_submission_quantity numeric/);
+  assert.match(migration, /set applied_submission_quantity=base_quantity[\s\S]*where submission_line_id is not null/);
+  assert.match(migration, /applied_qty:=least\(pending_qty,qty\)/);
+  assert.match(migration, /received_quantity=least\(approved_quantity,received_quantity\+applied_qty\)/);
+  assert.match(migration, /inventory_apply_valuation\(item\.id,qty,base_cost,'receipt'\)/);
+  assert.match(migration, /applied_submission_quantity <= base_quantity/);
+  assert.doesNotMatch(migration, /received_quantity\+qty>subline\.approved_quantity/);
 });
