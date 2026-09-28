@@ -1,4 +1,4 @@
-import { useCallback, useDeferredValue, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   formatConfiguredInventoryQuantity,
   formatInventoryQuantity,
@@ -19,6 +19,10 @@ import { loadInventory, saveInventoryCommand } from './inventory.repository';
 export type AreaInventoryStatusFilter = 'all' | 'low' | 'depleted' | 'uncounted';
 export type AreaInventoryItemState = Exclude<AreaInventoryStatusFilter, 'all'> | 'available';
 export type AreaInventoryToggleAction = 'close' | 'open' | 'open-and-load';
+
+export function getAreaInventoryMessageDuration(hasError: boolean) {
+  return hasError ? 8000 : 5000;
+}
 
 const statusLabels: Record<string, string> = {
   approved: 'Aprobada',
@@ -160,6 +164,15 @@ export function AreaInventoryPanel({ area }: { area: InventoryArea }) {
       .slice(0, 8),
     [area, data.submissions],
   );
+
+  useEffect(() => {
+    if (!notice && !error) return undefined;
+    const timer = window.setTimeout(() => {
+      setNotice(null);
+      setError(null);
+    }, getAreaInventoryMessageDuration(Boolean(error)));
+    return () => window.clearTimeout(timer);
+  }, [error, notice]);
 
   const toggleInventory = () => {
     const action = getAreaInventoryToggleAction(expanded, hasLoaded, loadingRef.current);

@@ -125,10 +125,21 @@ test('inventario del área inicia cerrado y solo solicita datos al primer despli
   const panel = readFileSync(path.join(root, areaInventoryPath), 'utf8');
   assert.match(panel, /const \[expanded, setExpanded\] = useState\(false\)/);
   assert.match(panel, /if \(action === 'open-and-load'\) void refresh\(\)/);
-  assert.doesNotMatch(panel, /useEffect/);
+  assert.doesNotMatch(panel, /useEffect\(\(\) => \{\s*void refresh/);
   assert.match(panel, /expanded \? 'Ocultar inventario' : 'Ver inventario'/);
   assert.match(panel, /disabled=\{loading\} onClick=\{\(\) => void refresh\(\)\}/);
   assert.match(panel, /await saveInventoryCommand[\s\S]*await refresh\(\)/);
+});
+
+test('mensajes del inventario del área usan los tiempos definidos en POS', () => {
+  const duration = loadNamedHelpers(areaInventoryPath, ['getAreaInventoryMessageDuration']);
+  assert.equal(duration(false), 5000);
+  assert.equal(duration(true), 8000);
+  const panel = readFileSync(path.join(root, areaInventoryPath), 'utf8');
+  assert.match(panel, /window\.setTimeout/);
+  assert.match(panel, /window\.clearTimeout/);
+  assert.match(panel, /setNotice\(null\)/);
+  assert.match(panel, /setError\(null\)/);
 });
 
 test('resumen del área distingue cero, bajo mínimo, sin conteo y artículos compartidos', () => {
