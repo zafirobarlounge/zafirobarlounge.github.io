@@ -115,6 +115,7 @@ function getSubmissionQuantity(submission: InventorySubmission) {
 
 export function AreaInventoryPanel({ area }: { area: InventoryArea }) {
   const [expanded, setExpanded] = useState(false);
+  const [recentReportsExpanded, setRecentReportsExpanded] = useState(false);
   const [data, setData] = useState<InventoryData>(emptyData);
   const [hasLoaded, setHasLoaded] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -292,28 +293,31 @@ export function AreaInventoryPanel({ area }: { area: InventoryArea }) {
               </div>
 
               <div className="mt-5 rounded-[1.1rem] border border-white/10 bg-white/[0.02] p-4">
-                <h3 className="font-display text-2xl text-ivory">Reportes recientes del área</h3>
-                <div className="mt-3 grid gap-2 lg:grid-cols-2">
-                  {recentSubmissions.map((submission) => {
-                    const quantityValue = getSubmissionQuantity(submission);
-                    const firstLine = submission.lines[0];
-                    const item = data.items.find((candidate) => candidate.id === firstLine?.item_id);
-                    return (
-                      <article key={submission.id} className="rounded-[0.9rem] border border-white/8 bg-black/20 p-3">
-                        <div className="flex flex-wrap items-start justify-between gap-2">
-                          <div>
-                            <p className="text-sm font-semibold text-ivory">{submissionKindLabels[submission.kind]} · {firstLine?.item_name ?? 'Artículo no disponible'}</p>
-                            <p className="mt-1 text-xs text-mist">
-                              {quantityValue == null ? 'Cantidad sin registrar' : item ? formatInventoryQuantity(quantityValue, item.base_unit, item.precision_scale) : String(quantityValue)} · {formatDateTime(submission.created_at)}
-                            </p>
+                <button type="button" aria-expanded={recentReportsExpanded} aria-controls={`area-recent-reports-${area}`} className="flex w-full items-center justify-between gap-4 text-left" onClick={() => setRecentReportsExpanded((current) => !current)}>
+                  <span><span className="block font-display text-2xl text-ivory">Reportes recientes del área</span><span className="mt-1 block text-xs text-mist">{recentSubmissions.length} reporte(s) reciente(s)</span></span>
+                  <span className="shrink-0 text-xs font-semibold uppercase tracking-[0.16em] text-cyanGlow">{recentReportsExpanded ? 'Ocultar' : 'Ver reportes'}</span>
+                </button>
+                {recentReportsExpanded ? <div id={`area-recent-reports-${area}`} className="mt-3 grid gap-2 border-t border-white/10 pt-3 lg:grid-cols-2">
+                    {recentSubmissions.map((submission) => {
+                      const quantityValue = getSubmissionQuantity(submission);
+                      const firstLine = submission.lines[0];
+                      const item = data.items.find((candidate) => candidate.id === firstLine?.item_id);
+                      return (
+                        <article key={submission.id} className="rounded-[0.9rem] border border-white/8 bg-black/20 p-3">
+                          <div className="flex flex-wrap items-start justify-between gap-2">
+                            <div>
+                              <p className="text-sm font-semibold text-ivory">{submissionKindLabels[submission.kind]} · {firstLine?.item_name ?? 'Artículo no disponible'}</p>
+                              <p className="mt-1 text-xs text-mist">
+                                {quantityValue == null ? 'Cantidad sin registrar' : item ? formatInventoryQuantity(quantityValue, item.base_unit, item.precision_scale) : String(quantityValue)} · {formatDateTime(submission.created_at)}
+                              </p>
+                            </div>
+                            <span className="rounded-full border border-white/10 px-2.5 py-1 text-[0.65rem] text-cyanGlow">{statusLabels[submission.status] ?? submission.status}</span>
                           </div>
-                          <span className="rounded-full border border-white/10 px-2.5 py-1 text-[0.65rem] text-cyanGlow">{statusLabels[submission.status] ?? submission.status}</span>
-                        </div>
-                      </article>
-                    );
-                  })}
-                  {!recentSubmissions.length ? <EmptyState message="Todavía no hay reportes enviados desde esta área." /> : null}
-                </div>
+                        </article>
+                      );
+                    })}
+                    {!recentSubmissions.length ? <EmptyState message="Todavía no hay reportes enviados desde esta área." /> : null}
+                  </div> : null}
               </div>
 
               {!items.length ? <div className="mt-5"><EmptyState message="No hay artículos que coincidan con la búsqueda y el filtro seleccionados." /></div> : null}

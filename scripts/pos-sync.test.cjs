@@ -110,6 +110,9 @@ test('Bar y Cocina integran inventario operativo sin costos ni acciones administ
   assert.match(panel, /Solicitud directa en unidad base/);
   assert.match(panel, /Cantidad de paquetes\/pacas\/envases/);
   assert.match(panel, /Enviar solicitud/);
+  assert.match(panel, /const \[recentReportsExpanded, setRecentReportsExpanded\] = useState\(false\)/);
+  assert.match(panel, /aria-controls={`area-recent-reports-\$\{area\}`}/);
+  assert.match(panel, /recentReportsExpanded \? 'Ocultar' : 'Ver reportes'/);
 });
 
 test('inventario del área inicia cerrado y solo solicita datos al primer despliegue', () => {
