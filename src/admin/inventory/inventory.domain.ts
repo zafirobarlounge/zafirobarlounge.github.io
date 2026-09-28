@@ -211,6 +211,14 @@ export function inventoryItemMatchesSearch(item: InventoryItem, search: string) 
   return [item.name, item.import_code ?? ''].some((value) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase('es-CO').includes(needle));
 }
 
+export function getInventoryItemSearchSelection(items: InventoryItem[], currentItemId: string, search: string) {
+  const options = items.filter((item) => inventoryItemMatchesSearch(item, search));
+  return {
+    options,
+    selectedItemId: options.some((item) => item.id === currentItemId) ? currentItemId : options[0]?.id ?? '',
+  };
+}
+
 export function filterInventoryStockItems(items: InventoryItem[], search: string, area: InventoryStockAreaFilter, status: InventoryStockStatusFilter, order: InventoryStockOrder) {
   const filtered = items.filter((item) => {
     if (!inventoryItemMatchesSearch(item, search) || (area !== 'all' && !item.areas.includes(area))) return false;

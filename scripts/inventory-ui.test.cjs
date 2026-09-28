@@ -45,6 +45,19 @@ test('búsqueda, área y estados filtran existencias sin confundir null con cero
   assert.equal(items.find((item)=>item.id==='cola').id, 'cola');
 });
 
+test('filtro de presentaciones excluye el articulo anterior y selecciona la coincidencia', () => {
+  const items = [
+    { id:'aceite',name:'Aceite para fritura',import_code:'COC_ACEITE' },
+    { id:'cola',name:'Coca-Cola 400 ml',import_code:'BAR_COLA' },
+  ];
+  const filtered = domain.exports.getInventoryItemSearchSelection(items, 'aceite', 'coca');
+  assert.deepEqual(Array.from(filtered.options, (item) => item.id), ['cola']);
+  assert.equal(filtered.selectedItemId, 'cola');
+  const empty = domain.exports.getInventoryItemSearchSelection(items, 'cola', 'sin coincidencias');
+  assert.equal(empty.options.length, 0);
+  assert.equal(empty.selectedItemId, '');
+});
+
 test('importador XLSX se limita a configuración administrativa y exige vista previa', () => {
   const view = readFileSync('src/admin/inventory/AdminInventoryView.tsx', 'utf8');
   const repository = readFileSync('src/admin/inventory/inventory.repository.ts', 'utf8');
