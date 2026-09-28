@@ -10,8 +10,30 @@ vm.runInNewContext(compile('src/admin/inventory/inventory.domain.ts'), domain);
 
 test('cantidades distinguen ausencia de cero y respetan precisión', () => {
   assert.equal(domain.exports.formatInventoryQuantity(null, 'unit'), 'Sin conteo inicial');
+  assert.equal(domain.exports.formatConfiguredInventoryQuantity(null, 'unit'), 'No configurado');
   assert.match(domain.exports.formatInventoryQuantity(0, 'unit'), /^0 unidad/);
+  assert.match(domain.exports.formatConfiguredInventoryQuantity(0, 'unit'), /^0 unidad/);
   assert.match(domain.exports.formatInventoryQuantity(12.5, 'gram', 3), /12,5 g/);
+});
+
+test('búsqueda, área y estados filtran existencias sin confundir null con cero', () => {
+  const items = [
+    { id:'cola',import_code:'BAR_COLA',name:'Coca-Cola 400 ml',areas:['bar'],balance:36,minimum_quantity:null },
+    { id:'limon',import_code:'BAR_LIMON',name:'Limón',areas:['bar','kitchen'],balance:0,minimum_quantity:4 },
+    { id:'pan',import_code:'KITCHEN_PAN',name:'Pan',areas:['kitchen'],balance:2,minimum_quantity:5 },
+    { id:'salsa',import_code:'KITCHEN_SALSA',name:'Salsa',areas:['kitchen'],balance:null,minimum_quantity:1 },
+  ].map((item) => ({ active:true,base_unit:'unit',precision_scale:0,target_quantity:null,tracking_started_at:null,pending_incoming:0,last_unit_cost:null,average_unit_cost:null,inventory_value:null,...item }));
+  const filter = (search,area,status,order='name_asc') => Array.from(domain.exports.filterInventoryStockItems(items,search,area,status,order), (item) => item.id);
+  assert.deepEqual(filter('coca','all','all'), ['cola']);
+  assert.deepEqual(filter('bar_limon','all','all'), ['limon']);
+  assert.deepEqual(filter('','bar','all'), ['cola','limon']);
+  assert.deepEqual(filter('','kitchen','all'), ['limon','pan','salsa']);
+  assert.deepEqual(filter('','all','uncounted'), ['salsa']);
+  assert.deepEqual(filter('','all','low'), ['limon','pan']);
+  assert.deepEqual(filter('','all','depleted'), ['limon']);
+  assert.deepEqual(filter('','all','in_stock'), ['cola','pan']);
+  assert.deepEqual(filter('','all','all','name_desc'), ['salsa','pan','limon','cola']);
+  assert.equal(items.find((item)=>item.id==='cola').id, 'cola');
 });
 
 test('importador XLSX se limita a configuración administrativa y exige vista previa', () => {
@@ -89,6 +111,21 @@ test('interfaz muestra conversión congelada y separa recepción de gasto', () =
   assert.match(view, /solo incluye los componentes configurados/);
   assert.doesNotMatch(view, /costo total del plato/i);
   assert.doesNotMatch(view, /utilidad neta|margen neto/i);
+});
+
+test('acciones por tarjeta bloquean el artículo y reutilizan los flujos existentes', () => {
+  const view = readFileSync('src/admin/inventory/AdminInventoryView.tsx', 'utf8');
+  assert.match(view, /onAdjust\(item\.id\)/);
+  assert.match(view, /onReceive\(item\.id\)/);
+  assert.match(view, /<AdjustmentDialog[^>]+itemId=\{selectedItemId\}/);
+  assert.match(view, /<ReceiveDialog[^>]+initialItemId=\{selectedItemId\}/);
+  assert.match(view, /Conteo \/ corregir/);
+  assert.match(view, /Registrar entrada/);
+  assert.match(view, /Primero registra el conteo inicial de este artículo/);
+  assert.match(view, /lockedValueClass/);
+  assert.doesNotMatch(view, /Conteo inicial o corrección/);
+  for (const label of ['Buscar existencias','Buscar artículos configurados','Buscar artículo para presentación','Buscar componente','Buscar artículo para reporte','Buscar artículo para entrada']) assert.match(view, new RegExp(label));
+  assert.match(view, /selected&&!matching\.some/);
 });
 
 test('migración 006 congela costos y aplica valoración sin acoplarla a gastos', () => {

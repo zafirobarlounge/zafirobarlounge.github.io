@@ -27,6 +27,8 @@ La vista previa local valida hojas, columnas, duplicados y unidades. La vista pr
 
 Caja consulta existencias, último costo real de compra y valor contable rastreado, registra conteos iniciales/correcciones compensatorias, recibe compras y revisa reportes. Al recibir, selecciona una presentación, cantidad de paquetes y costo real por paquete; también puede usar unidad base con total de línea o costo unitario. La vista previa muestra conversión, total y costo base. Puede enlazar un gasto existente por UUID. La recepción nunca genera el gasto automáticamente. El costo sugerido de la presentación solo precarga el formulario y no cambia el costo vigente hasta registrar una recepción con costo conocido.
 
+Existencias permite buscar por nombre o código disponible, filtrar por área y estado y ordenar alfabéticamente. No se ordenan cantidades entre unidades base distintas. Cada tarjeta abre el conteo/corrección o la entrada con el artículo bloqueado; un artículo sin conteo inicial mantiene impedida la recepción. Los listados largos de configuración, presentaciones, recetas, reportes y entradas incluyen búsqueda sin cambiar el UUID seleccionado.
+
 ## Barra y cocina
 
 Cada área ve solo sus artículos y no ve costos. El recorrido es: consultar existencia → crear solicitud/conteo/daño → guardar borrador o enviar → ver estado. Enviar no cambia la existencia. Administración o caja decide la aprobación.

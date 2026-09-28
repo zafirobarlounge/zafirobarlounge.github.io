@@ -1,9 +1,13 @@
 export type InventoryUnit = 'unit' | 'gram' | 'milliliter';
 export type InventoryArea = 'bar' | 'kitchen';
 export type InventorySubmissionKind = 'replenishment' | 'count' | 'damage';
+export type InventoryStockAreaFilter = 'all' | InventoryArea;
+export type InventoryStockStatusFilter = 'all' | 'uncounted' | 'low' | 'depleted' | 'in_stock';
+export type InventoryStockOrder = 'name_asc' | 'name_desc';
 
 export interface InventoryItem {
   id: string;
+  import_code?: string | null;
   name: string;
   active: boolean;
   base_unit: InventoryUnit;
@@ -153,6 +157,28 @@ export const submissionKindLabels: Record<InventorySubmissionKind, string> = {
 export function formatInventoryQuantity(value: number | null, unit: InventoryUnit, precision = 3) {
   if (value == null) return 'Sin conteo inicial';
   return `${new Intl.NumberFormat('es-CO', { maximumFractionDigits: precision }).format(Number(value))} ${inventoryUnitLabels[unit]}`;
+}
+
+export function formatConfiguredInventoryQuantity(value: number | null, unit: InventoryUnit, precision = 3) {
+  return value == null ? 'No configurado' : formatInventoryQuantity(value, unit, precision);
+}
+
+export function inventoryItemMatchesSearch(item: InventoryItem, search: string) {
+  const needle = search.trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase('es-CO');
+  if (!needle) return true;
+  return [item.name, item.import_code ?? ''].some((value) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase('es-CO').includes(needle));
+}
+
+export function filterInventoryStockItems(items: InventoryItem[], search: string, area: InventoryStockAreaFilter, status: InventoryStockStatusFilter, order: InventoryStockOrder) {
+  const filtered = items.filter((item) => {
+    if (!inventoryItemMatchesSearch(item, search) || (area !== 'all' && !item.areas.includes(area))) return false;
+    if (status === 'uncounted') return item.balance == null;
+    if (status === 'low') return item.balance != null && item.minimum_quantity != null && item.balance < item.minimum_quantity;
+    if (status === 'depleted') return item.balance != null && item.balance <= 0;
+    if (status === 'in_stock') return item.balance != null && item.balance > 0;
+    return true;
+  });
+  return filtered.sort((a, b) => (order === 'name_desc' ? -1 : 1) * a.name.localeCompare(b.name, 'es', { sensitivity: 'base' }));
 }
 
 export function inventoryMoneyInput(raw: string): { display: string; value: number | null } {
