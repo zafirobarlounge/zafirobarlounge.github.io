@@ -33,6 +33,8 @@ Existencias permite buscar por nombre o código disponible, filtrar por área y 
 
 Cada área ve solo sus artículos y no ve costos. El recorrido es: consultar existencia → crear solicitud/conteo/daño → guardar borrador o enviar → ver estado. Enviar no cambia la existencia. Administración o caja decide la aprobación.
 
+En el POS, las pestañas operativas **Bar** y **Cocina** incluyen **Inventario del área** debajo de la cola de preparación. El panel se actualiza al entrar en la pestaña, permite buscar y filtrar por estado, y muestra los reportes recientes de esa misma área. Los artículos compartidos aparecen en ambas pestañas. Desde este panel los tres tipos de reporte se envían directamente a revisión; no ofrece recepciones, ajustes, configuración ni datos de costos.
+
 ## POS
 
 Al entregar, el POS descuenta una sola vez la receta vigente y guarda una copia de sus componentes y del último costo real vigente. El producto sin receta se entrega normalmente y se identifica como sin seguimiento. Una alerta de posible agotado o control parcial informa, pero no oculta productos ni bloquea ventas. En recetas parciales se muestra el costo vigente de los componentes controlados y solo se incluyen los componentes configurados.

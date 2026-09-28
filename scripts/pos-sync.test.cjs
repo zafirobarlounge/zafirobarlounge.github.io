@@ -36,6 +36,60 @@ function evaluate(source, context) {
   return vm.runInNewContext(compiled, context);
 }
 
+function loadNamedPosHelpers(names, context = {}) {
+  const source = parse(posPath);
+  const helpers = source.statements.filter((node) => ts.isFunctionDeclaration(node) && names.includes(node.name?.text));
+  assert.equal(helpers.length, names.length, `Missing POS helper: ${names.filter((name) => !helpers.some((node) => node.name?.text === name)).join(', ')}`);
+  const target = names[names.length - 1];
+  return evaluate(`${helpers.map((node) => node.getText(source)).join('\n')}; ${target}`, context);
+}
+
+test('inventario operativo filtra por área, búsqueda y estados mutuamente excluyentes', () => {
+  const match = (item, search) => `${item.name} ${item.import_code ?? ''}`.toLocaleLowerCase('es-CO').includes(search.trim().toLocaleLowerCase('es-CO'));
+  const filter = loadNamedPosHelpers(['getPosInventoryItemState', 'filterPosAreaInventoryItems'], { inventoryItemMatchesSearch: match });
+  const items = [
+    { id: 'bar', name: 'Cerveza', import_code: 'BAR_1', active: true, areas: ['bar'], balance: 8, minimum_quantity: 4 },
+    { id: 'shared', name: 'Limón', import_code: 'SHARED', active: true, areas: ['bar', 'kitchen'], balance: 0, minimum_quantity: 4 },
+    { id: 'low', name: 'Pan', import_code: 'KITCHEN_1', active: true, areas: ['kitchen'], balance: 2, minimum_quantity: 5 },
+    { id: 'uncounted', name: 'Salsa', import_code: 'KITCHEN_2', active: true, areas: ['kitchen'], balance: null, minimum_quantity: null },
+  ];
+  const ids = (area, search, status) => Array.from(filter(items, area, search, status), (item) => item.id);
+  assert.deepEqual(ids('bar', '', 'all'), ['bar', 'shared']);
+  assert.deepEqual(ids('kitchen', '', 'all'), ['shared', 'low', 'uncounted']);
+  assert.deepEqual(ids('kitchen', 'pan', 'all'), ['low']);
+  assert.deepEqual(ids('kitchen', '', 'depleted'), ['shared']);
+  assert.deepEqual(ids('kitchen', '', 'low'), ['low']);
+  assert.deepEqual(ids('kitchen', '', 'uncounted'), ['uncounted']);
+});
+
+test('reportes operativos usan submit enviado y la cantidad correcta sin mutar saldos', () => {
+  const build = loadNamedPosHelpers(['buildPosInventorySubmissionPayload']);
+  const replenishment = plain(build('bar', 'item-1', 'replenishment', 6, 'Hace falta'));
+  const count = plain(build('kitchen', 'item-2', 'count', 0, 'Conteo físico'));
+  const damage = plain(build('bar', 'item-3', 'damage', 2, 'Botellas rotas'));
+  assert.deepEqual(replenishment, { action: 'submit', kind: 'replenishment', area: 'bar', status: 'sent', notes: 'Hace falta', lines: [{ item_id: 'item-1', requested_quantity: 6, notes: 'Hace falta' }] });
+  assert.deepEqual(count, { action: 'submit', kind: 'count', area: 'kitchen', status: 'sent', notes: 'Conteo físico', lines: [{ item_id: 'item-2', observed_quantity: 0, notes: 'Conteo físico' }] });
+  assert.deepEqual(damage, { action: 'submit', kind: 'damage', area: 'bar', status: 'sent', notes: 'Botellas rotas', lines: [{ item_id: 'item-3', requested_quantity: 2, notes: 'Botellas rotas' }] });
+  for (const payload of [replenishment, count, damage]) {
+    assert.equal('balance' in payload, false);
+    assert.equal('quantity_delta' in payload, false);
+  }
+});
+
+test('Bar y Cocina integran inventario operativo sin costos ni acciones administrativas', () => {
+  const source = readFileSync(path.join(root, posPath), 'utf8');
+  assert.match(source, /<PosAreaInventoryPanel area="kitchen"/);
+  assert.match(source, /<PosAreaInventoryPanel area="bar"/);
+  const panel = source.slice(source.indexOf('function PosAreaInventoryPanel'), source.indexOf('function OperationalFlowSettingsPanel'));
+  for (const text of ['Inventario del área', 'Solicitar reposición', 'Reportar conteo', 'Reportar daño o pérdida', 'Reportes recientes del área']) assert.match(panel, new RegExp(text));
+  for (const forbidden of ['last_unit_cost', 'average_unit_cost', 'inventory_value', 'Registrar entrada', 'Conteo / corregir', "action: 'receive'", "action: 'correction'", "action: 'initial_count'"]) assert.doesNotMatch(panel, new RegExp(forbidden.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.match(panel, /loadInventory\(\)/);
+  assert.match(panel, /saveInventoryCommand/);
+  assert.match(panel, /submission\.area === area/);
+  assert.match(panel, /posInventoryStatusLabels\[submission\.status\]/);
+  assert.doesNotMatch(panel, /setInterval|poll/i);
+});
+
 function loadRepository(client) {
   const context = {
     exports: {},
