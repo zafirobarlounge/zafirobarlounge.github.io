@@ -92,6 +92,19 @@ export const bogotaToday = () => {
   }).formatToParts(new Date());
   return ['year', 'month', 'day'].map(type => parts.find(part => part.type === type)!.value).join('-');
 };
+export function cashInput(raw: string): { display: string; value: string } | null {
+  const cleaned = raw.replace(/\./g, '');
+  if (cleaned === '') return { display: '', value: '' };
+  if (!/^\d+(,\d{0,2})?$/.test(cleaned)) return null;
+  const [digits, cents] = cleaned.split(',');
+  const integer = digits.replace(/^0+(?=\d)/, '');
+  if (integer.length > 12) return null;
+  return {
+    display: integer.replace(/\B(?=(\d{3})+(?!\d))/g, '.') + (cents === undefined ? '' : `,${cents}`),
+    value: integer + (cents ? `.${cents}` : ''),
+  };
+}
+
 export function expectedCash(c: Components): number | null {
   if (c.opening === null) return null;
   return (

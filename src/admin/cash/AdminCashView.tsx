@@ -11,6 +11,7 @@ import { AdminLayout } from "../AdminLayout";
 import {
   bogotaToday,
   categories,
+  cashInput,
   dateTime,
   expectedCash,
   kinds,
@@ -59,16 +60,34 @@ function Amount({
   onChange?: (s: string) => void;
 }) {
   return (
+    <div className="relative">
+    <span aria-hidden="true" className="pointer-events-none absolute left-4 top-3 text-mist">$</span>
     <input
-      className={input}
+      className={`${input} pl-9 pr-16 text-lg tabular-nums`}
       name={name ?? "amount"}
-      type="number"
-      min="0"
-      max="999999999999.99"
-      step="0.01"
+      type="text"
+      inputMode="decimal"
+      placeholder="0"
+      autoComplete="off"
       required
-      onChange={(e) => onChange?.(e.target.value)}
+      onChange={(e) => {
+        const field = e.target;
+        const result = cashInput(field.value);
+        field.setCustomValidity?.(result ? '' : 'Ingresa un importe válido, con máximo dos decimales separados por coma.');
+        if (!result) { onChange?.(''); return; }
+        const position = field.selectionStart;
+        const logical = position == null ? null : field.value.slice(0, position).replace(/\./g, '').length;
+        field.value = result.display;
+        if (logical !== null) {
+          let cursor = 0, seen = 0;
+          while (cursor < result.display.length && seen < logical) { if (result.display[cursor] !== '.') seen++; cursor++; }
+          field.setSelectionRange?.(cursor, cursor);
+        }
+        onChange?.(result.value);
+      }}
     />
+    <span aria-hidden="true" className="pointer-events-none absolute right-4 top-3 text-sm leading-7 text-mist">COP</span>
+    </div>
   );
 }
 
@@ -220,6 +239,11 @@ export function AdminCashView({ embedded = false, initialAction = null, onClose 
     e.preventDefault();
     const form = e.currentTarget;
     const values = Object.fromEntries(new FormData(form));
+    if (action !== 'void') {
+      const amount = cashInput(String(values.amount ?? ''));
+      if (!amount?.value) { setError('Ingresa un importe válido. Usa coma para los decimales.'); return; }
+      values.amount = amount.value;
+    }
     if (
       action === "close" &&
       !window.confirm(
@@ -272,7 +296,11 @@ export function AdminCashView({ embedded = false, initialAction = null, onClose 
           else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
         }
       }} aria-label={modal === 'movement' ? 'Registrar movimiento' : !active ? 'Abrir jornada y caja' : 'Arqueo y cierre de jornada'} className="max-h-[90dvh] w-full max-w-xl overflow-y-auto rounded-2xl border border-white/20 bg-obsidian p-4">
-        <button autoFocus type="button" className={button} disabled={busy} onClick={closeModal}>Volver</button>
+        <div className="mb-5 flex justify-end border-b border-white/10 pb-4">
+          <button autoFocus type="button" className="inline-flex min-h-[44px] items-center gap-2 rounded-xl border border-white/15 px-4 py-2 text-sm text-mist transition hover:border-white/30 hover:bg-white/10 hover:text-ivory focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyanGlow disabled:opacity-40" disabled={busy} onClick={closeModal}>
+            Cerrar <span aria-hidden="true" className="text-xl leading-none">×</span>
+          </button>
+        </div>
         {error && <p role="alert" className="my-3 text-rose-200">{error}</p>}
         {pending && <button type="button" disabled={busy} className={button} onClick={() => void run(pending.payload)}>Reintentar operación pendiente</button>}
         {!data ? <p>Cargando caja...</p> : <>

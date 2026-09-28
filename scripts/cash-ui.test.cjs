@@ -47,6 +47,16 @@ const fixture = () => ({
   movements: [],
 });
 const settle = () => new Promise((resolve) => setImmediate(resolve));
+test('importe colombiano formatea miles y normaliza decimales sin alterar el valor', () => {
+  const { cashInput } = domain.exports;
+  assert.equal(cashInput('1500000').display, '1.500.000');
+  assert.equal(cashInput('1.500.000,50').value, '1500000.50');
+  assert.equal(cashInput('0').value, '0');
+  assert.equal(cashInput('12,').display, '12,');
+  assert.equal(cashInput('12,345'), null);
+  assert.equal(cashInput('-100'), null);
+  assert.equal(cashInput('1000000000000'), null);
+});
 test("apertura calcula fecha comercial automaticamente y completar base conserva fecha", async () => {
   const saved = [];
   const h = harness({
@@ -266,9 +276,10 @@ test("interfaz exige explicación del faltante y envía el esperado mostrado", a
     nodes(close, "input").find((i) => i.props.name === "reason").props.required,
     true,
   );
-  submit(close, { amount: "430000", reason: "Falta dinero", notes: "" });
+  submit(close, { amount: "430.000,50", reason: "Falta dinero", notes: "" });
   await settle();
   assert.equal(saves[0].expected, 440000);
+  assert.equal(saves[0].amount, '430000.50');
   assert.equal(saves[0].session, "session");
 });
 test("doble clic y recarga tras fallo de red conservan UUID y no anuncian éxito", async () => {
