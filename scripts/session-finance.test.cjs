@@ -132,6 +132,7 @@ const settle = () => new Promise((r) => setImmediate(r));
 function reportHarness({
   roles = ["cashier"],
   cashFails = false,
+  reconciled = false,
   query = id,
 } = {}) {
   let cursor = 0,
@@ -162,6 +163,7 @@ function reportHarness({
     },
   };
   const data = fixture();
+  if (reconciled) data.registers.push({sales_session_id:id,closed_at:'2020-01-02T05:00:00Z'});
   data.sessions[0].status = "closed";
   const hooks = {
     useState(v) {
@@ -276,6 +278,14 @@ function text(n) {
         ? ""
         : String(n);
 }
+test('superadmin conserva ajustes de fechas con arqueo, pero no puede eliminarlo', async () => {
+  const h=reportHarness({roles:['superadmin'],reconciled:true});
+  h.render(); await settle(); h.render(); await settle();
+  const buttons=nodes(h.render(),'button');
+  assert.equal(buttons.find(n=>text(n)==='Ajustar fechas').props.disabled,false);
+  assert.equal(buttons.find(n=>text(n)==='Eliminar jornada').props.disabled,true);
+});
+
 test("cajero consulta/exporta sin controles administrativos y enlace expande fuera del mes al recargar", async () => {
   for (let reload = 0; reload < 2; reload++) {
     const h = reportHarness();

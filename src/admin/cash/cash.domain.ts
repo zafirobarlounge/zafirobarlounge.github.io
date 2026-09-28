@@ -83,13 +83,15 @@ export const money = (amount: number) =>
   }).format(amount);
 export const dateTime = (date: string) =>
   new Date(date).toLocaleString("es-CO", { timeZone: "America/Bogota" });
-export const bogotaToday = () =>
-  new Intl.DateTimeFormat("en-CA", {
+export const bogotaToday = () => {
+  const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "America/Bogota",
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
-  }).format(new Date());
+  }).formatToParts(new Date());
+  return ['year', 'month', 'day'].map(type => parts.find(part => part.type === type)!.value).join('-');
+};
 export function expectedCash(c: Components): number | null {
   if (c.opening === null) return null;
   return (

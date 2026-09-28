@@ -1,5 +1,5 @@
 import { loadCash } from './cash/cash.repository';
-import { csvCell, type CashData } from './cash/cash.domain';
+import { bogotaToday, csvCell, type CashData } from './cash/cash.domain';
 import { financeCsv, includeLinkedSession, paymentBreakdown, reportAccess } from './cash/sessionFinance';
 import { SessionFinanceDetail } from './cash/SessionFinanceDetail';
 import type { ReactNode } from 'react';
@@ -8,12 +8,10 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { AdminLayout } from './AdminLayout';
 import { useSupabaseAuth } from '../auth/SupabaseAuthProvider';
 import {
-  cancelClosedPaidOrderInSupabase,
+  registerSessionAdjustment,
   createManualSalesSessionInSupabase,
   deleteSalesSessionFromSupabase,
   loadAuthorizedSessionReportFromSupabase,
-  reassignOrderSalesSessionInSupabase,
-  updateSalesSessionWindowInSupabase,
   type PosActorContext,
 } from '../integrations/supabase/posOperationsRepository';
 import type {
@@ -50,6 +48,14 @@ export function AdminSalesSessionsView() {
   const [cashError, setCashError] = useState('');
   const [cashLoading, setCashLoading] = useState(true);
   const cashRequest = useRef(0);
+  const adjustmentRequests = useRef(new Map<string, string>());
+  async function saveAdjustment(payload: Record<string, string>) {
+    const key = JSON.stringify(payload);
+    const requestId = adjustmentRequests.current.get(key) ?? crypto.randomUUID();
+    adjustmentRequests.current.set(key, requestId);
+    await registerSessionAdjustment(payload, requestId);
+    adjustmentRequests.current.delete(key);
+  }
   async function reloadCash() {
     const request = ++cashRequest.current;
     setCashLoading(true); setCashError('');
@@ -76,13 +82,7 @@ export function AdminSalesSessionsView() {
     order: PosOrderWithRelations;
     sourceSession: PosSalesSessionHistoryEntry;
   } | null>(null);
-  const [sessionWindowForm, setSessionWindowForm] = useState({
-    businessDate: '2026-05-28',
-    closedAt: '2026-05-29T02:00',
-    notes: '',
-    openedAt: '2026-05-28T19:00',
-    sessionLabel: 'Jornada 2026-05-28',
-  });
+  const [sessionWindowForm, setSessionWindowForm] = useState(createManualSessionDefaults);
   const [selectedMonthKey, setSelectedMonthKey] = useState(getCurrentMonthKey());
   const [customDateRange, setCustomDateRange] = useState(() => getMonthDateRange(getCurrentMonthKey()));
   const [moveDestinationSessionId, setMoveDestinationSessionId] = useState('');
@@ -258,6 +258,8 @@ export function AdminSalesSessionsView() {
     if (!orderPendingMove) {
       return;
     }
+    const reason = window.prompt('Motivo para mover esta cuenta de jornada (el cierre original se conserva):');
+    if (!reason?.trim()) return;
 
     setBusyOrderId(orderPendingMove.order.id);
     setErrorMessage(null);
@@ -265,9 +267,10 @@ export function AdminSalesSessionsView() {
     setActionMessage(null);
 
     try {
-      await reassignOrderSalesSessionInSupabase(orderPendingMove.order.id, moveDestinationSessionId, actor);
+      await saveAdjustment({ action: 'move', order_id: orderPendingMove.order.id, session_id: orderPendingMove.sourceSession.id, destination_id: moveDestinationSessionId, reason });
       const destination = sessions.find((session) => session.id === moveDestinationSessionId);
       setExpandedSessionId(moveDestinationSessionId);
+      setSearchParams({ session: moveDestinationSessionId });
       setOrderPendingMove(null);
       setActionMessage(
         `${resolveOrderTableLabel(orderPendingMove.order, tablesById)} movida a ${destination?.sessionLabel ?? 'la jornada destino'}.`,
@@ -295,7 +298,7 @@ export function AdminSalesSessionsView() {
     }
 
     const confirmed = window.confirm(
-      `Esto anulara ${tableLabel} por ${formatCurrency(order.summary.totalDue)} dentro de ${session.sessionLabel}. La venta saldra de vendido/cobrado y quedara trazabilidad. ¿Continuar?`,
+      `Esto anulara ${tableLabel} por ${formatCurrency(order.summary.totalDue)} en el reporte ajustado de ${session.sessionLabel}. El arqueo original se conserva. No registra una devolucion de dinero. ¿Continuar?`,
     );
     if (!confirmed) {
       return;
@@ -306,7 +309,7 @@ export function AdminSalesSessionsView() {
     setActionMessage(null);
 
     try {
-      await cancelClosedPaidOrderInSupabase(order.id, reason, actor, order);
+      await saveAdjustment({ action: 'cancel', order_id: order.id, session_id: session.id, reason });
       setActionMessage(`Venta anulada: ${tableLabel}.`);
       await loadSessions();
       void reloadCash();
@@ -321,13 +324,7 @@ export function AdminSalesSessionsView() {
     if (!access.manage) return;
     setSessionPendingEdit(null);
     setSessionWindowErrorMessage(null);
-    setSessionWindowForm({
-      businessDate: '2026-05-28',
-      closedAt: '2026-05-29T02:00',
-      notes: 'Jornada manual creada para corregir ventas del 2026-05-28.',
-      openedAt: '2026-05-28T19:00',
-      sessionLabel: 'Jornada 2026-05-28',
-    });
+    setSessionWindowForm(createManualSessionDefaults());
     setIsCreateSessionModalOpen(true);
   };
 
@@ -347,6 +344,8 @@ export function AdminSalesSessionsView() {
 
   const handleSaveSessionWindow = async () => {
     if (!access.manage) return;
+    const reason = sessionPendingEdit ? window.prompt('Motivo del ajuste de fechas (el cierre original se conserva):') : '';
+    if (sessionPendingEdit && !reason?.trim()) return;
     const payload = {
       businessDate: sessionWindowForm.businessDate,
       closedAt: toIsoFromDateTimeLocal(sessionWindowForm.closedAt),
@@ -362,7 +361,7 @@ export function AdminSalesSessionsView() {
 
     try {
       if (sessionPendingEdit) {
-        await updateSalesSessionWindowInSupabase(sessionPendingEdit.id, payload, actor);
+        await saveAdjustment({ action: 'window', session_id: sessionPendingEdit.id, reason: reason!, business_date: payload.businessDate, opened_at: payload.openedAt, closed_at: payload.closedAt, session_label: payload.sessionLabel, notes: payload.notes });
         setActionMessage(`Jornada ajustada: ${payload.sessionLabel || sessionPendingEdit.sessionLabel}`);
         setSessionPendingEdit(null);
       } else {
@@ -413,6 +412,10 @@ export function AdminSalesSessionsView() {
         tarjeta: paymentBreakdown(session).card,
         otros_cobros: paymentBreakdown(session).other,
         ...financeCsv(session.id, cashData),
+        cantidad_ajustes: session.adjustments?.length ?? 0,
+        vendido_cierre_original: session.originalSummary?.grossSales ?? (session.adjustments?.length ? null : session.summary?.grossSales),
+        cobrado_cierre_original: session.originalSummary?.totalCollected ?? (session.adjustments?.length ? null : session.summary?.totalCollected),
+        historial_ajustes: session.adjustments?.map(a => `${a.created_at} | ${a.action} | ${a.actor} | ${a.reason}`).join('\n') ?? '',
       };
     });
 
@@ -626,7 +629,7 @@ export function AdminSalesSessionsView() {
             {visibleSessions.map((session) => {
               const isExpanded = expandedSessionId === session.id;
               const reconciled = Boolean(cashData?.registers.find(r => r.sales_session_id === session.id)?.closed_at);
-              const canEdit = access.manage && Boolean(cashData) && !cashLoading && !reconciled;
+              const canEdit = access.manage && Boolean(cashData) && !cashLoading && session.status === 'closed';
               const sessionSales = visibleClosedSales.filter((order) => order.salesSessionId === session.id);
               const cashTotal = getSalesSessionCashTotal(session);
               const transferTotal = getSalesSessionTransferTotal(session);
@@ -707,6 +710,12 @@ export function AdminSalesSessionsView() {
                       </div>
 
                       <div className="grid gap-2 sm:grid-cols-3">{Object.entries(paymentBreakdown(session)).map(([method,value]) => <SummaryPill key={method} label={paymentMethodLabels[method as PaymentMethod]} value={formatCurrency(value)} />)}</div>
+                      {!!session.adjustments?.length && <section className="space-y-2 rounded-xl border border-amberGlow/30 p-4">
+                        <h3 className="font-semibold">Reporte con ajustes posteriores al cierre</h3>
+                        <p>Ventas, cobros, cuentas y fechas de este reporte incluyen las correcciones. El detalle financiero muestra el arqueo original; estos ajustes no registran devoluciones ni movimientos de efectivo.</p>
+                        <p>Vendido al cierre: {session.originalSummary ? formatCurrency(session.originalSummary.grossSales) : 'Sin registrar'} · Cobrado al cierre: {session.originalSummary ? formatCurrency(session.originalSummary.totalCollected) : 'Sin registrar'}</p>
+                        {session.adjustments.map(a => <p key={a.request_id} className="text-sm">{formatDateTime(a.created_at)} · {a.actor} · {a.action === 'move' ? `Cuenta ${a.order_id}: traslado de ${a.session_id} a ${a.destination_id}` : a.action === 'cancel' ? `Anulación de venta ${a.order_id}` : `Fechas: ${a.payload.business_date}, ${formatDateTime(a.payload.opened_at)} a ${formatDateTime(a.payload.closed_at)}`} · Motivo: {a.reason}</p>)}
+                      </section>}
                       {!cashLoading && !cashError && cashData && <SessionFinanceDetail id={session.id} data={cashData} />}
                       {session.notes ? (
                         <div className="rounded-[1rem] border border-amberGlow/20 bg-amberGlow/10 px-4 py-3 text-sm leading-6 text-amber-100">{session.notes}</div>
@@ -730,7 +739,8 @@ export function AdminSalesSessionsView() {
                                 setDeleteErrorMessage(null);
                                 setSessionPendingDelete(session);
                               }}
-                              disabled={session.status === 'open' || busySessionId === session.id}
+                              disabled={reconciled || Boolean(session.adjustments?.length) || busySessionId === session.id}
+                              title={reconciled || session.adjustments?.length ? 'No se puede eliminar una jornada con arqueo o ajustes' : undefined}
                               className={dangerButtonClassName}
                             >
                               {busySessionId === session.id ? 'Eliminando...' : 'Eliminar jornada'}
@@ -889,7 +899,7 @@ export function AdminSalesSessionsView() {
             <p className="text-[0.68rem] uppercase tracking-[0.22em] text-cyanGlow/80">Mover cuenta de jornada</p>
             <h2 className="mt-2 font-display text-2xl text-ivory">{resolveOrderTableLabel(orderPendingMove.order, tablesById)}</h2>
             <p className="mt-3 text-sm leading-6 text-mist">
-              Origen: {orderPendingMove.sourceSession.sessionLabel}. Se movera la orden completa y sus pagos a la jornada destino.
+              Origen: {orderPendingMove.sourceSession.sessionLabel}. El reporte ajustado asignará la cuenta y sus cobros a la jornada destino. Los registros y arqueos originales se conservan; no se traslada efectivo entre cajas.
             </p>
 
             {moveErrorMessage ? (
@@ -953,10 +963,10 @@ export function AdminSalesSessionsView() {
               {sessionPendingEdit ? 'Ajustar jornada' : 'Crear jornada manual'}
             </p>
             <h2 className="mt-2 font-display text-2xl text-ivory">
-              {sessionPendingEdit ? sessionPendingEdit.sessionLabel : 'Jornada 2026-05-28'}
+              {sessionPendingEdit ? sessionPendingEdit.sessionLabel : sessionWindowForm.sessionLabel}
             </h2>
             <p className="mt-3 text-sm leading-6 text-mist">
-              Usa horarios locales de Colombia. Para tu caso: apertura 2026-05-28 7:00 p. m. y cierre 2026-05-29 2:00 a. m.
+              Usa horarios locales de Colombia. Ajusta la fecha de la jornada y los horarios de apertura y cierre al periodo que quieres registrar.
             </p>
 
             {sessionWindowErrorMessage ? (
@@ -1285,6 +1295,18 @@ function getSalesSessionTopProductLabel(session: PosSalesSessionHistoryEntry) {
   return topProduct ? `${topProduct.productName} (${topProduct.quantity})` : 'Sin ventas';
 }
 
+function createManualSessionDefaults() {
+  const today = bogotaToday();
+  const tomorrow = formatDateKey(addDays(parseDateKey(today)!, 1));
+  return {
+    businessDate: today,
+    closedAt: `${tomorrow}T02:00`,
+    notes: '',
+    openedAt: `${today}T18:00`,
+    sessionLabel: `Jornada ${today}`,
+  };
+}
+
 function getCurrentMonthKey() {
   const formatter = new Intl.DateTimeFormat('en-CA', {
     month: '2-digit',
@@ -1555,12 +1577,13 @@ function toDateTimeLocalValue(value: string) {
     return '';
   }
 
-  const offsetMs = date.getTimezoneOffset() * 60_000;
-  return new Date(date.getTime() - offsetMs).toISOString().slice(0, 16);
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Bogota', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(date);
+  const part = (type: string) => parts.find(p => p.type === type)!.value;
+  return `${part('year')}-${part('month')}-${part('day')}T${part('hour')}:${part('minute')}`;
 }
 
 function toIsoFromDateTimeLocal(value: string) {
-  return new Date(value).toISOString();
+  return new Date(`${value}-05:00`).toISOString();
 }
 
 const inputClassName =

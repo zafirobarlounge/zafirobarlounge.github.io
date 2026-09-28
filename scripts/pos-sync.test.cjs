@@ -396,6 +396,31 @@ test('history downloads each dataset once and preserves existing summaries, clos
   assert.ok(!source.includes('loadPosStateFromSupabase'));
 });
 
+test('adjusted report moves a whole account, preserves snapshot and cancels without stale totals', async () => {
+  const rows=fixtures();
+  rows.pos_orders=rows.pos_orders.filter(o=>o.id==='closed');
+  rows.pos_order_items=rows.pos_order_items.filter(i=>i.order_id==='closed');
+  rows.pos_payments=rows.pos_payments.filter(p=>p.order_id==='closed');
+  rows.pos_sales_sessions[0].summary={grossSales:10000,totalCollected:10000,orderCount:1,paymentMethods:[{method:'cash',paymentCount:1,totalAmount:10000}],products:[]};
+  const source=JSON.stringify(rows);
+  const adjustment={sequence:1,request_id:'a',action:'move',session_id:'s0',destination_id:'s1',order_id:'closed',payload:{},reason:'Error',actor:'admin',created_at:timestamp};
+  const adjustments=[adjustment];
+  const repo=loadRepository({rpc:async()=>({data:{sessions:structuredClone(rows.pos_sales_sessions),orders:structuredClone(rows.pos_orders),items:structuredClone(rows.pos_order_items),payments:structuredClone(rows.pos_payments),tables:rows.pos_tables,reconciled_session_ids:['s0'],adjustments},error:null})});
+  let result=await repo.loadAuthorizedSessionReportFromSupabase();
+  assert.equal(result.history.find(s=>s.id==='s0').totalCollected,0);
+  assert.equal(result.history.find(s=>s.id==='s0').originalSummary.totalCollected,10000);
+  assert.equal(result.history.find(s=>s.id==='s1').totalCollected,10000);
+  assert.equal(result.closedSales[0].salesSessionId,'s1');
+  adjustments.push({...adjustment,sequence:2,request_id:'b',action:'window',session_id:'s1',destination_id:null,order_id:null,payload:{business_date:'2026-08-30',opened_at:'2026-08-30T23:00:00Z',closed_at:'2026-08-31T07:00:00Z',session_label:'Corregida'}});
+  adjustments.push({...adjustment,sequence:3,request_id:'c',action:'cancel',session_id:'s1',destination_id:null});
+  result=await repo.loadAuthorizedSessionReportFromSupabase();
+  assert.equal(result.history.find(s=>s.id==='s1').totalCollected,0);
+  assert.equal(result.history.find(s=>s.id==='s1').totalSold,0);
+  assert.equal(result.history.find(s=>s.id==='s1').businessDate,'2026-08-30');
+  assert.equal(result.closedSales[0].financialStatus,'cancelled');
+  assert.equal(JSON.stringify(rows),source);
+});
+
 test('authorized report uses one RPC and the saved sales snapshot for reconciled sessions', async () => {
   const rows=fixtures();
   const target=rows.pos_sales_sessions[0];
@@ -404,7 +429,7 @@ test('authorized report uses one RPC and the saved sales snapshot for reconciled
   const repo=loadRepository({rpc:async name=>{names.push(name);return {data:{sessions:rows.pos_sales_sessions,orders:rows.pos_orders,items:rows.pos_order_items,payments:rows.pos_payments,tables:rows.pos_tables,reconciled_session_ids:[target.id]},error:null};}});
   const report=await repo.loadAuthorizedSessionReportFromSupabase();
   const saved=report.history.find(s=>s.id===target.id);
-  assert.equal(saved.totalCollected,123);assert.equal(saved.orderCount,7);assert.deepEqual(names,['pos_session_report']);
+  assert.equal(saved.totalCollected,123);assert.equal(saved.orderCount,7);assert.deepEqual(names,['pos_session_report_v2']);
   await assert.rejects(loadRepository({rpc:async()=>({data:null,error:{message:'denied'}})}).loadAuthorizedSessionReportFromSupabase(),/denied/);
 });
 

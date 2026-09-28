@@ -180,10 +180,25 @@ export interface PosSalesSession {
 }
 
 export interface PosSalesSessionHistoryEntry extends PosSalesSession {
+  adjustments?: SessionAdjustment[];
+  originalSummary?: PosSalesSessionSummary | null;
   orderCount: number;
   paymentCount: number;
   totalCollected: number;
   totalSold: number;
+}
+
+export interface SessionAdjustment {
+  sequence: number;
+  request_id: string;
+  actor: string;
+  created_at: string;
+  reason: string;
+  action: 'move' | 'cancel' | 'window';
+  session_id: string;
+  destination_id: string | null;
+  order_id: string | null;
+  payload: Record<string, string>;
 }
 
 export interface PosOrderStatusLog {

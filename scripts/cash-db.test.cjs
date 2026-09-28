@@ -652,6 +652,41 @@ test("PostgreSQL aislado: finanzas, transiciones, RLS, protección histórica y 
       const operational=sql(login()+`insert into public.pos_orders(sales_session_id,opened_by_email) values('${sid}','cashier@test.invalid') returning id;`);
       sql(login()+`insert into public.pos_payments(order_id,sales_session_id,method,status,allocation_mode,amount_applied,created_by_email) values('${operational}','${sid}','cash','confirmed','amount',1,'cashier@test.invalid'); update public.pos_orders set closed_at=now(),financial_status='paid_total' where id='${operational}';`);
     });
+    sql(readFileSync('supabase/migrations/202609270004_session_adjustments.sql','utf8'));
+    const adjust = (payload, id=randomUUID(), email='admin@test.invalid') => JSON.parse(sql(login(email)+`select public.pos_session_adjustment('${id}',${quote(JSON.stringify(payload))}::jsonb);`));
+    const originalSid=sql(`select sales_session_id from public.pos_orders where id='${order}';`);
+    const originalData=()=>sql(`select jsonb_build_object('sessions',(select jsonb_agg(s) from public.pos_sales_sessions s),'orders',(select jsonb_agg(o) from public.pos_orders o),'payments',(select jsonb_agg(p) from public.pos_payments p),'items',(select jsonb_agg(i) from public.pos_order_items i),'cash',(select jsonb_agg(c) from public.pos_cash_registers c));`);
+    const unchanged=originalData();
+    await t.test('ajustes: roles restringidos, motivo requerido y escritura directa prohibida',()=>{
+      const p={action:'move',session_id:originalSid,order_id:order,destination_id:legacy,reason:'Correccion QA'};
+      for(const email of ['cashier@test.invalid','waiter@test.invalid','kitchen@test.invalid','bar@test.invalid']) assert.throws(()=>adjust(p,randomUUID(),email),/Solo superadmin/);
+      assert.throws(()=>adjust({...p,reason:' '}),/motivo/);
+      fails('set role anon; select public.pos_session_report_v2();','permission denied');
+      fails(login('admin@test.invalid')+`insert into public.pos_session_adjustments(request_id) values('${randomUUID()}');`,'permission denied');
+    });
+    await t.test('traslado auditado atomico e idempotente conserva arqueo y registros originales',async()=>{
+      const id=randomUUID(); const p={action:'move',session_id:originalSid,order_id:order,destination_id:legacy,reason:'Asignacion equivocada'};
+      const call=login('admin@test.invalid')+`select public.pos_session_adjustment('${id}',${quote(JSON.stringify(p))}::jsonb);`;
+      const results=await Promise.all([parallel(call),parallel(call)]);
+      assert.equal(results[0],results[1]);
+      assert.equal(sql(`select count(*) from public.pos_session_adjustments where request_id='${id}';`),'1');
+      assert.throws(()=>adjust({...p,reason:'Otro motivo'},id),/otros datos/);
+      assert.throws(()=>adjust(p),/cambio de jornada/);
+      const report=JSON.parse(sql(login()+'select public.pos_session_report_v2();'));
+      assert.equal(report.adjustments.length,1);
+      assert.equal(report.adjustments[0].destination_id,legacy);
+      assert.equal(originalData(),unchanged);
+    });
+    await t.test('ajustes de fechas y anulacion preservan registros y bloquean vias antiguas',()=>{
+      assert.throws(()=>adjust({action:'window',session_id:legacy,reason:'Error',business_date:'2020-01-02',session_label:'Corregida',opened_at:'2020-01-02T23:00:00Z',closed_at:'2020-01-02T22:00:00Z'}),/invalidos/);
+      adjust({action:'window',session_id:legacy,reason:'Horario correcto',business_date:'2020-01-02',session_label:'Corregida',opened_at:'2020-01-02T23:00:00Z',closed_at:'2020-01-03T07:00:00Z'});
+      adjust({action:'cancel',session_id:legacy,order_id:order,reason:'Venta duplicada'});
+      assert.throws(()=>adjust({action:'cancel',session_id:legacy,order_id:order,reason:'Repetida'}),/ya esta anulada/);
+      fails(login('admin@test.invalid')+`update public.pos_sales_sessions set notes='bypass' where id='${legacy}';`,'tiene ajustes');
+      fails(login('admin@test.invalid')+`select public.delete_pos_sales_session('${legacy}');`,'tiene ajustes');
+      fails(`update public.pos_session_adjustments set reason='bypass';`,'inmutables');
+      assert.equal(originalData(),unchanged);
+    });
   } finally {
     execFileSync(
       exe("pg_ctl"),

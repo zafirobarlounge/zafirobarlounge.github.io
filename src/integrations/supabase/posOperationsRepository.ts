@@ -1565,16 +1565,50 @@ export async function loadSalesSessionHistoryFromSupabase(): Promise<PosSalesSes
 }
 
 export async function loadAuthorizedSessionReportFromSupabase() {
-  const { data, error } = await getSupabaseClient().rpc('pos_session_report');
-  throwIfError(error, 'No fue posible cargar el reporte. Revisa permisos y migracion 003');
-  const rows = data as unknown as { sessions: PosSalesSessionRow[]; orders: PosOrderRow[]; payments: PosPaymentRow[]; items: PosOrderItemRow[]; tables: PosTableRow[]; reconciled_session_ids: string[] };
+  const { data, error } = await getSupabaseClient().rpc('pos_session_report_v2' as never);
+  throwIfError(error, 'No fue posible cargar el reporte. Revisa permisos y migracion 004');
+  const rows = data as unknown as { sessions: PosSalesSessionRow[]; orders: PosOrderRow[]; payments: PosPaymentRow[]; items: PosOrderItemRow[]; tables: PosTableRow[]; reconciled_session_ids: string[]; adjustments?: import('../../shared/operations/operations.types').SessionAdjustment[] };
+  const originalRows = rows.sessions.map(row => ({ ...row }));
+  const adjustments = rows.adjustments ?? [];
+  for (const adjustment of adjustments) {
+    if (adjustment.action === 'window') {
+      const session = rows.sessions.find(row => row.id === adjustment.session_id);
+      if (session) Object.assign(session, { business_date: adjustment.payload.business_date, opened_at: adjustment.payload.opened_at, closed_at: adjustment.payload.closed_at, session_label: adjustment.payload.session_label, notes: adjustment.payload.notes ?? '' });
+    } else {
+      const order = rows.orders.find(row => row.id === adjustment.order_id);
+      if (!order) continue;
+      if (adjustment.action === 'move') {
+        order.sales_session_id = adjustment.destination_id;
+        rows.payments.filter(p => p.order_id === order.id).forEach(p => { p.sales_session_id = adjustment.destination_id; });
+      } else {
+        order.financial_status = 'cancelled';
+        order.cancellation_reason = adjustment.reason;
+        rows.items.filter(i => i.order_id === order.id).forEach(i => { i.financial_status = 'cancelled'; i.operational_status = 'cancelled'; i.cancellation_reason = adjustment.reason; });
+        rows.payments.filter(p => p.order_id === order.id && p.status === 'confirmed').forEach(p => { p.status = 'rejected'; });
+      }
+    }
+  }
+  for (const session of rows.sessions) {
+    if (adjustments.some(a => a.action !== 'window' && (a.session_id === session.id || a.destination_id === session.id))) session.summary = {};
+  }
   const orders = buildOrdersWithRelations(rows.orders, rows.items, rows.payments);
   const history = buildSalesSessionHistory(rows.sessions, rows.orders, rows.payments, rows.items).map(session => {
+    const related = adjustments.filter(a => a.session_id === session.id || a.destination_id === session.id);
+    if (related.length) {
+      const originalSummary = mapPosSalesSessionRow(originalRows.find(row => row.id === session.id)!).summary;
+      const summary = related.every(a => a.action === 'window') && rows.reconciled_session_ids.includes(session.id) ? originalSummary : session.summary;
+      return { ...session, summary, orderCount: summary?.orderCount ?? 0, paymentCount: summary?.confirmedPayments ?? 0, totalCollected: summary?.totalCollected ?? 0, totalSold: summary?.grossSales ?? 0, adjustments: related, originalSummary };
+    }
     if (!rows.reconciled_session_ids.includes(session.id)) return session;
     const snapshot = mapPosSalesSessionRow(rows.sessions.find(row => row.id === session.id)!).summary;
     return { ...session, summary: snapshot, orderCount: snapshot?.orderCount ?? 0, paymentCount: snapshot?.confirmedPayments ?? 0, totalCollected: snapshot?.totalCollected ?? 0, totalSold: snapshot?.grossSales ?? 0 };
   });
   return { history, closedSales: orders.filter(o => o.closedAt != null), tables: buildTablesWithOrders(rows.tables, orders) };
+}
+
+export async function registerSessionAdjustment(payload: Record<string, string>, requestId: string) {
+  const { error } = await getSupabaseClient().rpc('pos_session_adjustment' as never, { request_id: requestId, payload } as never);
+  throwIfError(error, 'No fue posible registrar el ajuste. Revisa permisos y migracion 004');
 }
 
 export async function loadSalesSessionHistoryViewFromSupabase() {

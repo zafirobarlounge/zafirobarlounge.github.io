@@ -43,6 +43,8 @@ La migración no añade arqueos a jornadas antiguas. Al cerrar, una cuenta/pago 
 
 ## Verificación
 
+Los ajustes posteriores al cierre se documentan en [migración 004: alcance, SQL y QA](../../../supabase/migrations/202609270004_session_adjustments.md). Requieren aplicar 004 manualmente antes de usar el frontend actualizado.
+
 El detalle financiero de `/admin/sales-sessions` requiere la migración incremental 003. Véanse [SQL, permisos, compatibilidad CSV, resultados y pasos de QA](../../../supabase/migrations/202609270003_session_financial_report.md). La aplicación en QA es manual; no repetir 001/002.
 
 ```sh
