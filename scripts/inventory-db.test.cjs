@@ -36,6 +36,19 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
   execFileSync(exe('pg_ctl'), ['-D', path.join(dir, 'data'), '-l', path.join(dir, 'server.log'), '-o', `-h 127.0.0.1 -p ${port}`, '-w', 'start'], { ...opts, stdio: 'ignore' });
   try {
     for (const file of ['tests/cash-local-bootstrap.sql', 'supabase/schema.sql', 'supabase/pos-schema.sql', 'supabase/migrations/202609270001_cash_management.sql', 'supabase/migrations/202609270002_sales_business_date.sql', 'supabase/migrations/202609270003_session_financial_report.sql', 'supabase/migrations/202609270004_session_adjustments.sql', 'supabase/migrations/202609270005_inventory.sql', 'supabase/migrations/202609280006_inventory_cost_valuation.sql', 'supabase/migrations/202609280007_inventory_initial_import.sql']) sql(readFileSync(file, 'utf8'));
+    const legacyItemId = randomUUID(), legacyReceiptA = randomUUID(), legacyReceiptB = randomUUID();
+    sql(`insert into public.inventory_items(id,name,base_unit,precision_scale,tracking_started_at,created_by,updated_by) values('${legacyItemId}','Compatibilidad costo','unit',0,now(),'legacy@test.invalid','legacy@test.invalid');
+      insert into public.inventory_item_valuations(item_id,current_quantity,average_unit_cost,inventory_value) values('${legacyItemId}',7,11,77);
+      insert into public.inventory_receipts(id,request_id,total_cost,received_at,received_by) values('${legacyReceiptA}','${randomUUID()}',20,'2026-09-20T18:00:00Z','legacy@test.invalid'),('${legacyReceiptB}','${randomUUID()}',25,'2026-09-21T18:00:00Z','legacy@test.invalid');
+      insert into public.inventory_receipt_lines(receipt_id,item_id,base_quantity,unit_cost) values('${legacyReceiptA}','${legacyItemId}',2,10);
+      insert into public.inventory_receipt_lines(receipt_id,item_id,base_quantity,unit_cost,base_unit_cost) values('${legacyReceiptB}','${legacyItemId}',2,12.5,12.5);`);
+    const compatibilityBefore = {
+      valuation: sql(`select row(current_quantity,average_unit_cost,inventory_value)::text from public.inventory_item_valuations where item_id='${legacyItemId}';`),
+      receipts: sql(`select count(*) from public.inventory_receipts where id in ('${legacyReceiptA}','${legacyReceiptB}');`),
+      lines: sql(`select count(*) from public.inventory_receipt_lines where item_id='${legacyItemId}';`),
+      movements: sql(`select count(*) from public.inventory_movements where item_id='${legacyItemId}';`),
+    };
+    sql(readFileSync('supabase/migrations/202609280008_inventory_last_purchase_cost.sql', 'utf8'));
     sql(`insert into public.admin_users(email) values ('admin@test.invalid');
       insert into public.staff_profiles(email,full_name,is_active) values ('cashier@test.invalid','Caja',true),('bar@test.invalid','Bar',true),('kitchen@test.invalid','Cocina',true),('waiter@test.invalid','Mesero',true),('inactive@test.invalid','Inactivo',false);
       insert into public.staff_role_assignments(email,role) values ('cashier@test.invalid','cashier'),('bar@test.invalid','bar'),('kitchen@test.invalid','kitchen'),('waiter@test.invalid','waiter'),('inactive@test.invalid','cashier');
@@ -43,6 +56,13 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
 
     let bread;
     let openSessionId;
+    await t.test('migración conserva historia y recupera el último costo real conocido', () => {
+      assert.equal(Number(sql(`select last_unit_cost from public.inventory_item_valuations where item_id='${legacyItemId}';`)), 12.5);
+      assert.equal(sql(`select row(current_quantity,average_unit_cost,inventory_value)::text from public.inventory_item_valuations where item_id='${legacyItemId}';`), compatibilityBefore.valuation);
+      assert.equal(sql(`select count(*) from public.inventory_receipts where id in ('${legacyReceiptA}','${legacyReceiptB}');`), compatibilityBefore.receipts);
+      assert.equal(sql(`select count(*) from public.inventory_receipt_lines where item_id='${legacyItemId}';`), compatibilityBefore.lines);
+      assert.equal(sql(`select count(*) from public.inventory_movements where item_id='${legacyItemId}';`), compatibilityBefore.movements);
+    });
     await t.test('solo admin configura artículos y varias presentaciones compatibles', () => {
       bread = command('admin@test.invalid', { action: 'save_item', name: 'Pan', base_unit: 'unit', precision_scale: 0, minimum_quantity: 4, target_quantity: 18, areas: ['kitchen'] });
       const p4 = command('admin@test.invalid', { action: 'save_presentation', item_id: bread.id, name: 'Paquete x4', content_per_package: 4, content_unit: 'unit' });
@@ -82,6 +102,7 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
       const costedBread = command('admin@test.invalid', { action: 'save_item', name: 'Pan valorado', base_unit: 'unit', precision_scale: 0, areas: ['kitchen'] });
       const p6 = command('admin@test.invalid', { action: 'save_presentation', item_id: costedBread.id, name: 'Paquete x6 costo', content_per_package: 6, content_unit: 'unit', suggested_package_cost: 7000 });
       command('cashier@test.invalid', { action: 'initial_count', item_id: costedBread.id, quantity: 10, initial_unit_cost: 1100, reason: 'Conteo conocido' });
+      assert.equal(sql(`select last_unit_cost is null from public.inventory_item_valuations where item_id='${costedBread.id}';`), 't');
       const receiptA = command('cashier@test.invalid', { action: 'receive', supplier: 'Compra A', total_cost: 21000, lines: [{ item_id: costedBread.id, presentation_id: p6.id, package_quantity: 3, actual_package_cost: 7000 }] });
       const lineA = JSON.parse(sql(`select row_to_json(l) from public.inventory_receipt_lines l where receipt_id='${receiptA.id}';`));
       assert.equal(Number(lineA.package_quantity), 3);
@@ -93,6 +114,7 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
       let valuation = JSON.parse(sql(`select row_to_json(v) from public.inventory_item_valuations v where item_id='${costedBread.id}';`));
       assert.equal(Number(valuation.current_quantity), 28);
       assert.ok(Math.abs(Number(valuation.average_unit_cost) - (32000 / 28)) < 0.0000001);
+      assert.ok(Math.abs(Number(valuation.last_unit_cost) - (7000 / 6)) < 0.0000001);
       assert.equal(Number(valuation.inventory_value), 32000);
 
       command('admin@test.invalid', { action: 'save_presentation', id: p6.id, item_id: costedBread.id, name: 'Caja modificada', content_per_package: 8, content_unit: 'unit', suggested_package_cost: 7800 });
@@ -106,6 +128,10 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
       assert.equal(Number(sql(`select actual_package_cost from public.inventory_receipt_lines where receipt_id='${receiptA.id}';`)), 7000);
       assert.equal(Number(sql(`select actual_package_cost from public.inventory_receipt_lines where receipt_id='${receiptB.id}';`)), 7800);
       assert.equal(Number(sql(`select base_unit_cost from public.inventory_receipt_lines where receipt_id='${receiptB.id}';`)), 1300);
+      assert.equal(Number(sql(`select last_unit_cost from public.inventory_item_valuations where item_id='${costedBread.id}';`)), 1300);
+      assert.notEqual(Number(sql(`select average_unit_cost from public.inventory_item_valuations where item_id='${costedBread.id}';`)), 1300);
+      command('admin@test.invalid', { action: 'save_presentation', id: p6.id, item_id: costedBread.id, name: 'Paquete x6 costo', content_per_package: 6, content_unit: 'unit', suggested_package_cost: 9000 });
+      assert.equal(Number(sql(`select last_unit_cost from public.inventory_item_valuations where item_id='${costedBread.id}';`)), 1300);
       fails(login('cashier@test.invalid') + `select public.inventory_command('${randomUUID()}',${quote(JSON.stringify({ action: 'receive', total_cost: 1, lines: [{ item_id: costedBread.id, base_quantity: 1, line_total_cost: 2 }] }))}::jsonb);`, 'no coincide');
     });
 
@@ -129,10 +155,24 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
       assert.equal(sql(`select count(*) from public.inventory_movements where order_item_id='${orderItemId}' and movement_type='pos_consumption';`), '1');
       const consumption = JSON.parse(sql(`select row_to_json(cl) from public.inventory_pos_consumption_lines cl join public.inventory_pos_consumptions c on c.id=cl.consumption_id where c.pos_order_item_id='${orderItemId}';`));
       assert.equal(Number(consumption.average_unit_cost_snapshot), 24.95);
+      assert.equal(Number(consumption.last_unit_cost_snapshot), 24.95);
       assert.equal(Number(consumption.tracked_cost), 374.25);
       command('cashier@test.invalid', { action: 'receive', total_cost: 6000, lines: [{ item_id: sauce.id, presentation_id: jar.id, package_quantity: 1, actual_package_cost: 6000 }] });
+      assert.equal(Number(sql(`select last_unit_cost from public.inventory_item_valuations where item_id='${sauce.id}';`)), 30);
       assert.equal(Number(sql(`select average_unit_cost_snapshot from public.inventory_pos_consumption_lines where id='${consumption.id}';`)), 24.95);
+      assert.equal(Number(sql(`select last_unit_cost_snapshot from public.inventory_pos_consumption_lines where id='${consumption.id}';`)), 24.95);
       assert.equal(Number(sql(`select tracked_cost from public.inventory_pos_consumption_lines where id='${consumption.id}';`)), 374.25);
+      const currentRecipe = JSON.parse(sql(login('admin@test.invalid') + 'select public.inventory_read();')).recipes.find((row) => row.menu_item_source_key === 'menu-costed');
+      assert.equal(Number(currentRecipe.tracked_component_cost), 450);
+      const nextOrderItemId = randomUUID();
+      sql(login('waiter@test.invalid') + `insert into public.pos_order_items(id,order_id,menu_item_source_key,product_name,product_slug,prep_area,quantity,unit_price,total_price,operational_status,ready_at,created_by_email) values('${nextOrderItemId}','${orderId}','menu-costed','Producto costo','costed','kitchen',1,10000,10000,'ready',now(),'waiter@test.invalid');`);
+      sql(login('waiter@test.invalid') + `select public.inventory_deliver_pos_item('${nextOrderItemId}',false);`);
+      const currentConsumption = JSON.parse(sql(`select row_to_json(cl) from public.inventory_pos_consumption_lines cl join public.inventory_pos_consumptions c on c.id=cl.consumption_id where c.pos_order_item_id='${nextOrderItemId}';`));
+      assert.equal(Number(currentConsumption.last_unit_cost_snapshot), 30);
+      assert.notEqual(Number(currentConsumption.average_unit_cost_snapshot), 30);
+      assert.equal(Number(currentConsumption.tracked_cost), 450);
+      assert.equal(Number(sql(`select unit_cost_snapshot from public.inventory_movements where order_item_id='${nextOrderItemId}';`)), 30);
+      assert.equal(Number(sql(`select tracked_value_delta from public.inventory_movements where order_item_id='${nextOrderItemId}';`)), -450);
       const voidRequest = randomUUID();
       command('cashier@test.invalid', { action: 'correction', item_id: sauce.id, quantity_delta: -500, reason: 'Forzar saldo negativo para probar retorno' });
       const voidPayload = { item_id: orderItemId, reason: 'Devolución recuperable', void_quantity: 1, resolutions: [{ consumption_line_id: consumption.id, returned_quantity: 15, waste_quantity: 0, internal_quantity: 0, client_consumed_quantity: 0 }] };
@@ -286,11 +326,11 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
       assert.equal(kitchen.receipts.length, 0);
       assert.ok(kitchen.items.length >= 1);
       assert.ok(kitchen.items.every((item) => item.areas.includes('kitchen')));
-      assert.ok(kitchen.items.every((item) => item.average_unit_cost == null && item.inventory_value == null));
+      assert.ok(kitchen.items.every((item) => item.last_unit_cost == null && item.average_unit_cost == null && item.inventory_value == null));
       const bar = JSON.parse(sql(login('bar@test.invalid') + 'select public.inventory_read();'));
       assert.ok(bar.items.length >= 1);
       assert.ok(bar.items.every((item) => item.areas.includes('bar')));
-      assert.ok(bar.items.every((item) => item.average_unit_cost == null && item.inventory_value == null));
+      assert.ok(bar.items.every((item) => item.last_unit_cost == null && item.average_unit_cost == null && item.inventory_value == null));
       for (const email of ['waiter@test.invalid', 'inactive@test.invalid']) fails(login(email) + 'select public.inventory_read();', 'Acceso denegado');
       fails(login('cashier@test.invalid') + `update public.inventory_items set name='Alterado';`, 'permission denied');
       fails(`update public.inventory_movements set reason='Alterado';`, 'inmutable');

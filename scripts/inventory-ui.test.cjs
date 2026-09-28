@@ -81,9 +81,11 @@ test('interfaz muestra conversión congelada y separa recepción de gasto', () =
   assert.match(view, /La recepción no crea gastos automáticamente/);
   assert.match(view, /Recepción directa en unidad base/);
   assert.match(view, /Costo real por paquete o envase/);
-  assert.match(view, /Costo promedio rastreado/);
-  assert.match(view, /Valor inventariable rastreado/);
-  assert.match(view, /Costo de componentes controlados/);
+  assert.match(view, /Último costo real/);
+  assert.match(view, /item\.last_unit_cost/);
+  assert.doesNotMatch(view, /Costo promedio rastreado/);
+  assert.match(view, /Valor contable rastreado/);
+  assert.match(view, /última compra real/);
   assert.match(view, /solo incluye los componentes configurados/);
   assert.doesNotMatch(view, /costo total del plato/i);
   assert.doesNotMatch(view, /utilidad neta|margen neto/i);
@@ -98,4 +100,19 @@ test('migración 006 congela costos y aplica valoración sin acoplarla a gastos'
   assert.match(sql, /cl\.average_unit_cost_snapshot,'return'/);
   assert.match(sql, /expense\.amount<>derived_total/);
   assert.doesNotMatch(sql, /update public\.pos_cash_movements/);
+});
+
+test('migración 008 usa último costo real sin reescribir cantidades ni historia', () => {
+  const sql = readFileSync('supabase/migrations/202609280008_inventory_last_purchase_cost.sql', 'utf8');
+  assert.match(sql, /add column last_unit_cost /);
+  assert.match(sql, /add column last_unit_cost_snapshot /);
+  assert.match(sql, /operation_kind='receipt' and incoming_unit_cost is not null/);
+  assert.match(sql, /cost_state\.last_unit_cost/);
+  assert.match(sql, /coalesce\(cl\.last_unit_cost_snapshot,cl\.average_unit_cost_snapshot\)/);
+  assert.match(sql, /v\.last_unit_cost/);
+  assert.match(sql, /last_actual_purchase/);
+  assert.match(sql, /coalesce\(l\.base_unit_cost,l\.unit_cost\)/);
+  assert.doesNotMatch(sql, /update public\.inventory_receipt_lines/);
+  assert.doesNotMatch(sql, /update public\.inventory_movements/);
+  assert.doesNotMatch(sql, /update public\.inventory_pos_consumption_lines set last_unit_cost_snapshot/);
 });

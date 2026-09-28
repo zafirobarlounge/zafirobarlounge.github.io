@@ -25,7 +25,7 @@ La vista previa local valida hojas, columnas, duplicados y unidades. La vista pr
 
 ## Caja
 
-Caja consulta existencias, costo promedio y valor rastreado, registra conteos iniciales/correcciones compensatorias, recibe compras y revisa reportes. Al recibir, selecciona una presentación, cantidad de paquetes y costo real por paquete; también puede usar unidad base con total de línea o costo unitario. La vista previa muestra conversión, total y costo base. Puede enlazar un gasto existente por UUID. La recepción nunca genera el gasto automáticamente.
+Caja consulta existencias, último costo real de compra y valor contable rastreado, registra conteos iniciales/correcciones compensatorias, recibe compras y revisa reportes. Al recibir, selecciona una presentación, cantidad de paquetes y costo real por paquete; también puede usar unidad base con total de línea o costo unitario. La vista previa muestra conversión, total y costo base. Puede enlazar un gasto existente por UUID. La recepción nunca genera el gasto automáticamente. El costo sugerido de la presentación solo precarga el formulario y no cambia el costo vigente hasta registrar una recepción con costo conocido.
 
 ## Barra y cocina
 
@@ -33,11 +33,13 @@ Cada área ve solo sus artículos y no ve costos. El recorrido es: consultar exi
 
 ## POS
 
-Al entregar, el POS descuenta una sola vez la receta vigente y guarda una copia de sus componentes y del costo promedio aplicado. El producto sin receta se entrega normalmente y se identifica como sin seguimiento. Una alerta de posible agotado o control parcial informa, pero no oculta productos ni bloquea ventas. En recetas parciales se habla de “Costo de componentes controlados” y solo se incluyen los componentes configurados.
+Al entregar, el POS descuenta una sola vez la receta vigente y guarda una copia de sus componentes y del último costo real vigente. El producto sin receta se entrega normalmente y se identifica como sin seguimiento. Una alerta de posible agotado o control parcial informa, pero no oculta productos ni bloquea ventas. En recetas parciales se muestra el costo vigente de los componentes controlados y solo se incluyen los componentes configurados.
 
 Si se anula una unidad ya entregada, se debe distribuir cada componente entre devolución disponible, merma, consumo interno/cortesía y consumo del cliente. Solo la parte recuperable vuelve a existencias usando el costo snapshot original; las demás clasificaciones no descuentan ni valoran por segunda vez. Antes de entregar, una cancelación normal no devuelve stock. Un daño físico en preparación se reporta como daño separado.
 
-El promedio ponderado móvil solo se calcula con costos conocidos. Las salidas conservan el último promedio aunque el saldo quede en cero o negativo. Una recepción con saldo previo `<= 0` reinicia el promedio con su costo real; una cantidad positiva cuyo costo anterior se desconoce permanece sin valoración en vez de asumir cero.
+Cada recepción con costo conocido reemplaza el costo operativo vigente por su costo real por unidad base. Recepciones sin costo, conteos, correcciones y devoluciones no lo cambian. Las ventas futuras usan ese valor y lo congelan en el consumo y movimiento, por lo que una compra posterior no recalcula ventas anteriores.
+
+El promedio ponderado móvil continúa como dato contable e histórico para mantener compatibilidad con la valoración existente. Las salidas conservan ese promedio aunque el saldo quede en cero o negativo. Una recepción con saldo previo `<= 0` reinicia el promedio contable con su costo real; una cantidad positiva cuyo costo anterior se desconoce permanece sin valoración en vez de asumir cero. Ese promedio ya no se usa como costo operativo actual.
 
 ## Correcciones
 

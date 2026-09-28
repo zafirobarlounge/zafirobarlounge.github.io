@@ -183,7 +183,7 @@ export function csvCell(value: unknown) {
 }
 
 export function inventoryMovementCsv(rows: InventoryMovement[]) {
-  const values: unknown[][] = [['Fecha Bogotá','Artículo','Tipo','Cantidad base','Unidad','Costo unitario snapshot','Valor rastreado del movimiento','Saldo posterior','Costo promedio posterior','Valor inventariable posterior','Motivo','Responsable','Jornada','Pedido','Línea POS']];
+  const values: unknown[][] = [['Fecha Bogotá','Artículo','Tipo','Cantidad base','Unidad','Costo unitario snapshot','Valor rastreado del movimiento','Saldo posterior','Costo promedio contable posterior','Valor contable posterior','Motivo','Responsable','Jornada','Pedido','Línea POS']];
   rows.forEach((row) => values.push([
     new Date(row.occurred_at).toLocaleString('es-CO', { timeZone: 'America/Bogota' }), row.item_name,
     movementLabels[row.movement_type] ?? row.movement_type, row.quantity_delta, inventoryUnitLabels[row.base_unit_snapshot],
