@@ -1,11 +1,47 @@
 import { getSupabaseClient } from '../../integrations/supabase/client';
-import type { InventoryData, InventoryMenuAlert } from './inventory.domain';
+import type { InventoryArea, InventoryCursor, InventoryCursorPage, InventoryData, InventoryMenuAlert, InventoryMovement, InventoryReceipt, InventorySubmission, InventorySubmissionKind } from './inventory.domain';
 import type { InventoryImportPayload } from './inventory-import';
 
 export async function loadInventory(): Promise<InventoryData> {
   const { data, error } = await getSupabaseClient().rpc('inventory_read' as never);
   if (error) throw new Error(`No se pudo cargar inventario: ${error.message}. Verifica que las migraciones 005 y 006 estén aplicadas en QA.`);
   return data as unknown as InventoryData;
+}
+
+export async function loadInventoryRecentSubmissions(area: InventoryArea): Promise<InventorySubmission[]> {
+  const { data, error } = await getSupabaseClient().rpc('inventory_recent_submissions' as never, { requested_area: area } as never);
+  if (error) throw new Error(`No se pudieron cargar los reportes recientes: ${error.message}`);
+  return data as unknown as InventorySubmission[];
+}
+
+export async function loadInventoryPendingReplenishments(): Promise<InventorySubmission[]> {
+  const { data, error } = await getSupabaseClient().rpc('inventory_pending_replenishments' as never);
+  if (error) throw new Error(`No se pudieron cargar las solicitudes aprobadas: ${error.message}`);
+  return data as unknown as InventorySubmission[];
+}
+
+export async function loadInventoryReceiptsPage(cursor: InventoryCursor | null): Promise<InventoryCursorPage<InventoryReceipt>> {
+  const { data, error } = await getSupabaseClient().rpc('inventory_receipts_page' as never, { before_received_at: cursor?.timestamp ?? null, before_id: cursor?.id ?? null } as never);
+  if (error) throw new Error(`No se pudieron cargar las entradas: ${error.message}`);
+  return data as unknown as InventoryCursorPage<InventoryReceipt>;
+}
+
+export async function loadInventorySubmissionsPage(kind: InventorySubmissionKind | null, status: string | null, cursor: InventoryCursor | null): Promise<InventoryCursorPage<InventorySubmission>> {
+  const { data, error } = await getSupabaseClient().rpc('inventory_submissions_page' as never, { requested_kind: kind, requested_status: status, before_created_at: cursor?.timestamp ?? null, before_id: cursor?.id ?? null } as never);
+  if (error) throw new Error(`No se pudieron cargar las solicitudes: ${error.message}`);
+  return data as unknown as InventoryCursorPage<InventorySubmission>;
+}
+
+export async function loadInventoryMovementsPage(month: string, cursor: InventoryCursor | null): Promise<InventoryCursorPage<InventoryMovement>> {
+  const { data, error } = await getSupabaseClient().rpc('inventory_movements_page' as never, { requested_month: `${month}-01`, before_occurred_at: cursor?.timestamp ?? null, before_id: cursor?.id ?? null } as never);
+  if (error) throw new Error(`No se pudo cargar el historial: ${error.message}`);
+  return data as unknown as InventoryCursorPage<InventoryMovement>;
+}
+
+export async function loadInventoryMovementExport(month: string): Promise<InventoryMovement[]> {
+  const { data, error } = await getSupabaseClient().rpc('inventory_movements_export' as never, { requested_month: `${month}-01` } as never);
+  if (error) throw new Error(`No se pudo exportar el historial: ${error.message}`);
+  return data as unknown as InventoryMovement[];
 }
 
 export async function loadInventoryMenuAlerts(): Promise<InventoryMenuAlert[]> {

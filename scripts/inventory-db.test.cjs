@@ -57,6 +57,7 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
       insert into public.inventory_receipts(id,request_id,total_cost,received_at,received_by) values('${historicalReceiptId}','${randomUUID()}',12000,now(),'legacy@test.invalid');
       insert into public.inventory_receipt_lines(receipt_id,item_id,base_quantity,unit_cost,submission_line_id,line_total_cost,base_unit_cost) values('${historicalReceiptId}','${historicalItemId}',12,1000,'${historicalSubmissionLineId}',12000,1000);`);
     sql(readFileSync('supabase/migrations/202609280009_inventory_receipt_request_application.sql', 'utf8'));
+    sql(readFileSync('supabase/migrations/202609290010_inventory_history_pagination.sql', 'utf8'));
     sql(`insert into public.admin_users(email) values ('admin@test.invalid');
       insert into public.staff_profiles(email,full_name,is_active) values ('cashier@test.invalid','Caja',true),('bar@test.invalid','Bar',true),('kitchen@test.invalid','Cocina',true),('waiter@test.invalid','Mesero',true),('inactive@test.invalid','Inactivo',false);
       insert into public.staff_role_assignments(email,role) values ('cashier@test.invalid','cashier'),('bar@test.invalid','bar'),('kitchen@test.invalid','kitchen'),('waiter@test.invalid','waiter'),('inactive@test.invalid','cashier');
@@ -409,6 +410,67 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
       assert.equal(sql("select current_quantity from public.inventory_item_valuations v join public.inventory_items i on i.id=v.item_id where i.import_code='IMPORT_CERO';"),'0.000');
     });
 
+    await t.test('historiales paginados usan cursores deterministas, filtros PostgreSQL y exportacion completa', () => {
+      const pageItem = command('admin@test.invalid', { action: 'save_item', name: 'Articulo paginacion', base_unit: 'unit', precision_scale: 0, areas: ['bar'] });
+      const receiptIds = Array.from({ length: 22 }, () => randomUUID());
+      sql(receiptIds.map((id) => `insert into public.inventory_receipts(id,request_id,received_at,received_by,notes) values('${id}','${randomUUID()}','2026-09-30T22:00:00Z','cashier@test.invalid','fixture pagination'); insert into public.inventory_receipt_lines(receipt_id,item_id,base_quantity) values('${id}','${pageItem.id}',1);`).join('\n'));
+      const firstReceipts = JSON.parse(sql(login('cashier@test.invalid') + 'select public.inventory_receipts_page(null,null);'));
+      assert.equal(firstReceipts.rows.length, 20);
+      assert.equal(firstReceipts.has_more, true);
+      const receiptCursor = firstReceipts.rows.at(-1);
+      const secondReceipts = JSON.parse(sql(login('cashier@test.invalid') + `select public.inventory_receipts_page(${quote(receiptCursor.received_at)}::timestamptz,'${receiptCursor.id}');`));
+      const pagedReceiptIds = [...firstReceipts.rows, ...secondReceipts.rows].map((row) => row.id);
+      assert.equal(new Set(pagedReceiptIds).size, pagedReceiptIds.length);
+      assert.ok(receiptIds.every((id) => pagedReceiptIds.includes(id)));
+
+      const rejectedDamageIds = Array.from({ length: 22 }, () => randomUUID());
+      const submissionSql = rejectedDamageIds.map((id) => {
+        const lineId = randomUUID();
+        return `insert into public.inventory_submissions(id,request_id,kind,area,status,created_at,created_by) values('${id}','${randomUUID()}','damage','bar','rejected','2026-09-30T22:30:00Z','bar@test.invalid'); insert into public.inventory_submission_lines(id,submission_id,item_id,observed_quantity,notes) values('${lineId}','${id}','${pageItem.id}',1,'fixture');`;
+      });
+      const countSubmissionId = randomUUID();
+      submissionSql.push(`insert into public.inventory_submissions(id,request_id,kind,area,status,created_at,created_by) values('${countSubmissionId}','${randomUUID()}','count','bar','rejected','2026-09-30T22:31:00Z','bar@test.invalid'); insert into public.inventory_submission_lines(id,submission_id,item_id,observed_quantity,notes) values('${randomUUID()}','${countSubmissionId}','${pageItem.id}',1,'fixture');`);
+      sql(submissionSql.join('\n'));
+      const firstSubmissions = JSON.parse(sql(login('cashier@test.invalid') + "select public.inventory_submissions_page('damage','rejected',null,null);"));
+      assert.equal(firstSubmissions.rows.length, 20);
+      assert.ok(firstSubmissions.rows.every((row) => row.kind === 'damage' && row.status === 'rejected'));
+      const submissionCursor = firstSubmissions.rows.at(-1);
+      const secondSubmissions = JSON.parse(sql(login('cashier@test.invalid') + `select public.inventory_submissions_page('damage','rejected',${quote(submissionCursor.created_at)}::timestamptz,'${submissionCursor.id}');`));
+      const pagedSubmissionIds = [...firstSubmissions.rows, ...secondSubmissions.rows].map((row) => row.id);
+      assert.equal(new Set(pagedSubmissionIds).size, pagedSubmissionIds.length);
+      assert.ok(rejectedDamageIds.every((id) => pagedSubmissionIds.includes(id)));
+      const countFiltered = JSON.parse(sql(login('cashier@test.invalid') + "select public.inventory_submissions_page('count','rejected',null,null);"));
+      assert.ok(countFiltered.rows.some((row) => row.id === countSubmissionId));
+      assert.ok(countFiltered.rows.every((row) => row.kind === 'count' && row.status === 'rejected'));
+      const recentBar = JSON.parse(sql(login('bar@test.invalid') + "select public.inventory_recent_submissions('bar');"));
+      assert.equal(recentBar.length, 8);
+      assert.ok(recentBar.every((row) => row.area === 'bar'));
+
+      const septemberMovementIds = Array.from({ length: 55 }, () => randomUUID());
+      const octoberMovementId = randomUUID();
+      sql(septemberMovementIds.map((id, index) => `insert into public.inventory_movements(id,operation_key,item_id,movement_type,quantity_delta,base_unit_snapshot,reason,actor,occurred_at,metadata) values('${id}','pagination-september-${index}','${pageItem.id}','correction',1,'unit','fixture pagination','admin@test.invalid','2026-09-30T23:00:00Z',jsonb_build_object('actual_package_cost',999,'safe_note','visible'));`).join('\n') + `\ninsert into public.inventory_movements(id,operation_key,item_id,movement_type,quantity_delta,base_unit_snapshot,reason,actor,occurred_at) values('${octoberMovementId}','pagination-october','${pageItem.id}','correction',1,'unit','fixture october','admin@test.invalid','2026-10-01T05:00:00Z');`);
+      const firstMovements = JSON.parse(sql(login('cashier@test.invalid') + "select public.inventory_movements_page('2026-09-01',null,null);"));
+      assert.equal(firstMovements.rows.length, 50);
+      assert.equal(firstMovements.has_more, true);
+      const movementCursor = firstMovements.rows.at(-1);
+      const secondMovements = JSON.parse(sql(login('cashier@test.invalid') + `select public.inventory_movements_page('2026-09-01',${quote(movementCursor.occurred_at)}::timestamptz,'${movementCursor.id}');`));
+      const pagedMovementIds = [...firstMovements.rows, ...secondMovements.rows].map((row) => row.id);
+      assert.equal(new Set(pagedMovementIds).size, pagedMovementIds.length);
+      assert.ok(septemberMovementIds.every((id) => pagedMovementIds.includes(id)));
+      assert.ok(!pagedMovementIds.includes(octoberMovementId));
+      const october = JSON.parse(sql(login('cashier@test.invalid') + "select public.inventory_movements_page('2026-10-01',null,null);"));
+      assert.ok(october.rows.some((row) => row.id === octoberMovementId));
+      const exportRows = JSON.parse(sql(login('cashier@test.invalid') + "select public.inventory_movements_export('2026-09-01');"));
+      assert.ok(exportRows.length > 50);
+      assert.ok(septemberMovementIds.every((id) => exportRows.some((row) => row.id === id)));
+      assert.ok(!exportRows.some((row) => row.id === octoberMovementId));
+      const currentState = JSON.parse(sql(login('cashier@test.invalid') + 'select public.inventory_read();'));
+      assert.deepEqual(currentState.receipts, []);
+      assert.deepEqual(currentState.submissions, []);
+      assert.deepEqual(currentState.movements, []);
+      assert.equal(typeof currentState.pending_review_count, 'number');
+    });
+
     await t.test('barra/cocina no ven costos; mesero e inactivo no leen; tablas no admiten escritura directa', () => {
       const kitchen = JSON.parse(sql(login('kitchen@test.invalid') + 'select public.inventory_read();'));
       assert.equal(kitchen.can_manage, false);
@@ -420,7 +482,16 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
       assert.ok(bar.items.length >= 1);
       assert.ok(bar.items.every((item) => item.areas.includes('bar')));
       assert.ok(bar.items.every((item) => item.last_unit_cost == null && item.average_unit_cost == null && item.inventory_value == null));
+      const barMovements = JSON.parse(sql(login('bar@test.invalid') + "select public.inventory_movements_page('2026-09-01',null,null);"));
+      assert.ok(barMovements.rows.length > 0);
+      assert.ok(barMovements.rows.every((row) => row.unit_cost_snapshot == null && row.tracked_value_delta == null && row.average_unit_cost_after == null && row.inventory_value_after == null));
+      assert.ok(barMovements.rows.every((row) => row.metadata?.actual_package_cost == null));
+      assert.ok(barMovements.rows.some((row) => row.metadata?.safe_note === 'visible'));
+      assert.ok(barMovements.rows.every((row) => bar.items.some((item) => item.id === row.item_id)));
+      fails(login('kitchen@test.invalid') + "select public.inventory_recent_submissions('bar');", 'Area no autorizada');
+      fails(login('bar@test.invalid') + 'select public.inventory_receipts_page(null,null);', 'Acceso denegado a entradas');
       for (const email of ['waiter@test.invalid', 'inactive@test.invalid']) fails(login(email) + 'select public.inventory_read();', 'Acceso denegado');
+      for (const email of ['waiter@test.invalid', 'inactive@test.invalid']) fails(login(email) + "select public.inventory_movements_page('2026-09-01',null,null);", 'Acceso denegado al historial');
       fails(login('cashier@test.invalid') + `update public.inventory_items set name='Alterado';`, 'permission denied');
       fails(`update public.inventory_movements set reason='Alterado';`, 'inmutable');
     });

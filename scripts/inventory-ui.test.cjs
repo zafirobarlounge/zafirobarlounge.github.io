@@ -232,3 +232,29 @@ test('migración 009 conserva recepción completa y limita aplicación a la soli
   assert.match(migration, /applied_submission_quantity <= base_quantity/);
   assert.doesNotMatch(migration, /received_quantity\+qty>subline\.approved_quantity/);
 });
+
+test('migracion 010 pagina historiales en PostgreSQL y la UI consume sus RPC', () => {
+  const migration = readFileSync('supabase/migrations/202609290010_inventory_history_pagination.sql', 'utf8');
+  const repository = readFileSync('src/admin/inventory/inventory.repository.ts', 'utf8');
+  const adminView = readFileSync('src/admin/inventory/AdminInventoryView.tsx', 'utf8');
+  const areaPanel = readFileSync('src/admin/inventory/AreaInventoryPanel.tsx', 'utf8');
+  for (const rpc of ['inventory_recent_submissions','inventory_pending_replenishments','inventory_receipts_page','inventory_submissions_page','inventory_movements_page','inventory_movements_export']) {
+    assert.match(migration, new RegExp(`create function public\\.${rpc}`));
+    assert.match(repository, new RegExp(rpc));
+  }
+  assert.match(migration, /limit 8/);
+  assert.ok((migration.match(/limit 21/g) ?? []).length >= 2);
+  assert.match(migration, /limit 51/);
+  assert.match(migration, /\(r\.received_at,r\.id\)<\(before_received_at,before_id\)/);
+  assert.match(migration, /\(s\.created_at,s\.id\)<\(before_created_at,before_id\)/);
+  assert.match(migration, /\(m\.occurred_at,m\.id\)<\(before_occurred_at,before_id\)/);
+  assert.match(migration, /'submissions','\[\]'::jsonb,'receipts','\[\]'::jsonb,'movements','\[\]'::jsonb/);
+  assert.doesNotMatch(adminView, /data\.(receipts|submissions|movements)/);
+  assert.doesNotMatch(areaPanel, /slice\(0,\s*8\)/);
+  assert.match(areaPanel, /loadInventoryRecentSubmissions\(area\)/);
+  assert.match(adminView, /loadInventoryMovementExport\(month\)/);
+  assert.match(adminView, /type="month"/);
+  assert.match(adminView, /Anterior/);
+  assert.match(adminView, /Siguiente/);
+  assert.equal(domain.exports.inventoryMonthValue(new Date('2026-09-28T12:00:00Z')), '2026-09');
+});

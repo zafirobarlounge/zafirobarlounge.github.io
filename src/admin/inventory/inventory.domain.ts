@@ -131,6 +131,7 @@ export interface InventoryReceiptLine {
 export interface InventoryData {
   can_manage: boolean;
   can_configure: boolean;
+  pending_review_count: number;
   items: InventoryItem[];
   presentations: InventoryPresentation[];
   recipes: InventoryRecipe[];
@@ -138,6 +139,16 @@ export interface InventoryData {
   submissions: InventorySubmission[];
   receipts: InventoryReceipt[];
   movements: InventoryMovement[];
+}
+
+export interface InventoryCursorPage<T> {
+  rows: T[];
+  has_more: boolean;
+}
+
+export interface InventoryCursor {
+  timestamp: string;
+  id: string;
 }
 
 export interface InventoryMenuAlert {
@@ -273,6 +284,13 @@ export function receiptRequestApplicationPreview(approvedQuantity: number, recei
     excess: Math.max(received - applied, 0),
     pendingAfter: Math.max(pending - applied, 0),
   };
+}
+
+export function inventoryMonthValue(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Bogota', year: 'numeric', month: '2-digit' }).formatToParts(date);
+  const year = parts.find((part) => part.type === 'year')?.value;
+  const month = parts.find((part) => part.type === 'month')?.value;
+  return `${year}-${month}`;
 }
 
 export function csvCell(value: unknown) {

@@ -15,7 +15,7 @@ import {
   type InventorySubmission,
   type InventorySubmissionKind,
 } from './inventory.domain';
-import { loadInventory, saveInventoryCommand } from './inventory.repository';
+import { loadInventory, loadInventoryRecentSubmissions, saveInventoryCommand } from './inventory.repository';
 
 export type AreaInventoryStatusFilter = 'all' | 'low' | 'depleted' | 'uncounted';
 export type AreaInventoryItemState = Exclude<AreaInventoryStatusFilter, 'all'> | 'available';
@@ -34,6 +34,7 @@ const statusLabels: Record<string, string> = {
 const emptyData: InventoryData = {
   can_manage: false,
   can_configure: false,
+  pending_review_count: 0,
   items: [],
   presentations: [],
   recipes: [],
@@ -129,6 +130,7 @@ export function AreaInventoryPanel({ area }: { area: InventoryArea }) {
   const [notes, setNotes] = useState('');
   const [selectedPresentationId, setSelectedPresentationId] = useState('');
   const [saving, setSaving] = useState(false);
+  const [recentSubmissions, setRecentSubmissions] = useState<InventorySubmission[]>([]);
   const loadingRef = useRef(false);
   const deferredSearch = useDeferredValue(search);
   const areaLabel = area === 'bar' ? 'Bar' : 'Cocina';
@@ -139,7 +141,9 @@ export function AreaInventoryPanel({ area }: { area: InventoryArea }) {
     setLoading(true);
     setError(null);
     try {
-      setData(await loadInventory());
+      const [inventory, reports] = await Promise.all([loadInventory(), loadInventoryRecentSubmissions(area)]);
+      setData(inventory);
+      setRecentSubmissions(reports);
       setHasLoaded(true);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'No se pudo cargar el inventario del área.');
@@ -147,21 +151,13 @@ export function AreaInventoryPanel({ area }: { area: InventoryArea }) {
       loadingRef.current = false;
       setLoading(false);
     }
-  }, []);
+  }, [area]);
 
   const summary = useMemo(() => summarizeAreaInventory(data.items, area), [area, data.items]);
   const items = useMemo(
     () => filterAreaInventoryItems(data.items, area, deferredSearch, status),
     [area, data.items, deferredSearch, status],
   );
-  const recentSubmissions = useMemo(
-    () => data.submissions
-      .filter((submission) => submission.area === area)
-      .sort((left, right) => right.created_at.localeCompare(left.created_at))
-      .slice(0, 8),
-    [area, data.submissions],
-  );
-
   useEffect(() => {
     if (!notice && !error) return undefined;
     const timer = window.setTimeout(() => {
