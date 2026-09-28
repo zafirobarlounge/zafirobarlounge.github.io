@@ -10,6 +10,19 @@ Ruta: `/admin/inventory`. La navegación **Existencias y solicitudes** también 
 4. Configura el consumo de cada producto del menú con uno o más artículos. Marca “Control parcial” cuando solo se miden algunos componentes.
 5. Revisa solicitudes, conteos y daños. Aprobar una reposición no aumenta stock; la recepción sí.
 
+### Importación inicial XLSX
+
+En **Configuración** solo administración puede descargar la plantilla e importar un archivo `.xlsx`. El formato exacto es:
+
+- `Articulos`: `codigo`, `nombre`, `area`, `unidad_base`, `existencia_inicial`, `costo_unitario_inicial`, `minimo`, `objetivo`, `observaciones`.
+- `Presentaciones`: `codigo_articulo`, `presentacion`, `contenido`, `unidad`, `costo_sugerido`, `observaciones`.
+- `ConsumoMenu`: `producto_menu`, `codigo_articulo`, `cantidad_base`, `unidad`, `tipo_control`.
+- `Pendientes`: `articulo_relacion`, `dato_faltante`, `motivo`; es informativa y no se importa.
+
+Los valores admitidos en el Excel son `unidad`, `gramo`, `mililitro`; las áreas son `barra`, `cocina`, `ambas`; `tipo_control` es `parcial`. `producto_menu` debe ser la clave estable exacta de `menu_items`, por ejemplo `comida::quesadilla-zafiro::1`. Una celda numérica vacía se conserva como desconocida y nunca se convierte a cero.
+
+La vista previa local valida hojas, columnas, duplicados y unidades. La vista previa del servidor clasifica registros nuevos y existentes y detecta conflictos. Confirmar ejecuta una sola transacción auditada e idempotente. El archivo revisable de Zafiro está en `data/zafiro-inventory-initial.xlsx`; no se carga automáticamente.
+
 ## Caja
 
 Caja consulta existencias, costo promedio y valor rastreado, registra conteos iniciales/correcciones compensatorias, recibe compras y revisa reportes. Al recibir, selecciona una presentación, cantidad de paquetes y costo real por paquete; también puede usar unidad base con total de línea o costo unitario. La vista previa muestra conversión, total y costo base. Puede enlazar un gasto existente por UUID. La recepción nunca genera el gasto automáticamente.

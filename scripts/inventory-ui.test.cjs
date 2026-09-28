@@ -14,6 +14,24 @@ test('cantidades distinguen ausencia de cero y respetan precisión', () => {
   assert.match(domain.exports.formatInventoryQuantity(12.5, 'gram', 3), /12,5 g/);
 });
 
+test('importador XLSX se limita a configuración administrativa y exige vista previa', () => {
+  const view = readFileSync('src/admin/inventory/AdminInventoryView.tsx', 'utf8');
+  const repository = readFileSync('src/admin/inventory/inventory.repository.ts', 'utf8');
+  const migration = readFileSync('supabase/migrations/202609280007_inventory_initial_import.sql', 'utf8');
+  assert.match(view, /Descargar plantilla/);
+  assert.match(view, /Importar inventario/);
+  assert.match(view, /previewInventoryImport/);
+  assert.match(view, /Confirmar importación/);
+  assert.match(repository, /inventory_import_preview/);
+  assert.match(repository, /inventory_import_commit/);
+  assert.match(migration, /inventory_can_configure\(\)/);
+  assert.match(migration, /inventory_import_batches/);
+  assert.match(migration, /pg_advisory_xact_lock\(9272026,7\)/);
+  assert.doesNotMatch(migration, /insert into public\.inventory_receipts/);
+  assert.doesNotMatch(migration, /insert into public\.pos_cash_movements/);
+  assert.doesNotMatch(migration, /update public\.pos_order_items/);
+});
+
 test('vista previa calcula presentación, total y costo base sin usar redondeo como autoridad', () => {
   const bread = domain.exports.receiptCostPreview(3, 6, 7000, 'package');
   assert.equal(bread.baseQuantity, 18);

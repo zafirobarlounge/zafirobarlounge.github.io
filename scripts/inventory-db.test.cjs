@@ -29,11 +29,13 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
   });
   const fails = (input, message) => assert.throws(() => sql(input), (error) => String(error.stderr).includes(message));
   const command = (email, payload, requestId = randomUUID()) => JSON.parse(sql(login(email) + `select public.inventory_command('${requestId}',${quote(JSON.stringify(payload))}::jsonb);`));
+  const previewImport = (email, payload) => JSON.parse(sql(login(email) + `select public.inventory_import_preview(${quote(JSON.stringify(payload))}::jsonb);`));
+  const commitImport = (email, payload, fingerprint, requestId = randomUUID()) => JSON.parse(sql(login(email) + `select public.inventory_import_commit('${requestId}','${fingerprint}',${quote(JSON.stringify(payload))}::jsonb);`));
 
   execFileSync(exe('initdb'), ['-D', path.join(dir, 'data'), '-U', 'postgres', '-A', 'trust', '--encoding=UTF8', '--locale=C'], opts);
   execFileSync(exe('pg_ctl'), ['-D', path.join(dir, 'data'), '-l', path.join(dir, 'server.log'), '-o', `-h 127.0.0.1 -p ${port}`, '-w', 'start'], { ...opts, stdio: 'ignore' });
   try {
-    for (const file of ['tests/cash-local-bootstrap.sql', 'supabase/schema.sql', 'supabase/pos-schema.sql', 'supabase/migrations/202609270001_cash_management.sql', 'supabase/migrations/202609270002_sales_business_date.sql', 'supabase/migrations/202609270003_session_financial_report.sql', 'supabase/migrations/202609270004_session_adjustments.sql', 'supabase/migrations/202609270005_inventory.sql', 'supabase/migrations/202609280006_inventory_cost_valuation.sql']) sql(readFileSync(file, 'utf8'));
+    for (const file of ['tests/cash-local-bootstrap.sql', 'supabase/schema.sql', 'supabase/pos-schema.sql', 'supabase/migrations/202609270001_cash_management.sql', 'supabase/migrations/202609270002_sales_business_date.sql', 'supabase/migrations/202609270003_session_financial_report.sql', 'supabase/migrations/202609270004_session_adjustments.sql', 'supabase/migrations/202609270005_inventory.sql', 'supabase/migrations/202609280006_inventory_cost_valuation.sql', 'supabase/migrations/202609280007_inventory_initial_import.sql']) sql(readFileSync(file, 'utf8'));
     sql(`insert into public.admin_users(email) values ('admin@test.invalid');
       insert into public.staff_profiles(email,full_name,is_active) values ('cashier@test.invalid','Caja',true),('bar@test.invalid','Bar',true),('kitchen@test.invalid','Cocina',true),('waiter@test.invalid','Mesero',true),('inactive@test.invalid','Inactivo',false);
       insert into public.staff_role_assignments(email,role) values ('cashier@test.invalid','cashier'),('bar@test.invalid','bar'),('kitchen@test.invalid','kitchen'),('waiter@test.invalid','waiter'),('inactive@test.invalid','cashier');
@@ -219,6 +221,63 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
       const countLine = sql(`select id from public.inventory_submission_lines where submission_id='${count.id}';`);
       command('cashier@test.invalid', { action: 'review_submission', submission_id: count.id, status: 'approved', notes: 'Conteo revisado', lines: [{ line_id: countLine, approved_quantity: 9 }] });
       assert.equal(sql(`select sum(quantity_delta) from public.inventory_movements where item_id='${bread.id}';`), '10.000');
+    });
+
+    await t.test('importación inicial es administrativa, transaccional, idempotente y no inventa movimientos', () => {
+      const payload = {
+        articles: [{ code:'IMPORT_PAN',name:'Pan importado',area:'kitchen',base_unit:'unit',initial_quantity:null,initial_unit_cost:1200,minimum_quantity:null,target_quantity:null,notes:'QA' }],
+        presentations: [{ item_code:'IMPORT_PAN',name:'Paquete x4',content_per_package:4,content_unit:'unit',suggested_package_cost:4800,notes:'' }],
+        menu_consumption: [{ menu_item_source_key:'menu-soda',item_code:'IMPORT_PAN',quantity_base:1,unit:'unit',control_mode:'partial' }],
+      };
+      const firstPreview = previewImport('admin@test.invalid', payload);
+      assert.deepEqual(firstPreview.new_articles, ['IMPORT_PAN']);
+      assert.equal(firstPreview.initial_count_count, 0);
+      assert.equal(firstPreview.errors.length, 0);
+      for (const email of ['cashier@test.invalid','bar@test.invalid','kitchen@test.invalid']) {
+        fails(login(email) + `select public.inventory_import_preview(${quote(JSON.stringify(payload))}::jsonb);`, 'Solo administraci');
+        fails(login(email) + `select public.inventory_import_commit('${randomUUID()}','${'a'.repeat(64)}',${quote(JSON.stringify(payload))}::jsonb);`, 'Solo administraci');
+      }
+      const requestId = randomUUID(), fingerprint = '1'.repeat(64);
+      const before = {
+        movements: Number(sql('select count(*) from public.inventory_movements;')),
+        receipts: Number(sql('select count(*) from public.inventory_receipts;')),
+        expenses: Number(sql('select count(*) from public.pos_cash_movements;')),
+        sales: Number(sql('select count(*) from public.pos_order_items;')),
+      };
+      const result = commitImport('admin@test.invalid', payload, fingerprint, requestId);
+      assert.equal(result.created_articles, 1); assert.equal(result.created_presentations, 1); assert.equal(result.created_menu_associations, 1); assert.equal(result.created_initial_counts, 0);
+      assert.equal(sql("select tracking_started_at is null from public.inventory_items where import_code='IMPORT_PAN';"), 't');
+      assert.equal(Number(sql('select count(*) from public.inventory_movements;')), before.movements);
+      assert.equal(Number(sql('select count(*) from public.inventory_receipts;')), before.receipts);
+      assert.equal(Number(sql('select count(*) from public.pos_cash_movements;')), before.expenses);
+      assert.equal(Number(sql('select count(*) from public.pos_order_items;')), before.sales);
+      assert.deepEqual(commitImport('admin@test.invalid', payload, fingerprint, requestId), result);
+      assert.deepEqual(commitImport('admin@test.invalid', payload, fingerprint, randomUUID()), result);
+      const existingPreview=previewImport('admin@test.invalid',payload);
+      assert.deepEqual(existingPreview.existing_articles,['IMPORT_PAN']);
+      assert.equal(existingPreview.existing_presentations.length,1);
+      assert.deepEqual(existingPreview.existing_menu_products,['menu-soda']);
+      assert.equal(sql("select count(*) from public.inventory_items where import_code='IMPORT_PAN';"), '1');
+      assert.equal(sql("select count(*) from public.inventory_purchase_presentations p join public.inventory_items i on i.id=p.item_id where i.import_code='IMPORT_PAN';"), '1');
+
+      const articleConflict = structuredClone(payload); articleConflict.articles[0].name = 'Otro nombre';
+      assert.ok(previewImport('admin@test.invalid', articleConflict).errors.some((value) => value.includes('Conflicto en artículo')));
+      const presentationConflict = structuredClone(payload); presentationConflict.presentations[0].content_per_package = 6;
+      assert.ok(previewImport('admin@test.invalid', presentationConflict).errors.some((value) => value.includes('Conflicto en presentación')));
+      const recipeConflict = structuredClone(payload); recipeConflict.menu_consumption[0].quantity_base = 2;
+      assert.ok(previewImport('admin@test.invalid', recipeConflict).errors.some((value) => value.includes('Conflicto en receta')));
+
+      const invalidUnit = structuredClone(payload); invalidUnit.articles[0].code='IMPORT_QUESO';invalidUnit.articles[0].name='Queso importado';invalidUnit.articles[0].base_unit='gram';invalidUnit.presentations[0].item_code='IMPORT_QUESO';invalidUnit.presentations[0].content_unit='unit';invalidUnit.menu_consumption=[];
+      assert.ok(previewImport('admin@test.invalid', invalidUnit).errors.some((value) => value.includes('no se aplican conversiones')));
+      const transactional = structuredClone(payload); transactional.articles[0].code='IMPORT_ROLLBACK';transactional.articles[0].name='Debe revertirse';transactional.presentations=[];transactional.menu_consumption[0].item_code='IMPORT_ROLLBACK';transactional.menu_consumption[0].menu_item_source_key='menu-inexistente';
+      fails(login('admin@test.invalid') + `select public.inventory_import_commit('${randomUUID()}','${'2'.repeat(64)}',${quote(JSON.stringify(transactional))}::jsonb);`, 'conflictos');
+      assert.equal(sql("select count(*) from public.inventory_items where import_code='IMPORT_ROLLBACK';"), '0');
+
+      const counted = { articles:[{code:'IMPORT_CERO',name:'Conteo cero explícito',area:'bar',base_unit:'unit',initial_quantity:0,initial_unit_cost:null,minimum_quantity:null,target_quantity:null,notes:''}],presentations:[],menu_consumption:[] };
+      const countResult=commitImport('admin@test.invalid',counted,'3'.repeat(64));
+      assert.equal(countResult.created_initial_counts,1);
+      assert.equal(sql("select count(*) from public.inventory_movements m join public.inventory_items i on i.id=m.item_id where i.import_code='IMPORT_CERO' and m.movement_type='initial_count';"),'1');
+      assert.equal(sql("select current_quantity from public.inventory_item_valuations v join public.inventory_items i on i.id=v.item_id where i.import_code='IMPORT_CERO';"),'0.000');
     });
 
     await t.test('barra/cocina no ven costos; mesero e inactivo no leen; tablas no admiten escritura directa', () => {

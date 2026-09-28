@@ -1,5 +1,6 @@
 import { getSupabaseClient } from '../../integrations/supabase/client';
 import type { InventoryData, InventoryMenuAlert } from './inventory.domain';
+import type { InventoryImportPayload } from './inventory-import';
 
 export async function loadInventory(): Promise<InventoryData> {
   const { data, error } = await getSupabaseClient().rpc('inventory_read' as never);
@@ -17,6 +18,31 @@ export async function saveInventoryCommand(requestId: string, payload: Record<st
   const { data, error } = await getSupabaseClient().rpc('inventory_command' as never, { request_id: requestId, payload } as never);
   if (error) throw Object.assign(new Error(error.message), { confirmedRejection: Boolean(error.code) });
   return data;
+}
+
+export interface InventoryImportServerPreview {
+  new_articles: string[];
+  existing_articles: string[];
+  new_presentations: string[];
+  existing_presentations: string[];
+  new_menu_products: string[];
+  existing_menu_products: string[];
+  menu_association_count: number;
+  initial_count_count: number;
+  warnings: string[];
+  errors: string[];
+}
+
+export async function previewInventoryImport(payload: InventoryImportPayload) {
+  const { data, error } = await getSupabaseClient().rpc('inventory_import_preview' as never, { payload } as never);
+  if (error) throw new Error(`No se pudo validar la importación: ${error.message}. Verifica que la migración 007 esté aplicada en QA.`);
+  return data as unknown as InventoryImportServerPreview;
+}
+
+export async function commitInventoryImport(requestId: string, fingerprint: string, payload: InventoryImportPayload) {
+  const { data, error } = await getSupabaseClient().rpc('inventory_import_commit' as never, { request_id: requestId, fingerprint, payload } as never);
+  if (error) throw new Error(`No se pudo importar el inventario: ${error.message}`);
+  return data as unknown as { created_articles: number; created_presentations: number; created_menu_associations: number; created_initial_counts: number };
 }
 
 export interface PosConsumptionResolutionLine {
