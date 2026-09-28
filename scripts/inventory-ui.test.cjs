@@ -63,6 +63,19 @@ test('todos los selectores filtrados excluyen el articulo anterior y seleccionan
   assert.match(view, /setPresentationId\('base'\)[\s\S]*\},\[itemId\]\)/);
 });
 
+test('nuevo reporte limita artículos al área elegida incluso para administración', () => {
+  const items = [
+    { id:'cola',name:'Coca-Cola',areas:['bar'] },
+    { id:'pan',name:'Pan',areas:['kitchen'] },
+    { id:'limon',name:'Limón',areas:['bar','kitchen'] },
+  ];
+  assert.deepEqual(Array.from(domain.exports.filterInventoryItemsByArea(items, 'bar'), (item) => item.id), ['cola','limon']);
+  assert.deepEqual(Array.from(domain.exports.filterInventoryItemsByArea(items, 'kitchen'), (item) => item.id), ['pan','limon']);
+  const view = readFileSync('src/admin/inventory/AdminInventoryView.tsx', 'utf8');
+  assert.match(view, /const available=filterInventoryItemsByArea\(data\.items,selectedArea\)/);
+  assert.doesNotMatch(view, /data\.can_manage\|\|item\.areas\.includes\(selectedArea\)/);
+});
+
 test('mensajes operativos de inventario vencen y las validaciones permanecen visibles', () => {
   assert.equal(domain.exports.getInventoryMessageDuration(false), 5000);
   assert.equal(domain.exports.getInventoryMessageDuration(true), 8000);

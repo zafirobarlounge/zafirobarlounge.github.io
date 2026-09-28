@@ -4,7 +4,7 @@ import * as XLSX from 'xlsx';
 import { AdminLayout } from '../AdminLayout';
 import { useSupabaseAuth } from '../../auth/SupabaseAuthProvider';
 import {
-  filterInventoryStockItems, formatConfiguredInventoryQuantity, formatInventoryMoneyInput, formatInventoryQuantity, getInventoryItemSearchSelection, getInventoryMessageDuration, inventoryItemMatchesSearch, inventoryMoneyInput, inventoryMovementCsv, inventoryUnitLabels, movementLabels, parseInventorySubmissionLineNotes, receiptCostPreview, submissionKindLabels,
+  filterInventoryItemsByArea, filterInventoryStockItems, formatConfiguredInventoryQuantity, formatInventoryMoneyInput, formatInventoryQuantity, getInventoryItemSearchSelection, getInventoryMessageDuration, inventoryItemMatchesSearch, inventoryMoneyInput, inventoryMovementCsv, inventoryUnitLabels, movementLabels, parseInventorySubmissionLineNotes, receiptCostPreview, submissionKindLabels,
   type InventoryArea, type InventoryData, type InventoryItem, type InventoryStockAreaFilter, type InventoryStockOrder, type InventoryStockStatusFilter, type InventorySubmission, type InventorySubmissionKind, type InventoryUnit,
 } from './inventory.domain';
 import { createInventoryTemplateWorkbook, inventoryImportFingerprint, parseInventoryWorkbook, type ParsedInventoryImport } from './inventory-import';
@@ -193,7 +193,7 @@ function ReceiveDialog({ data, initialItemId, busy, onClose, onSave }: DialogPro
 }
 
 function SubmissionDialog({ data, area, busy, onClose, onSave }: DialogProps & { data: InventoryData; area: InventoryArea | null }) {
-  const [kind,setKind]=useState<InventorySubmissionKind>('replenishment'); const [submissionStatus,setSubmissionStatus]=useState<'draft'|'sent'>('sent'); const [selectedArea,setArea]=useState<InventoryArea>(area ?? 'bar'); const available=data.items.filter((item)=>data.can_manage || item.areas.includes(selectedArea)); const [itemId,setItemId]=useState(available[0]?.id??''); const [itemSearch,setItemSearch]=useState(''); const [quantity,setQuantity]=useState(''); const [notes,setNotes]=useState('');
+  const [kind,setKind]=useState<InventorySubmissionKind>('replenishment'); const [submissionStatus,setSubmissionStatus]=useState<'draft'|'sent'>('sent'); const [selectedArea,setArea]=useState<InventoryArea>(area ?? 'bar'); const available=filterInventoryItemsByArea(data.items,selectedArea); const [itemId,setItemId]=useState(available[0]?.id??''); const [itemSearch,setItemSearch]=useState(''); const [quantity,setQuantity]=useState(''); const [notes,setNotes]=useState('');
   useEffect(()=>{const next=getInventoryItemSearchSelection(available,itemId,itemSearch).selectedItemId;if(next!==itemId)setItemId(next);},[selectedArea,data,itemId,itemSearch]);
   const selection=getInventoryItemSearchSelection(available,itemId,itemSearch);
   const changeItemSearch=(value:string)=>{const next=getInventoryItemSearchSelection(available,itemId,value);setItemSearch(value);setItemId(next.selectedItemId);};

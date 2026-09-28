@@ -223,6 +223,10 @@ export function getInventoryItemSearchSelection(items: InventoryItem[], currentI
   };
 }
 
+export function filterInventoryItemsByArea(items: InventoryItem[], area: InventoryArea) {
+  return items.filter((item) => item.areas.includes(area));
+}
+
 export function filterInventoryStockItems(items: InventoryItem[], search: string, area: InventoryStockAreaFilter, status: InventoryStockStatusFilter, order: InventoryStockOrder) {
   const filtered = items.filter((item) => {
     if (!inventoryItemMatchesSearch(item, search) || (area !== 'all' && !item.areas.includes(area))) return false;
