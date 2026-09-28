@@ -45,7 +45,7 @@ test('búsqueda, área y estados filtran existencias sin confundir null con cero
   assert.equal(items.find((item)=>item.id==='cola').id, 'cola');
 });
 
-test('filtro de presentaciones excluye el articulo anterior y selecciona la coincidencia', () => {
+test('todos los selectores filtrados excluyen el articulo anterior y seleccionan la coincidencia', () => {
   const items = [
     { id:'aceite',name:'Aceite para fritura',import_code:'COC_ACEITE' },
     { id:'cola',name:'Coca-Cola 400 ml',import_code:'BAR_COLA' },
@@ -56,6 +56,11 @@ test('filtro de presentaciones excluye el articulo anterior y selecciona la coin
   const empty = domain.exports.getInventoryItemSearchSelection(items, 'cola', 'sin coincidencias');
   assert.equal(empty.options.length, 0);
   assert.equal(empty.selectedItemId, '');
+  const view = readFileSync('src/admin/inventory/AdminInventoryView.tsx', 'utf8');
+  assert.doesNotMatch(view, /selected&&!matching|item&&!matchingTracked/);
+  assert.ok((view.match(/getInventoryItemSearchSelection/g) ?? []).length >= 8);
+  assert.ok((view.match(/Sin artículos coincidentes/g) ?? []).length >= 4);
+  assert.match(view, /setPresentationId\('base'\)[\s\S]*\},\[itemId\]\)/);
 });
 
 test('mensajes operativos de inventario vencen y las validaciones permanecen visibles', () => {
@@ -157,7 +162,7 @@ test('acciones por tarjeta bloquean el artículo y reutilizan los flujos existen
   assert.match(view, /lockedValueClass/);
   assert.doesNotMatch(view, /Conteo inicial o corrección/);
   for (const label of ['Buscar existencias','Buscar artículos configurados','Buscar artículo para presentación','Buscar componente','Buscar artículo para reporte','Buscar artículo para entrada']) assert.match(view, new RegExp(label));
-  assert.match(view, /selected&&!matching\.some/);
+  assert.match(view, /function SearchableInventoryItemSelect[\s\S]*getInventoryItemSearchSelection/);
 });
 
 test('administración muestra presentación solicitada y equivalencia base', () => {
