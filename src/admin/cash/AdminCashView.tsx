@@ -306,8 +306,8 @@ export function AdminCashView({ embedded = false, initialAction = null, onClose 
         }
       }} aria-label={modal === 'movement' ? 'Registrar movimiento' : !active ? 'Abrir jornada y caja' : 'Arqueo y cierre de jornada'} className="max-h-[90dvh] w-full max-w-xl overflow-y-auto rounded-2xl border border-white/20 bg-obsidian p-4">
         <div className="mb-5 flex justify-end border-b border-white/10 pb-4">
-          <button autoFocus type="button" className="inline-flex min-h-[44px] items-center gap-2 rounded-xl border border-white/15 px-4 py-2 text-sm text-mist transition hover:border-white/30 hover:bg-white/10 hover:text-ivory focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyanGlow disabled:opacity-40" disabled={busy} onClick={closeModal}>
-            Cerrar <span aria-hidden="true" className="text-xl leading-none">×</span>
+          <button autoFocus type="button" className="rounded-full border border-white/14 bg-white/[0.06] px-4 py-2 text-sm font-semibold uppercase tracking-[0.22em] text-ivory transition hover:border-cyanGlow/24 hover:bg-white/[0.1] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyanGlow/20 disabled:cursor-not-allowed disabled:opacity-60" disabled={busy} onClick={closeModal}>
+            Cerrar
           </button>
         </div>
         {error && <p role="alert" className="my-3 text-rose-200">{error}</p>}
