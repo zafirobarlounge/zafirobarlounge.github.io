@@ -14,6 +14,8 @@ export interface InventoryItem {
   balance: number | null;
   pending_incoming: number;
   last_unit_cost: number | null;
+  average_unit_cost: number | null;
+  inventory_value: number | null;
   areas: InventoryArea[];
 }
 
@@ -24,6 +26,7 @@ export interface InventoryPresentation {
   content_per_package: number;
   content_unit: InventoryUnit;
   active: boolean;
+  suggested_package_cost: number | null;
 }
 
 export interface InventorySubmissionLine {
@@ -67,6 +70,11 @@ export interface InventoryMovement {
   sales_session_id: string | null;
   order_id: string | null;
   order_item_id: string | null;
+  unit_cost_snapshot: number | null;
+  tracked_value_delta: number | null;
+  quantity_balance_after: number | null;
+  average_unit_cost_after: number | null;
+  inventory_value_after: number | null;
   metadata: Record<string, unknown>;
 }
 
@@ -78,6 +86,7 @@ export interface InventoryRecipe {
   quantity_base: number;
   active: boolean;
   control_mode: 'partial' | 'complete';
+  tracked_component_cost: number | null;
 }
 
 export interface InventoryReceipt {
@@ -89,7 +98,20 @@ export interface InventoryReceipt {
   received_at: string;
   received_by: string;
   notes: string;
-  lines: Array<Record<string, unknown>>;
+  lines: InventoryReceiptLine[];
+}
+
+export interface InventoryReceiptLine {
+  id: string;
+  item_id: string;
+  presentation_name_snapshot: string | null;
+  content_per_package_snapshot: number | null;
+  content_unit_snapshot: InventoryUnit | null;
+  package_quantity: number | null;
+  base_quantity: number;
+  actual_package_cost: number | null;
+  line_total_cost: number | null;
+  base_unit_cost: number | null;
 }
 
 export interface InventoryData {
@@ -133,6 +155,27 @@ export function formatInventoryQuantity(value: number | null, unit: InventoryUni
   return `${new Intl.NumberFormat('es-CO', { maximumFractionDigits: precision }).format(Number(value))} ${inventoryUnitLabels[unit]}`;
 }
 
+export function inventoryMoneyInput(raw: string): { display: string; value: number | null } {
+  const cleaned = raw.replace(/[^\d,]/g, '');
+  const [wholeRaw, decimalRaw = ''] = cleaned.split(',', 2);
+  const whole = wholeRaw.replace(/^0+(?=\d)/, '') || (cleaned ? '0' : '');
+  if (!whole) return { display: '', value: null };
+  const decimals = decimalRaw.slice(0, 2);
+  const value = Number(`${whole}.${decimals || '0'}`);
+  const formattedWhole = new Intl.NumberFormat('es-CO').format(Number(whole));
+  return { display: cleaned.includes(',') ? `${formattedWhole},${decimals}` : formattedWhole, value };
+}
+
+export function formatInventoryMoneyInput(value: number | null | undefined) {
+  return value == null ? '' : new Intl.NumberFormat('es-CO', { maximumFractionDigits: 2 }).format(Number(value));
+}
+
+export function receiptCostPreview(quantity: number, contentPerPackage: number, cost: number, mode: 'package' | 'line_total' | 'base_unit') {
+  const baseQuantity = quantity * contentPerPackage;
+  const lineTotal = mode === 'package' ? quantity * cost : mode === 'line_total' ? cost : baseQuantity * cost;
+  return { baseQuantity, lineTotal, baseUnitCost: baseQuantity > 0 ? lineTotal / baseQuantity : 0 };
+}
+
 export function csvCell(value: unknown) {
   let text = value == null ? '' : String(value);
   if (/^[\s]*[=+@-]/.test(text)) text = `'${text}`;
@@ -140,10 +183,11 @@ export function csvCell(value: unknown) {
 }
 
 export function inventoryMovementCsv(rows: InventoryMovement[]) {
-  const values: unknown[][] = [['Fecha Bogotá','Artículo','Tipo','Cantidad base','Unidad','Motivo','Responsable','Jornada','Pedido','Línea POS']];
+  const values: unknown[][] = [['Fecha Bogotá','Artículo','Tipo','Cantidad base','Unidad','Costo unitario snapshot','Valor rastreado del movimiento','Saldo posterior','Costo promedio posterior','Valor inventariable posterior','Motivo','Responsable','Jornada','Pedido','Línea POS']];
   rows.forEach((row) => values.push([
     new Date(row.occurred_at).toLocaleString('es-CO', { timeZone: 'America/Bogota' }), row.item_name,
     movementLabels[row.movement_type] ?? row.movement_type, row.quantity_delta, inventoryUnitLabels[row.base_unit_snapshot],
+    row.unit_cost_snapshot, row.tracked_value_delta, row.quantity_balance_after, row.average_unit_cost_after, row.inventory_value_after,
     row.reason, row.actor, row.sales_session_id, row.order_id, row.order_item_id,
   ]));
   return '\uFEFF' + values.map((row) => row.map(csvCell).join(';')).join('\r\n');

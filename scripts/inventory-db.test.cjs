@@ -33,13 +33,14 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
   execFileSync(exe('initdb'), ['-D', path.join(dir, 'data'), '-U', 'postgres', '-A', 'trust', '--encoding=UTF8', '--locale=C'], opts);
   execFileSync(exe('pg_ctl'), ['-D', path.join(dir, 'data'), '-l', path.join(dir, 'server.log'), '-o', `-h 127.0.0.1 -p ${port}`, '-w', 'start'], { ...opts, stdio: 'ignore' });
   try {
-    for (const file of ['tests/cash-local-bootstrap.sql', 'supabase/schema.sql', 'supabase/pos-schema.sql', 'supabase/migrations/202609270001_cash_management.sql', 'supabase/migrations/202609270002_sales_business_date.sql', 'supabase/migrations/202609270003_session_financial_report.sql', 'supabase/migrations/202609270004_session_adjustments.sql', 'supabase/migrations/202609270005_inventory.sql']) sql(readFileSync(file, 'utf8'));
+    for (const file of ['tests/cash-local-bootstrap.sql', 'supabase/schema.sql', 'supabase/pos-schema.sql', 'supabase/migrations/202609270001_cash_management.sql', 'supabase/migrations/202609270002_sales_business_date.sql', 'supabase/migrations/202609270003_session_financial_report.sql', 'supabase/migrations/202609270004_session_adjustments.sql', 'supabase/migrations/202609270005_inventory.sql', 'supabase/migrations/202609280006_inventory_cost_valuation.sql']) sql(readFileSync(file, 'utf8'));
     sql(`insert into public.admin_users(email) values ('admin@test.invalid');
       insert into public.staff_profiles(email,full_name,is_active) values ('cashier@test.invalid','Caja',true),('bar@test.invalid','Bar',true),('kitchen@test.invalid','Cocina',true),('waiter@test.invalid','Mesero',true),('inactive@test.invalid','Inactivo',false);
       insert into public.staff_role_assignments(email,role) values ('cashier@test.invalid','cashier'),('bar@test.invalid','bar'),('kitchen@test.invalid','kitchen'),('waiter@test.invalid','waiter'),('inactive@test.invalid','cashier');
       insert into public.menu_items(source_key,legacy_id,slug,hoja_origen,tipo,name,orden) values ('menu-burger',9001,'burger','test','Comida','Hamburguesa',1),('menu-soda',9002,'soda','test','Bebida','Soda',2);`);
 
     let bread;
+    let openSessionId;
     await t.test('solo admin configura artículos y varias presentaciones compatibles', () => {
       bread = command('admin@test.invalid', { action: 'save_item', name: 'Pan', base_unit: 'unit', precision_scale: 0, minimum_quantity: 4, target_quantity: 18, areas: ['kitchen'] });
       const p4 = command('admin@test.invalid', { action: 'save_presentation', item_id: bread.id, name: 'Paquete x4', content_per_package: 4, content_unit: 'unit' });
@@ -71,15 +72,111 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
       const expense = randomUUID();
       sql(`insert into public.pos_cash_movements(id,kind,concept,category,amount,expense_date,method,origin,created_by) values('${expense}','expense','Compra QA','supplies',1000,'2026-09-27','bank_transfer','business','cashier@test.invalid');`);
       fails(login('cashier@test.invalid') + `select public.inventory_command('${randomUUID()}',${quote(JSON.stringify({ action: 'receive', expense_movement_id: expense, total_cost: 999, lines: [{ item_id: bread.id, base_quantity: 1 }] }))}::jsonb);`, 'no coincide');
-      command('cashier@test.invalid', { action: 'receive', expense_movement_id: expense, total_cost: 1000, lines: [{ item_id: bread.id, base_quantity: 1 }] });
-      fails(login('cashier@test.invalid') + `select public.inventory_command('${randomUUID()}',${quote(JSON.stringify({ action: 'receive', expense_movement_id: expense, total_cost: 1000, lines: [{ item_id: bread.id, base_quantity: 1 }] }))}::jsonb);`, 'duplicate key');
+      command('cashier@test.invalid', { action: 'receive', expense_movement_id: expense, total_cost: 1000, lines: [{ item_id: bread.id, base_quantity: 1, line_total_cost: 1000 }] });
+      fails(login('cashier@test.invalid') + `select public.inventory_command('${randomUUID()}',${quote(JSON.stringify({ action: 'receive', expense_movement_id: expense, total_cost: 1000, lines: [{ item_id: bread.id, base_quantity: 1, line_total_cost: 1000 }] }))}::jsonb);`, 'duplicate key');
+    });
+
+    await t.test('costos por presentación, snapshots y promedio ponderado móvil', () => {
+      const costedBread = command('admin@test.invalid', { action: 'save_item', name: 'Pan valorado', base_unit: 'unit', precision_scale: 0, areas: ['kitchen'] });
+      const p6 = command('admin@test.invalid', { action: 'save_presentation', item_id: costedBread.id, name: 'Paquete x6 costo', content_per_package: 6, content_unit: 'unit', suggested_package_cost: 7000 });
+      command('cashier@test.invalid', { action: 'initial_count', item_id: costedBread.id, quantity: 10, initial_unit_cost: 1100, reason: 'Conteo conocido' });
+      const receiptA = command('cashier@test.invalid', { action: 'receive', supplier: 'Compra A', total_cost: 21000, lines: [{ item_id: costedBread.id, presentation_id: p6.id, package_quantity: 3, actual_package_cost: 7000 }] });
+      const lineA = JSON.parse(sql(`select row_to_json(l) from public.inventory_receipt_lines l where receipt_id='${receiptA.id}';`));
+      assert.equal(Number(lineA.package_quantity), 3);
+      assert.equal(Number(lineA.content_per_package_snapshot), 6);
+      assert.equal(Number(lineA.base_quantity), 18);
+      assert.equal(Number(lineA.actual_package_cost), 7000);
+      assert.equal(Number(lineA.line_total_cost), 21000);
+      assert.ok(Math.abs(Number(lineA.base_unit_cost) - (7000 / 6)) < 0.0000001);
+      let valuation = JSON.parse(sql(`select row_to_json(v) from public.inventory_item_valuations v where item_id='${costedBread.id}';`));
+      assert.equal(Number(valuation.current_quantity), 28);
+      assert.ok(Math.abs(Number(valuation.average_unit_cost) - (32000 / 28)) < 0.0000001);
+      assert.equal(Number(valuation.inventory_value), 32000);
+
+      command('admin@test.invalid', { action: 'save_presentation', id: p6.id, item_id: costedBread.id, name: 'Caja modificada', content_per_package: 8, content_unit: 'unit', suggested_package_cost: 7800 });
+      const frozen = JSON.parse(sql(`select row_to_json(l) from public.inventory_receipt_lines l where id='${lineA.id}';`));
+      assert.equal(frozen.presentation_name_snapshot, 'Paquete x6 costo');
+      assert.equal(Number(frozen.content_per_package_snapshot), 6);
+      assert.equal(Number(frozen.actual_package_cost), 7000);
+      assert.equal(Number(frozen.base_unit_cost), Number(lineA.base_unit_cost));
+      command('admin@test.invalid', { action: 'save_presentation', id: p6.id, item_id: costedBread.id, name: 'Paquete x6 costo', content_per_package: 6, content_unit: 'unit', suggested_package_cost: 7800 });
+      const receiptB = command('cashier@test.invalid', { action: 'receive', supplier: 'Compra B', total_cost: 7800, lines: [{ item_id: costedBread.id, presentation_id: p6.id, package_quantity: 1, actual_package_cost: 7800 }] });
+      assert.equal(Number(sql(`select actual_package_cost from public.inventory_receipt_lines where receipt_id='${receiptA.id}';`)), 7000);
+      assert.equal(Number(sql(`select actual_package_cost from public.inventory_receipt_lines where receipt_id='${receiptB.id}';`)), 7800);
+      assert.equal(Number(sql(`select base_unit_cost from public.inventory_receipt_lines where receipt_id='${receiptB.id}';`)), 1300);
+      fails(login('cashier@test.invalid') + `select public.inventory_command('${randomUUID()}',${quote(JSON.stringify({ action: 'receive', total_cost: 1, lines: [{ item_id: costedBread.id, base_quantity: 1, line_total_cost: 2 }] }))}::jsonb);`, 'no coincide');
+    });
+
+    await t.test('gramos, costo POS histórico, idempotencia y devolución al costo original', async () => {
+      const sauce = command('admin@test.invalid', { action: 'save_item', name: 'Salsa cheddar', base_unit: 'gram', precision_scale: 3, areas: ['kitchen'] });
+      const jar = command('admin@test.invalid', { action: 'save_presentation', item_id: sauce.id, name: 'Envase 200 g', content_per_package: 200, content_unit: 'gram', suggested_package_cost: 4990 });
+      command('cashier@test.invalid', { action: 'initial_count', item_id: sauce.id, quantity: 0, reason: 'Sin existencias' });
+      const sauceReceipt = command('cashier@test.invalid', { action: 'receive', total_cost: 4990, lines: [{ item_id: sauce.id, presentation_id: jar.id, package_quantity: 1, actual_package_cost: 4990 }] });
+      assert.equal(Number(sql(`select base_quantity from public.inventory_receipt_lines where receipt_id='${sauceReceipt.id}';`)), 200);
+      assert.equal(Number(sql(`select base_unit_cost from public.inventory_receipt_lines where receipt_id='${sauceReceipt.id}';`)), 24.95);
+      sql(`insert into public.menu_items(source_key,legacy_id,slug,hoja_origen,tipo,name,orden) values ('menu-costed',9003,'costed','test','Comida','Producto costo',3);`);
+      command('admin@test.invalid', { action: 'save_recipe', menu_item_source_key: 'menu-costed', control_mode: 'partial', components: [{ item_id: sauce.id, quantity_base: 15 }] });
+      const sessionId = randomUUID(), orderId = randomUUID(), orderItemId = randomUUID();
+      openSessionId = sessionId;
+      sql(login('waiter@test.invalid') + `insert into public.pos_sales_sessions(id,session_label,business_date,opened_by_email) values('${sessionId}','Costo QA','2026-09-27','waiter@test.invalid');
+        insert into public.pos_orders(id,sales_session_id,opened_by_email) values('${orderId}','${sessionId}','waiter@test.invalid');
+        insert into public.pos_order_items(id,order_id,menu_item_source_key,product_name,product_slug,prep_area,quantity,unit_price,total_price,operational_status,ready_at,created_by_email) values('${orderItemId}','${orderId}','menu-costed','Producto costo','costed','kitchen',1,10000,10000,'ready',now(),'waiter@test.invalid');`);
+      const deliver = login('waiter@test.invalid') + `select public.inventory_deliver_pos_item('${orderItemId}',false);`;
+      await Promise.all([parallel(deliver), parallel(deliver)]);
+      assert.equal(sql(`select count(*) from public.inventory_pos_consumptions where pos_order_item_id='${orderItemId}';`), '1');
+      assert.equal(sql(`select count(*) from public.inventory_movements where order_item_id='${orderItemId}' and movement_type='pos_consumption';`), '1');
+      const consumption = JSON.parse(sql(`select row_to_json(cl) from public.inventory_pos_consumption_lines cl join public.inventory_pos_consumptions c on c.id=cl.consumption_id where c.pos_order_item_id='${orderItemId}';`));
+      assert.equal(Number(consumption.average_unit_cost_snapshot), 24.95);
+      assert.equal(Number(consumption.tracked_cost), 374.25);
+      command('cashier@test.invalid', { action: 'receive', total_cost: 6000, lines: [{ item_id: sauce.id, presentation_id: jar.id, package_quantity: 1, actual_package_cost: 6000 }] });
+      assert.equal(Number(sql(`select average_unit_cost_snapshot from public.inventory_pos_consumption_lines where id='${consumption.id}';`)), 24.95);
+      assert.equal(Number(sql(`select tracked_cost from public.inventory_pos_consumption_lines where id='${consumption.id}';`)), 374.25);
+      const voidRequest = randomUUID();
+      command('cashier@test.invalid', { action: 'correction', item_id: sauce.id, quantity_delta: -500, reason: 'Forzar saldo negativo para probar retorno' });
+      const voidPayload = { item_id: orderItemId, reason: 'Devolución recuperable', void_quantity: 1, resolutions: [{ consumption_line_id: consumption.id, returned_quantity: 15, waste_quantity: 0, internal_quantity: 0, client_consumed_quantity: 0 }] };
+      sql(login('cashier@test.invalid') + `select public.inventory_void_processed_item('${voidRequest}',${quote(JSON.stringify(voidPayload))}::jsonb);`);
+      assert.equal(Number(sql(`select unit_cost_snapshot from public.inventory_movements where operation_key='void:return:${voidRequest}:${consumption.id}';`)), 24.95);
+      assert.equal(Number(sql(`select tracked_value_delta from public.inventory_movements where operation_key='void:return:${voidRequest}:${consumption.id}';`)), 374.25);
+      assert.equal(Number(sql(`select average_unit_cost from public.inventory_item_valuations where item_id='${sauce.id}';`)), 24.95);
+    });
+
+    await t.test('saldo negativo conserva costo, recepción reinicia promedio y ausencia de costo no inventa cero', () => {
+      const item = command('admin@test.invalid', { action: 'save_item', name: 'Negativo QA', base_unit: 'unit', precision_scale: 0, areas: ['bar'] });
+      command('cashier@test.invalid', { action: 'initial_count', item_id: item.id, quantity: 1, initial_unit_cost: 500, reason: 'Costo conocido' });
+      command('cashier@test.invalid', { action: 'correction', item_id: item.id, quantity_delta: -2, reason: 'Salida con negativo' });
+      let valuation = JSON.parse(sql(`select row_to_json(v) from public.inventory_item_valuations v where item_id='${item.id}';`));
+      assert.equal(Number(valuation.current_quantity), -1);
+      assert.equal(Number(valuation.average_unit_cost), 500);
+      assert.equal(Number(valuation.inventory_value), -500);
+      command('cashier@test.invalid', { action: 'receive', total_cost: 1800, lines: [{ item_id: item.id, base_quantity: 2, line_total_cost: 1800 }] });
+      valuation = JSON.parse(sql(`select row_to_json(v) from public.inventory_item_valuations v where item_id='${item.id}';`));
+      assert.equal(Number(valuation.current_quantity), 1);
+      assert.equal(Number(valuation.average_unit_cost), 900);
+      assert.equal(Number(valuation.inventory_value), 900);
+      const unknown = command('admin@test.invalid', { action: 'save_item', name: 'Sin costo QA', base_unit: 'unit', precision_scale: 0, areas: ['bar'] });
+      command('cashier@test.invalid', { action: 'initial_count', item_id: unknown.id, quantity: 5, reason: 'Costo desconocido' });
+      assert.equal(sql(`select average_unit_cost is null and inventory_value is null from public.inventory_item_valuations where item_id='${unknown.id}';`), 't');
+      command('cashier@test.invalid', { action: 'correction', item_id: unknown.id, quantity_delta: -6, reason: 'Salida sin costo conocido' });
+      assert.equal(sql(`select average_unit_cost is null from public.inventory_item_valuations where item_id='${unknown.id}';`), 't');
+    });
+
+    await t.test('gasto vinculado no duplica ni modifica la valoración', () => {
+      const item = command('admin@test.invalid', { action: 'save_item', name: 'Compra vinculada', base_unit: 'unit', precision_scale: 0, areas: ['bar'] });
+      command('cashier@test.invalid', { action: 'initial_count', item_id: item.id, quantity: 0, reason: 'Inicio' });
+      const expense = randomUUID();
+      sql(`insert into public.pos_cash_movements(id,kind,concept,category,amount,expense_date,method,origin,created_by) values('${expense}','expense','Compra vinculada','supplies',300000,'2026-09-27','bank_transfer','business','cashier@test.invalid');`);
+      command('cashier@test.invalid', { action: 'receive', expense_movement_id: expense, total_cost: 300000, lines: [{ item_id: item.id, base_quantity: 100, line_total_cost: 300000 }] });
+      const before = sql(`select row(current_quantity,average_unit_cost,inventory_value)::text from public.inventory_item_valuations where item_id='${item.id}';`);
+      sql(`update public.pos_cash_movements set amount=310000,voided_at=now(),voided_by='admin@test.invalid',void_reason='Prueba independencia' where id='${expense}';`);
+      const after = sql(`select row(current_quantity,average_unit_cost,inventory_value)::text from public.inventory_item_valuations where item_id='${item.id}';`);
+      assert.equal(after, before);
+      assert.equal(Number(sql(`select count(*) from public.inventory_movements where item_id='${item.id}' and movement_type='purchase_receipt';`)), 1);
     });
 
     await t.test('receta se congela al entregar y doble clic descuenta una vez', async () => {
       command('admin@test.invalid', { action: 'save_recipe', menu_item_source_key: 'menu-burger', control_mode: 'partial', components: [{ item_id: bread.id, quantity_base: 1 }] });
-      const sessionId = randomUUID(), orderId = randomUUID(), orderItemId = randomUUID();
-      sql(login('waiter@test.invalid') + `insert into public.pos_sales_sessions(id,session_label,business_date,opened_by_email) values('${sessionId}','QA','2026-09-27','waiter@test.invalid');
-        insert into public.pos_orders(id,sales_session_id,opened_by_email) values('${orderId}','${sessionId}','waiter@test.invalid');
+      const sessionId = openSessionId, orderId = randomUUID(), orderItemId = randomUUID();
+      sql(login('waiter@test.invalid') + `insert into public.pos_orders(id,sales_session_id,opened_by_email) values('${orderId}','${sessionId}','waiter@test.invalid');
         insert into public.pos_order_items(id,order_id,menu_item_source_key,product_name,product_slug,prep_area,quantity,unit_price,total_price,operational_status,ready_at,created_by_email) values('${orderItemId}','${orderId}','menu-burger','Hamburguesa','burger','kitchen',2,10000,20000,'ready',now(),'waiter@test.invalid');`);
       const statement = login('waiter@test.invalid') + `select public.inventory_deliver_pos_item('${orderItemId}',false);`;
       const results = await Promise.all([parallel(statement), parallel(statement)]);
@@ -95,6 +192,7 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
       assert.equal(sql(`select count(*) from public.inventory_movements where operation_key like 'void:return:${voidRequest}%';`), '1');
       assert.equal(sql(`select quantity_delta from public.inventory_movements where operation_key like 'void:return:${voidRequest}%';`), '0.500');
       assert.equal(sql(`select (metadata->>'classified_quantity')::numeric from public.inventory_movements where operation_key like 'void:waste:${voidRequest}%';`), '0.5');
+      assert.equal(sql(`select tracked_value_delta is null from public.inventory_movements where operation_key like 'void:waste:${voidRequest}%';`), 't');
       const directItem = randomUUID();
       sql(`update public.pos_operational_flow_settings set use_direct_delivery=true where area='bar';
         insert into public.pos_order_items(id,order_id,menu_item_source_key,product_name,product_slug,prep_area,quantity,unit_price,total_price,operational_status,created_by_email) values('${directItem}','${orderId}','menu-soda','Soda','soda','bar',1,1000,1000,'pending_preparation','waiter@test.invalid');`);
@@ -127,9 +225,13 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
       const kitchen = JSON.parse(sql(login('kitchen@test.invalid') + 'select public.inventory_read();'));
       assert.equal(kitchen.can_manage, false);
       assert.equal(kitchen.receipts.length, 0);
-      assert.equal(kitchen.items.length, 1);
+      assert.ok(kitchen.items.length >= 1);
+      assert.ok(kitchen.items.every((item) => item.areas.includes('kitchen')));
+      assert.ok(kitchen.items.every((item) => item.average_unit_cost == null && item.inventory_value == null));
       const bar = JSON.parse(sql(login('bar@test.invalid') + 'select public.inventory_read();'));
-      assert.equal(bar.items.length, 0);
+      assert.ok(bar.items.length >= 1);
+      assert.ok(bar.items.every((item) => item.areas.includes('bar')));
+      assert.ok(bar.items.every((item) => item.average_unit_cost == null && item.inventory_value == null));
       for (const email of ['waiter@test.invalid', 'inactive@test.invalid']) fails(login(email) + 'select public.inventory_read();', 'Acceso denegado');
       fails(login('cashier@test.invalid') + `update public.inventory_items set name='Alterado';`, 'permission denied');
       fails(`update public.inventory_movements set reason='Alterado';`, 'inmutable');

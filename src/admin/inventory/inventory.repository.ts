@@ -3,7 +3,7 @@ import type { InventoryData, InventoryMenuAlert } from './inventory.domain';
 
 export async function loadInventory(): Promise<InventoryData> {
   const { data, error } = await getSupabaseClient().rpc('inventory_read' as never);
-  if (error) throw new Error(`No se pudo cargar inventario: ${error.message}. Verifica que la migración 005 esté aplicada en QA.`);
+  if (error) throw new Error(`No se pudo cargar inventario: ${error.message}. Verifica que las migraciones 005 y 006 estén aplicadas en QA.`);
   return data as unknown as InventoryData;
 }
 
