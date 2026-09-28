@@ -1142,6 +1142,13 @@ export async function voidProcessedOrderItemInSupabase(
   actor: PosActorContext,
   currentItemOverride?: PosOrderItem,
   voidQuantity = 1,
+  inventoryResolutions: Array<{
+    consumption_line_id: string;
+    returned_quantity: number;
+    waste_quantity: number;
+    internal_quantity: number;
+    client_consumed_quantity: number;
+  }> = [],
 ) {
   ensureCanVoidProcessedItem(actor.roles);
 
@@ -1186,95 +1193,17 @@ export async function voidProcessedOrderItemInSupabase(
     throw new Error('Anular este producto dejaria la cuenta sobrepagada. Hace falta resolver una devolucion o ajuste de pago antes.');
   }
 
-  const supabase = getSupabaseClient();
-  const now = new Date().toISOString();
-  let updatedRows: PosOrderItemRow[];
-
-  if (normalizedVoidQuantity === currentItem.quantity) {
-    const { data, error } = await supabase
-      .from('pos_order_items')
-      .update({
-        cancellation_reason: normalizedReason,
-        cancelled_at: now,
-        cancelled_by_email: actor.email,
-        financial_status: 'cancelled',
-        operational_status: 'cancelled',
-        updated_by_email: actor.email,
-      } as never)
-      .eq('id', itemId)
-      .not('operational_status', 'eq', 'cancelled')
-      .select('*')
-      .single();
-
-    throwIfError(error, 'No fue posible anular el producto por excepcion');
-    updatedRows = [data];
-  } else {
-    const remainingQuantity = currentItem.quantity - normalizedVoidQuantity;
-    const { data: activeLine, error: activeLineError } = await supabase
-      .from('pos_order_items')
-      .update({
-        quantity: remainingQuantity,
-        total_price: currentItem.unitPrice * remainingQuantity,
-        updated_by_email: actor.email,
-      } as never)
-      .eq('id', itemId)
-      .not('operational_status', 'eq', 'cancelled')
-      .select('*')
-      .single();
-
-    throwIfError(activeLineError, 'No fue posible ajustar la cantidad activa del producto');
-
-    const { data: cancelledUnit, error: cancelledUnitError } = await supabase
-      .from('pos_order_items')
-      .insert({
-        cancelled_at: now,
-        cancelled_by_email: actor.email,
-        cancellation_reason: normalizedReason,
-        created_by_email: actor.email,
-        delivered_at: currentItem.deliveredAt,
-        delivered_by_email: currentItem.deliveredByEmail,
-        financial_status: 'cancelled',
-        menu_item_source_key: currentItem.menuItemSourceKey,
-        notes: currentItem.notes ?? '',
-        operational_status: 'cancelled',
-        order_id: currentItem.orderId,
-        picking_up_at: currentItem.pickingUpAt,
-        picking_up_by_email: currentItem.pickingUpByEmail,
-        prep_area: currentItem.prepArea,
-        preparation_started_at: currentItem.preparationStartedAt,
-        product_name: currentItem.productName,
-        product_slug: currentItem.productSlug,
-        quantity: normalizedVoidQuantity,
-        ready_at: currentItem.readyAt,
-        replacement_for_item_id: currentItem.id,
-        sent_at: currentItem.sentAt,
-        service_round: currentItem.serviceRound,
-        total_price: voidedAmount,
-        unit_price: currentItem.unitPrice,
-        updated_by_email: actor.email,
-      } as never)
-      .select('*')
-      .single();
-
-    throwIfError(cancelledUnitError, 'No fue posible registrar la unidad anulada');
-    updatedRows = [activeLine, cancelledUnit];
-  }
-
-  await reconcileOrderState(currentItem.orderId, actor.email);
-  await insertPosLog({
-    actor,
-    afterData: {
-      rows: updatedRows,
-      voidedQuantity: normalizedVoidQuantity,
+  const { data, error } = await getSupabaseClient().rpc('inventory_void_processed_item' as never, {
+    request_id: crypto.randomUUID(),
+    payload: {
+      item_id: itemId,
+      reason: normalizedReason,
+      void_quantity: normalizedVoidQuantity,
+      resolutions: inventoryResolutions,
     },
-    beforeData: currentItem,
-    eventType: 'item_voided_after_process',
-    notes: normalizedReason,
-    orderId: currentItem.orderId,
-    orderItemId: currentItem.id,
-  });
-
-  return updatedRows.map(mapPosOrderItemRow);
+  } as never);
+  throwIfError(error, 'No fue posible anular el producto y resolver su inventario');
+  return (data as unknown as PosOrderItemRow[]).map(mapPosOrderItemRow);
 }
 
 export async function sendDraftItemsToPreparationInSupabase(orderId: string, actor: PosActorContext) {
@@ -1407,33 +1336,14 @@ export async function markOrderItemDeliveredInSupabase(itemId: string, actor: Po
     throw new Error('Solo puedes marcar como entregado un producto que ya este listo para salir.');
   }
 
-  const supabase = getSupabaseClient();
-  const now = new Date().toISOString();
-  const { data, error } = await supabase
-    .from('pos_order_items')
-    .update({
-      delivered_at: now,
-      delivered_by_email: actor.email,
-      operational_status: 'delivered',
-      updated_by_email: actor.email,
-    } as never)
-    .eq('id', itemId)
-    .in('operational_status', ['ready', 'picking_up'])
-    .select('*')
-    .single();
+  const { data, error } = await getSupabaseClient().rpc('inventory_deliver_pos_item' as never, {
+    item_id: itemId,
+    direct_delivery: false,
+  } as never);
 
-  throwIfError(error, 'No fue posible marcar la linea como entregada');
+  throwIfError(error, 'No fue posible entregar la linea y registrar su consumo de inventario');
   await reconcileOrderState(item.orderId, actor.email);
-  await insertPosLog({
-    actor,
-    afterData: data,
-    beforeData: item,
-    eventType: 'item_delivered',
-    orderId: item.orderId,
-    orderItemId: item.id,
-  });
-
-  return mapPosOrderItemRow(data);
+  return mapPosOrderItemRow(data as unknown as PosOrderItemRow);
 }
 
 export async function markOrderItemDirectDeliveredInSupabase(itemId: string, actor: PosActorContext, currentItemOverride?: PosOrderItem) {
@@ -1449,34 +1359,14 @@ export async function markOrderItemDirectDeliveredInSupabase(itemId: string, act
     throw new Error('Solo puedes entregar directo un producto activo de preparacion o despacho.');
   }
 
-  const supabase = getSupabaseClient();
-  const now = new Date().toISOString();
-  const { data, error } = await supabase
-    .from('pos_order_items')
-    .update({
-      delivered_at: now,
-      delivered_by_email: actor.email,
-      operational_status: 'delivered',
-      ready_at: item.readyAt ?? now,
-      updated_by_email: actor.email,
-    } as never)
-    .eq('id', itemId)
-    .in('operational_status', allowedCurrent)
-    .select('*')
-    .single();
+  const { data, error } = await getSupabaseClient().rpc('inventory_deliver_pos_item' as never, {
+    item_id: itemId,
+    direct_delivery: true,
+  } as never);
 
-  throwIfError(error, 'No fue posible entregar directo la linea');
+  throwIfError(error, 'No fue posible entregar directo y registrar el consumo de inventario');
   await reconcileOrderState(item.orderId, actor.email);
-  await insertPosLog({
-    actor,
-    afterData: data,
-    beforeData: item,
-    eventType: 'item_direct_delivered',
-    orderId: item.orderId,
-    orderItemId: item.id,
-  });
-
-  return mapPosOrderItemRow(data);
+  return mapPosOrderItemRow(data as unknown as PosOrderItemRow);
 }
 
 export async function recordPosPaymentInSupabase(orderId: string, input: RecordPaymentInput, actor: PosActorContext) {

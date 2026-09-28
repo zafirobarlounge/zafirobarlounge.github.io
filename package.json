@@ -14,7 +14,9 @@
     "test:cash": "node --test scripts/cash-domain.test.cjs scripts/cash-ui.test.cjs",
     "test:cash:db": "node --test scripts/cash-db.test.cjs",
     "test:pos": "node --test scripts/pos-sync.test.cjs",
-    "test:report": "node --test scripts/session-finance.test.cjs"
+    "test:report": "node --test scripts/session-finance.test.cjs",
+    "test:inventory": "node --test scripts/inventory-ui.test.cjs",
+    "test:inventory:db": "node --test scripts/inventory-db.test.cjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.106.1",

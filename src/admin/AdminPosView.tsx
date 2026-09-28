@@ -5,6 +5,9 @@ import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, LayoutGrid, List } from 'lucide-react';
 import { AdminLayout } from './AdminLayout';
 import { useSupabaseAuth } from '../auth/SupabaseAuthProvider';
+import { loadInventoryMenuAlerts } from './inventory/inventory.repository';
+import type { InventoryMenuAlert } from './inventory/inventory.domain';
+import { loadPosConsumptionResolution, type PosConsumptionResolutionLine } from './inventory/inventory.repository';
 import type {
   AddCustomOrderItemInput,
   AddOrderItemInput,
@@ -74,6 +77,12 @@ function nextPosSyncLoadId() {
 type WorkspaceTab = 'floor' | 'kitchen' | 'bar' | 'cashier';
 type CashierRightPanel = 'summary' | 'previous_sessions' | 'validations' | 'movements';
 type AddItemMode = 'menu' | 'extra';
+type InventoryVoidAllocation = PosConsumptionResolutionLine & {
+  returned: string;
+  waste: string;
+  internal: string;
+  client: string;
+};
 
 const roleLabels: Record<StaffRole, string> = {
   superadmin: 'Superadmin',
@@ -137,6 +146,7 @@ const emptyCreateTableForm: CreatePosTableInput = {
 
 export function AdminPosView() {
   const [cashModal, setCashModal] = useState<'session' | 'movement' | null>(null);
+  const [inventoryVoidDialog, setInventoryVoidDialog] = useState<{ item: PosOrderItem; reason: string; lines: InventoryVoidAllocation[] } | null>(null);
   const { hasRole, isCatalogAdmin, staffProfile, staffRoles, user } = useSupabaseAuth();
   const actor = useMemo(
     () => ({
@@ -197,6 +207,7 @@ export function AdminPosView() {
     ? posState.activeSalesSession
     : null;
   const [products, setProducts] = useState<PosProductOption[]>([]);
+  const [inventoryMenuAlerts, setInventoryMenuAlerts] = useState<InventoryMenuAlert[]>([]);
   const [selectedTableId, setSelectedTableIdState] = useState<string | null>(null);
   const selectedTableIdRef = useRef<string | null>(null);
   const [isTableSheetOpen, setIsTableSheetOpen] = useState(false);
@@ -489,6 +500,12 @@ export function AdminPosView() {
       isMounted = false;
     };
   }, [canOperateFloor, selectedProductSourceKey]);
+
+  useEffect(() => {
+    let active = true;
+    void loadInventoryMenuAlerts().then((alerts) => { if (active) setInventoryMenuAlerts(alerts); }).catch(() => { if (active) setInventoryMenuAlerts([]); });
+    return () => { active = false; };
+  }, [posState?.activeSalesSession?.id]);
 
   useEffect(() => {
     let isMounted = true;
@@ -802,6 +819,7 @@ export function AdminPosView() {
     () => filteredProducts.find((product) => product.sourceKey === selectedProductSourceKey) ?? products.find((product) => product.sourceKey === selectedProductSourceKey) ?? null,
     [filteredProducts, products, selectedProductSourceKey],
   );
+  const selectedInventoryAlert = inventoryMenuAlerts.find((alert) => alert.menu_item_source_key === selectedProductSourceKey) ?? null;
   const selectedOrderDraftItems = selectedOrder?.items.filter((item) => item.operationalStatus === 'draft') ?? [];
   const parsedLineQuantity = parseOptionalNumber(lineQuantity);
   const isLineQuantityValid = parsedLineQuantity != null && parsedLineQuantity > 0;
@@ -1847,6 +1865,20 @@ export function AdminPosView() {
       return;
     }
 
+    if (item.operationalStatus === 'delivered') {
+      try {
+        const consumption = await loadPosConsumptionResolution(item.id, 1);
+        setInventoryVoidDialog({
+          item,
+          reason: reason.trim(),
+          lines: consumption.lines.map((line) => ({ ...line, returned: '', waste: '', internal: '', client: String(line.quantity) })),
+        });
+      } catch (error) {
+        setErrorMessage(error instanceof Error ? error.message : 'No fue posible cargar los componentes consumidos.');
+      }
+      return;
+    }
+
     const confirmed = window.confirm(
       `Se anulara 1 unidad de "${item.productName}" sin borrarla del historial. Esta accion recalcula la cuenta y queda registrada en trazabilidad. ¿Continuar?`,
     );
@@ -1856,6 +1888,34 @@ export function AdminPosView() {
 
     await executeAction(`Unidad anulada por excepcion: ${item.productName}`, async () => voidProcessedOrderItemInSupabase(item.id, reason, actor, item, 1), {
       onSuccess: (updatedItems) => {
+        setPosState((current) => (current ? mergeUpdatedItemsIntoPosState(current, updatedItems) : current));
+      },
+    });
+  };
+
+  const handleConfirmDeliveredVoid = async () => {
+    if (!inventoryVoidDialog) return;
+    const invalid = inventoryVoidDialog.lines.some((line) => {
+      const total = Number(line.returned || 0) + Number(line.waste || 0) + Number(line.internal || 0) + Number(line.client || 0);
+      return [line.returned,line.waste,line.internal,line.client].some((value) => Number(value || 0) < 0) || Math.abs(total - Number(line.quantity)) > 0.0001;
+    });
+    if (invalid) {
+      setErrorMessage('Distribuye exactamente la cantidad de cada componente entre devolución, merma, consumo interno y consumo del cliente.');
+      return;
+    }
+    const dialog = inventoryVoidDialog;
+    await executeAction(`Unidad anulada por excepción: ${dialog.item.productName}`, async () => voidProcessedOrderItemInSupabase(
+      dialog.item.id, dialog.reason, actor, dialog.item, 1,
+      dialog.lines.map((line) => ({
+        consumption_line_id: line.consumption_line_id,
+        returned_quantity: Number(line.returned || 0),
+        waste_quantity: Number(line.waste || 0),
+        internal_quantity: Number(line.internal || 0),
+        client_consumed_quantity: Number(line.client || 0),
+      })),
+    ), {
+      onSuccess: (updatedItems) => {
+        setInventoryVoidDialog(null);
         setPosState((current) => (current ? mergeUpdatedItemsIntoPosState(current, updatedItems) : current));
       },
     });
@@ -2078,6 +2138,7 @@ export function AdminPosView() {
                       ))}
                     </select>
                   </Field>
+                  {selectedInventoryAlert ? <InventoryAvailabilityNotice alert={selectedInventoryAlert} /> : <p className="text-xs text-mist">Sin seguimiento de inventario configurado. El producto puede venderse normalmente.</p>}
                 </>
               ) : (
                 <>
@@ -2281,6 +2342,15 @@ export function AdminPosView() {
   return (
     <AdminLayout>
       {cashModal && <AdminCashView embedded initialAction={cashModal} onClose={() => { setCashModal(null); void loadStateRef.current(false, 'cash-modal'); }} />}
+      {inventoryVoidDialog ? (
+        <InventoryVoidResolutionDialog
+          value={inventoryVoidDialog}
+          busy={Boolean(busyAction)}
+          onChange={setInventoryVoidDialog}
+          onClose={() => setInventoryVoidDialog(null)}
+          onConfirm={() => void handleConfirmDeliveredVoid()}
+        />
+      ) : null}
       <section className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
         <div className="max-w-3xl">
           <h1 className="text-[0.72rem] font-normal uppercase tracking-[0.28em] text-cyanGlow/80">POS operativo</h1>
@@ -2310,6 +2380,11 @@ export function AdminPosView() {
               {workspaceLabels[tab]}
             </button>
           ))}
+          {(actor.roles.includes('superadmin') || canOperateCashier || canOperateKitchen || canOperateBar) ? (
+            <Link to="/admin/inventory" className="rounded-full border border-amberGlow/25 bg-amberGlow/10 px-3 py-1.5 text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-amberGlow sm:px-4 sm:py-2 sm:text-xs sm:tracking-[0.22em]">
+              Existencias y solicitudes
+            </Link>
+          ) : null}
       </nav>
 
       {showMetricsOverview || showPreparationMetrics || showFloorMetrics ? (
@@ -2627,6 +2702,7 @@ export function AdminPosView() {
                               ))}
                             </select>
                           </Field>
+                          {selectedInventoryAlert ? <InventoryAvailabilityNotice alert={selectedInventoryAlert} /> : <p className="text-xs text-mist">Sin seguimiento de inventario configurado. El producto puede venderse normalmente.</p>}
                         </>
                       ) : (
                         <>
@@ -5525,6 +5601,39 @@ function sanitizePercentageInput(value: string) {
   }
 
   return String(Math.min(Number(digits), 100));
+}
+
+function InventoryVoidResolutionDialog({ value, busy, onChange, onClose, onConfirm }: {
+  value: { item: PosOrderItem; reason: string; lines: InventoryVoidAllocation[] };
+  busy: boolean;
+  onChange: (value: { item: PosOrderItem; reason: string; lines: InventoryVoidAllocation[] }) => void;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const update = (index: number, field: 'returned'|'waste'|'internal'|'client', next: string) => onChange({
+    ...value,
+    lines: value.lines.map((line, lineIndex) => lineIndex === index ? { ...line, [field]: next } : line),
+  });
+  return <div className="fixed inset-0 z-[100] flex items-end justify-center bg-black/75 p-3 sm:items-center" role="dialog" aria-modal="true">
+    <div className="max-h-[92vh] w-full max-w-4xl overflow-y-auto rounded-[1.4rem] border border-white/12 bg-[#0d0d13] p-5 shadow-2xl sm:p-7">
+      <div className="flex items-start justify-between gap-3"><div><p className="text-xs uppercase tracking-[0.2em] text-amberGlow">Anulación después de entregar</p><h2 className="mt-2 font-display text-3xl text-ivory">Destino de los componentes</h2><p className="mt-2 text-sm text-mist">1 × {value.item.productName}. La suma de cada fila debe coincidir con su cantidad consumida.</p></div><button type="button" className={ghostButtonClassName} onClick={onClose}>Cerrar</button></div>
+      {value.lines.length ? <div className="mt-6 space-y-4">{value.lines.map((line,index) => <article key={line.consumption_line_id} className="rounded-[1rem] border border-white/10 bg-white/[0.035] p-4"><div className="flex flex-wrap justify-between gap-2"><strong className="text-ivory">{line.item_name}</strong><span className="text-sm text-cyanGlow">Total: {line.quantity} {inventoryUnitLabelsForPos[line.base_unit]}</span></div><div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4"><Field label="Regresa disponible"><input className={inputClassName} type="number" min="0" step="0.001" value={line.returned} onChange={(e)=>update(index,'returned',e.target.value)} /></Field><Field label="Merma"><input className={inputClassName} type="number" min="0" step="0.001" value={line.waste} onChange={(e)=>update(index,'waste',e.target.value)} /></Field><Field label="Interno / cortesía"><input className={inputClassName} type="number" min="0" step="0.001" value={line.internal} onChange={(e)=>update(index,'internal',e.target.value)} /></Field><Field label="Consumido por cliente"><input className={inputClassName} type="number" min="0" step="0.001" value={line.client} onChange={(e)=>update(index,'client',e.target.value)} /></Field></div></article>)}</div> : <p className="mt-6 rounded-[1rem] border border-white/10 bg-white/[0.03] p-4 text-sm text-mist">Este producto no tenía componentes de inventario configurados al entregarse. La anulación financiera no moverá existencias.</p>}
+      <p className="mt-5 text-sm text-mist">Motivo: {value.reason}</p><div className="mt-6 flex flex-wrap justify-end gap-2"><button type="button" className={ghostButtonClassName} onClick={onClose}>Cancelar</button><button type="button" disabled={busy} className={dangerButtonClassName} onClick={onConfirm}>{busy ? 'Guardando…' : 'Confirmar anulación y destino'}</button></div>
+    </div>
+  </div>;
+}
+
+const inventoryUnitLabelsForPos = { unit: 'unidad(es)', gram: 'g', milliliter: 'ml' } as const;
+
+function InventoryAvailabilityNotice({ alert }: { alert: InventoryMenuAlert }) {
+  const message = alert.has_uncounted
+    ? 'Inventario configurado con componentes sin conteo inicial.'
+    : alert.cannot_make_one
+      ? 'Posible agotado según los componentes controlados. La venta no se bloquea.'
+      : `Componentes controlados para aproximadamente ${alert.controlled_units_available ?? 0} unidad(es).`;
+  return <p className={`rounded-[0.8rem] border px-3 py-2 text-xs ${alert.cannot_make_one || alert.has_uncounted ? 'border-amberGlow/30 bg-amberGlow/10 text-amber-100' : 'border-emerald-300/20 bg-emerald-300/[0.07] text-emerald-100'}`}>
+    {message} {alert.control_mode === 'partial' ? 'Control parcial: no garantiza disponibilidad completa.' : ''}
+  </p>;
 }
 
 const inputClassName =
