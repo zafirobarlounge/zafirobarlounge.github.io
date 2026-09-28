@@ -8,6 +8,7 @@ const ts = require('typescript');
 const root = path.resolve(__dirname, '..');
 const repositoryPath = 'src/integrations/supabase/posOperationsRepository.ts';
 const posPath = 'src/admin/AdminPosView.tsx';
+const areaInventoryPath = 'src/admin/inventory/AreaInventoryPanel.tsx';
 const settingsPath = 'src/admin/AdminPosSettingsView.tsx';
 const parse = (file) => ts.createSourceFile(file, readFileSync(path.join(root, file), 'utf8'), ts.ScriptTarget.Latest, true);
 const plain = (value) => JSON.parse(JSON.stringify(value));
@@ -36,17 +37,17 @@ function evaluate(source, context) {
   return vm.runInNewContext(compiled, context);
 }
 
-function loadNamedPosHelpers(names, context = {}) {
-  const source = parse(posPath);
+function loadNamedHelpers(filePath, names, context = {}) {
+  const source = parse(filePath);
   const helpers = source.statements.filter((node) => ts.isFunctionDeclaration(node) && names.includes(node.name?.text));
   assert.equal(helpers.length, names.length, `Missing POS helper: ${names.filter((name) => !helpers.some((node) => node.name?.text === name)).join(', ')}`);
   const target = names[names.length - 1];
-  return evaluate(`${helpers.map((node) => node.getText(source)).join('\n')}; ${target}`, context);
+  return evaluate(`${helpers.map((node) => node.getText(source)).join('\n')}; ${target}`, { exports: {}, ...context });
 }
 
 test('inventario operativo filtra por área, búsqueda y estados mutuamente excluyentes', () => {
   const match = (item, search) => `${item.name} ${item.import_code ?? ''}`.toLocaleLowerCase('es-CO').includes(search.trim().toLocaleLowerCase('es-CO'));
-  const filter = loadNamedPosHelpers(['getPosInventoryItemState', 'filterPosAreaInventoryItems'], { inventoryItemMatchesSearch: match });
+  const filter = loadNamedHelpers(areaInventoryPath, ['getAreaInventoryItemState', 'filterAreaInventoryItems'], { inventoryItemMatchesSearch: match });
   const items = [
     { id: 'bar', name: 'Cerveza', import_code: 'BAR_1', active: true, areas: ['bar'], balance: 8, minimum_quantity: 4 },
     { id: 'shared', name: 'Limón', import_code: 'SHARED', active: true, areas: ['bar', 'kitchen'], balance: 0, minimum_quantity: 4 },
@@ -63,7 +64,7 @@ test('inventario operativo filtra por área, búsqueda y estados mutuamente excl
 });
 
 test('reportes operativos usan submit enviado y la cantidad correcta sin mutar saldos', () => {
-  const build = loadNamedPosHelpers(['buildPosInventorySubmissionPayload']);
+  const build = loadNamedHelpers(areaInventoryPath, ['buildAreaInventorySubmissionPayload']);
   const replenishment = plain(build('bar', 'item-1', 'replenishment', 6, 'Hace falta'));
   const count = plain(build('kitchen', 'item-2', 'count', 0, 'Conteo físico'));
   const damage = plain(build('bar', 'item-3', 'damage', 2, 'Botellas rotas'));
@@ -78,16 +79,53 @@ test('reportes operativos usan submit enviado y la cantidad correcta sin mutar s
 
 test('Bar y Cocina integran inventario operativo sin costos ni acciones administrativas', () => {
   const source = readFileSync(path.join(root, posPath), 'utf8');
-  assert.match(source, /<PosAreaInventoryPanel area="kitchen"/);
-  assert.match(source, /<PosAreaInventoryPanel area="bar"/);
-  const panel = source.slice(source.indexOf('function PosAreaInventoryPanel'), source.indexOf('function OperationalFlowSettingsPanel'));
-  for (const text of ['Inventario del área', 'Solicitar reposición', 'Reportar conteo', 'Reportar daño o pérdida', 'Reportes recientes del área']) assert.match(panel, new RegExp(text));
+  assert.match(source, /<AreaInventoryPanel area="kitchen"/);
+  assert.match(source, /<AreaInventoryPanel area="bar"/);
+  const panel = readFileSync(path.join(root, areaInventoryPath), 'utf8');
+  for (const text of ['Inventario del área', 'Solicitar', 'Contar', 'Daño', 'Reportes recientes del área', 'Unidad base']) assert.match(panel, new RegExp(text));
   for (const forbidden of ['last_unit_cost', 'average_unit_cost', 'inventory_value', 'Registrar entrada', 'Conteo / corregir', "action: 'receive'", "action: 'correction'", "action: 'initial_count'"]) assert.doesNotMatch(panel, new RegExp(forbidden.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.match(panel, /loadInventory\(\)/);
   assert.match(panel, /saveInventoryCommand/);
   assert.match(panel, /submission\.area === area/);
-  assert.match(panel, /posInventoryStatusLabels\[submission\.status\]/);
+  assert.match(panel, /statusLabels\[submission\.status\]/);
   assert.doesNotMatch(panel, /setInterval|poll/i);
+});
+
+test('inventario del área inicia cerrado y solo solicita datos al primer despliegue', () => {
+  const toggle = loadNamedHelpers(areaInventoryPath, ['getAreaInventoryToggleAction']);
+  assert.equal(toggle(false, false, false), 'open-and-load');
+  assert.equal(toggle(true, true, false), 'close');
+  assert.equal(toggle(false, true, false), 'open');
+  assert.equal(toggle(false, false, true), 'open');
+
+  const panel = readFileSync(path.join(root, areaInventoryPath), 'utf8');
+  assert.match(panel, /const \[expanded, setExpanded\] = useState\(false\)/);
+  assert.match(panel, /if \(action === 'open-and-load'\) void refresh\(\)/);
+  assert.doesNotMatch(panel, /useEffect/);
+  assert.match(panel, /expanded \? 'Ocultar inventario' : 'Ver inventario'/);
+  assert.match(panel, /disabled=\{loading\} onClick=\{\(\) => void refresh\(\)\}/);
+  assert.match(panel, /await saveInventoryCommand[\s\S]*await refresh\(\)/);
+});
+
+test('resumen del área distingue cero, bajo mínimo, sin conteo y artículos compartidos', () => {
+  const summarize = loadNamedHelpers(areaInventoryPath, ['getAreaInventoryItemState', 'summarizeAreaInventory']);
+  const items = [
+    { active: true, areas: ['bar'], balance: 8, minimum_quantity: 4 },
+    { active: true, areas: ['bar', 'kitchen'], balance: 0, minimum_quantity: 4 },
+    { active: true, areas: ['kitchen'], balance: 2, minimum_quantity: 5 },
+    { active: true, areas: ['kitchen'], balance: null, minimum_quantity: null },
+  ];
+  assert.deepEqual(plain(summarize(items, 'bar')), { total: 2, low: 0, depleted: 1, uncounted: 0 });
+  assert.deepEqual(plain(summarize(items, 'kitchen')), { total: 3, low: 1, depleted: 1, uncounted: 1 });
+});
+
+test('contenido desplegado prioriza reportes y evita duplicar Sin conteo inicial', () => {
+  const panel = readFileSync(path.join(root, areaInventoryPath), 'utf8');
+  assert.ok(panel.indexOf('Reportes recientes del área') < panel.indexOf('<AreaInventoryItemCard'));
+  assert.match(panel, /state !== 'uncounted' \? <span/);
+  assert.match(panel, /formatInventoryQuantity\(item\.balance/);
+  assert.match(panel, /onChange=\{\(event\) => setSearch\(event\.target\.value\)\}/);
+  assert.match(panel, /onChange=\{\(event\) => setStatus\(event\.target\.value as AreaInventoryStatusFilter\)\}/);
 });
 
 function loadRepository(client) {

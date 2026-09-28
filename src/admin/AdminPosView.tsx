@@ -1,24 +1,13 @@
 import { Link } from 'react-router-dom';
 import { AdminCashView } from './cash/AdminCashView';
 import type { ReactNode } from 'react';
-import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, LayoutGrid, List } from 'lucide-react';
 import { AdminLayout } from './AdminLayout';
 import { useSupabaseAuth } from '../auth/SupabaseAuthProvider';
-import { loadInventory, loadInventoryMenuAlerts, loadPosConsumptionResolution, saveInventoryCommand, type PosConsumptionResolutionLine } from './inventory/inventory.repository';
-import {
-  formatConfiguredInventoryQuantity,
-  formatInventoryQuantity,
-  inventoryItemMatchesSearch,
-  inventoryUnitLabels,
-  submissionKindLabels,
-  type InventoryArea,
-  type InventoryData,
-  type InventoryItem,
-  type InventoryMenuAlert,
-  type InventorySubmission,
-  type InventorySubmissionKind,
-} from './inventory/inventory.domain';
+import { loadInventoryMenuAlerts, loadPosConsumptionResolution, type PosConsumptionResolutionLine } from './inventory/inventory.repository';
+import type { InventoryMenuAlert } from './inventory/inventory.domain';
+import { AreaInventoryPanel } from './inventory/AreaInventoryPanel';
 import type {
   AddCustomOrderItemInput,
   AddOrderItemInput,
@@ -3112,7 +3101,7 @@ export function AdminPosView() {
             operationalFlowSettings={operationalFlowSettings}
             title="Cola de cocina"
           />
-          <PosAreaInventoryPanel area="kitchen" />
+          <AreaInventoryPanel area="kitchen" />
         </div>
       ) : null}
 
@@ -3127,7 +3116,7 @@ export function AdminPosView() {
             operationalFlowSettings={operationalFlowSettings}
             title="Cola de bebidas"
           />
-          <PosAreaInventoryPanel area="bar" />
+          <AreaInventoryPanel area="bar" />
         </div>
       ) : null}
 
@@ -4509,294 +4498,6 @@ function PreparationQueuePanel({
           {!items.length ? <EmptyState message="No hay productos pendientes en esta cola por ahora." /> : null}
         </div>
       </Panel>
-    </section>
-  );
-}
-
-type PosInventoryStatusFilter = 'all' | 'low' | 'depleted' | 'uncounted';
-type PosInventoryItemState = Exclude<PosInventoryStatusFilter, 'all'> | 'available';
-
-const posInventoryStatusLabels: Record<string, string> = {
-  approved: 'Aprobada',
-  draft: 'Borrador',
-  partially_approved: 'Aprobación parcial',
-  partially_received: 'Recibida parcialmente',
-  received: 'Recibida',
-  rejected: 'Rechazada',
-  sent: 'Enviada',
-};
-
-const emptyPosInventoryData: InventoryData = {
-  can_manage: false,
-  can_configure: false,
-  items: [],
-  presentations: [],
-  recipes: [],
-  menu_items: [],
-  submissions: [],
-  receipts: [],
-  movements: [],
-};
-
-function getPosInventoryItemState(item: Pick<InventoryItem, 'balance' | 'minimum_quantity'>): PosInventoryItemState {
-  if (item.balance == null) return 'uncounted';
-  if (item.balance <= 0) return 'depleted';
-  if (item.minimum_quantity != null && item.balance < item.minimum_quantity) return 'low';
-  return 'available';
-}
-
-function filterPosAreaInventoryItems(
-  items: InventoryItem[],
-  area: InventoryArea,
-  search: string,
-  status: PosInventoryStatusFilter,
-) {
-  return items
-    .filter((item) => item.active && item.areas.includes(area))
-    .filter((item) => inventoryItemMatchesSearch(item, search))
-    .filter((item) => status === 'all' || getPosInventoryItemState(item) === status)
-    .sort((left, right) => left.name.localeCompare(right.name, 'es', { sensitivity: 'base' }));
-}
-
-function buildPosInventorySubmissionPayload(
-  area: InventoryArea,
-  itemId: string,
-  kind: InventorySubmissionKind,
-  quantity: number,
-  notes: string,
-): Record<string, unknown> {
-  return {
-    action: 'submit',
-    kind,
-    area,
-    status: 'sent',
-    notes: notes.trim(),
-    lines: [{
-      item_id: itemId,
-      [kind === 'count' ? 'observed_quantity' : 'requested_quantity']: quantity,
-      notes: notes.trim(),
-    }],
-  };
-}
-
-function getPosInventorySubmissionQuantity(submission: InventorySubmission) {
-  const line = submission.lines[0];
-  if (!line) return null;
-  return submission.kind === 'count' ? line.observed_quantity : line.requested_quantity;
-}
-
-function PosAreaInventoryPanel({ area }: { area: InventoryArea }) {
-  const [data, setData] = useState<InventoryData>(emptyPosInventoryData);
-  const [hasLoaded, setHasLoaded] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [search, setSearch] = useState('');
-  const [status, setStatus] = useState<PosInventoryStatusFilter>('all');
-  const [report, setReport] = useState<{ item: InventoryItem; kind: InventorySubmissionKind } | null>(null);
-  const [quantity, setQuantity] = useState('');
-  const [notes, setNotes] = useState('');
-  const [saving, setSaving] = useState(false);
-  const deferredSearch = useDeferredValue(search);
-  const areaLabel = area === 'bar' ? 'Bar' : 'Cocina';
-
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      setData(await loadInventory());
-      setHasLoaded(true);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'No se pudo cargar el inventario del área.');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
-  const items = useMemo(
-    () => filterPosAreaInventoryItems(data.items, area, deferredSearch, status),
-    [area, data.items, deferredSearch, status],
-  );
-  const areaItemCount = useMemo(
-    () => data.items.filter((item) => item.active && item.areas.includes(area)).length,
-    [area, data.items],
-  );
-  const recentSubmissions = useMemo(
-    () => data.submissions
-      .filter((submission) => submission.area === area)
-      .sort((left, right) => right.created_at.localeCompare(left.created_at))
-      .slice(0, 8),
-    [area, data.submissions],
-  );
-
-  const openReport = (item: InventoryItem, kind: InventorySubmissionKind) => {
-    setReport({ item, kind });
-    setQuantity('');
-    setNotes('');
-    setError(null);
-    setNotice(null);
-  };
-
-  const submitReport = async () => {
-    if (!report) return;
-    const numericQuantity = Number(quantity);
-    const quantityIsValid = report.kind === 'count' ? numericQuantity >= 0 : numericQuantity > 0;
-    if (!Number.isFinite(numericQuantity) || !quantityIsValid) {
-      setError(report.kind === 'count' ? 'Indica una cantidad observada válida.' : 'Indica una cantidad mayor que cero.');
-      return;
-    }
-    if (report.kind === 'damage' && !notes.trim()) {
-      setError('Describe el daño o la pérdida antes de enviar el reporte.');
-      return;
-    }
-
-    setSaving(true);
-    setError(null);
-    try {
-      await saveInventoryCommand(
-        crypto.randomUUID(),
-        buildPosInventorySubmissionPayload(area, report.item.id, report.kind, numericQuantity, notes),
-      );
-      setNotice('Reporte enviado. Las existencias no cambian hasta la revisión correspondiente.');
-      setReport(null);
-      setQuantity('');
-      setNotes('');
-      await refresh();
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'No se pudo enviar el reporte.');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <section data-pos-area-inventory={area}>
-      <Panel
-        title="Inventario del área"
-        subtitle={`Consulta las existencias de ${areaLabel.toLowerCase()} y reporta necesidades, conteos o pérdidas sin cambiar el saldo directamente.`}
-        actions={<button type="button" className={ghostButtonClassName} disabled={loading} onClick={() => void refresh()}>{loading ? 'Actualizando…' : 'Actualizar'}</button>}
-      >
-        {error ? (
-          <div role="alert" className="mb-5 rounded-[1rem] border border-rose-300/30 bg-rose-300/10 p-4 text-sm text-rose-100">
-            {error} <button type="button" className="ml-2 underline" onClick={() => void refresh()}>Reintentar</button>
-          </div>
-        ) : null}
-        {notice ? <div className="mb-5 rounded-[1rem] border border-emerald-300/25 bg-emerald-300/10 p-4 text-sm text-emerald-100">{notice}</div> : null}
-
-        <div className="grid gap-3 rounded-[1.1rem] border border-white/10 bg-white/[0.025] p-4 sm:grid-cols-2">
-          <Field label="Buscar artículo">
-            <input aria-label={`Buscar inventario de ${areaLabel}`} className={inputClassName} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Nombre o código" />
-          </Field>
-          <Field label="Estado">
-            <select aria-label={`Filtrar inventario de ${areaLabel} por estado`} className={inputClassName} value={status} onChange={(event) => setStatus(event.target.value as PosInventoryStatusFilter)}>
-              <option value="all">Todos</option>
-              <option value="low">Bajo mínimo</option>
-              <option value="depleted">Agotados</option>
-              <option value="uncounted">Sin conteo inicial</option>
-            </select>
-          </Field>
-          <p className="text-xs text-mist sm:col-span-2">Mostrando {items.length} de {areaItemCount} artículos asignados a {areaLabel.toLowerCase()}.</p>
-        </div>
-
-        {loading && !hasLoaded ? <div className="mt-5"><EmptyState message="Consultando existencias del área…" /></div> : null}
-        {hasLoaded && !items.length ? <div className="mt-5"><EmptyState message="No hay artículos que coincidan con la búsqueda y el filtro seleccionados." /></div> : null}
-        {items.length ? (
-          <div className="mt-5 grid gap-4 md:grid-cols-2 2xl:grid-cols-3">
-            {items.map((item) => {
-              const itemState = getPosInventoryItemState(item);
-              const stateLabel = itemState === 'uncounted' ? 'Sin conteo inicial' : itemState === 'depleted' ? 'Agotado' : itemState === 'low' ? 'Bajo mínimo' : 'Disponible';
-              const stateClass = itemState === 'depleted'
-                ? 'border-rose-300/35 bg-rose-300/[0.08] text-rose-100'
-                : itemState === 'low' || itemState === 'uncounted'
-                  ? 'border-amberGlow/30 bg-amberGlow/[0.08] text-amber-100'
-                  : 'border-emerald-300/25 bg-emerald-300/[0.07] text-emerald-100';
-              return (
-                <article key={item.id} className="rounded-[1.2rem] border border-white/10 bg-white/[0.035] p-5">
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div>
-                      <h3 className="font-display text-2xl text-ivory">{item.name}</h3>
-                      <p className="mt-2 text-xl font-semibold text-cyanGlow">{formatInventoryQuantity(item.balance, item.base_unit, item.precision_scale)}</p>
-                    </div>
-                    <span className={`rounded-full border px-3 py-1 text-[0.65rem] font-semibold uppercase tracking-[0.14em] ${stateClass}`}>{stateLabel}</span>
-                  </div>
-                  <div className="mt-4 grid grid-cols-2 gap-3 text-sm text-mist">
-                    <p>Unidad base<br/><strong className="text-ivory">{inventoryUnitLabels[item.base_unit]}</strong></p>
-                    <p>Mínimo<br/><strong className="text-ivory">{formatConfiguredInventoryQuantity(item.minimum_quantity, item.base_unit, item.precision_scale)}</strong></p>
-                  </div>
-                  <div className="mt-5 flex flex-wrap gap-2">
-                    <button type="button" className={primaryButtonClassName} onClick={() => openReport(item, 'replenishment')}>Solicitar reposición</button>
-                    <button type="button" className={ghostButtonClassName} onClick={() => openReport(item, 'count')}>Reportar conteo</button>
-                    <button type="button" className={dangerButtonClassName} onClick={() => openReport(item, 'damage')}>Reportar daño o pérdida</button>
-                  </div>
-                </article>
-              );
-            })}
-          </div>
-        ) : null}
-
-        <div className="mt-7 border-t border-white/10 pt-6">
-          <div>
-            <h3 className="font-display text-2xl text-ivory">Reportes recientes del área</h3>
-            <p className="mt-1 text-sm text-mist">Seguimiento de las solicitudes, conteos y novedades enviados por {areaLabel.toLowerCase()}.</p>
-          </div>
-          <div className="mt-4 space-y-3">
-            {recentSubmissions.map((submission) => {
-              const quantityValue = getPosInventorySubmissionQuantity(submission);
-              const firstLine = submission.lines[0];
-              const item = data.items.find((candidate) => candidate.id === firstLine?.item_id);
-              return (
-                <article key={submission.id} className="rounded-[1rem] border border-white/10 bg-black/20 p-4">
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div>
-                      <p className="font-semibold text-ivory">{submissionKindLabels[submission.kind]} · {firstLine?.item_name ?? 'Artículo no disponible'}</p>
-                      <p className="mt-1 text-sm text-mist">
-                        {quantityValue == null ? 'Cantidad sin registrar' : item ? formatInventoryQuantity(quantityValue, item.base_unit, item.precision_scale) : String(quantityValue)} · {formatDateTime(submission.created_at)}
-                      </p>
-                    </div>
-                    <span className="rounded-full border border-white/10 px-3 py-1 text-xs text-cyanGlow">{posInventoryStatusLabels[submission.status] ?? submission.status}</span>
-                  </div>
-                </article>
-              );
-            })}
-            {!recentSubmissions.length ? <EmptyState message="Todavía no hay reportes de inventario enviados desde esta área." /> : null}
-          </div>
-        </div>
-      </Panel>
-
-      {report ? (
-        <div className="fixed inset-0 z-[100] flex items-end justify-center bg-black/75 p-3 sm:items-center" role="dialog" aria-modal="true">
-          <div className="max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-[1.4rem] border border-white/12 bg-[#0d0d13] p-5 shadow-2xl sm:p-7">
-            <div className="mb-5 flex items-start justify-between gap-3">
-              <div>
-                <p className="text-xs uppercase tracking-[0.2em] text-cyanGlow">Inventario de {areaLabel}</p>
-                <h2 className="mt-2 font-display text-3xl text-ivory">{submissionKindLabels[report.kind]}</h2>
-              </div>
-              <button type="button" className={ghostButtonClassName} onClick={() => setReport(null)}>Cerrar</button>
-            </div>
-            <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); void submitReport(); }}>
-              {error ? <div role="alert" className="rounded-[1rem] border border-rose-300/30 bg-rose-300/10 p-4 text-sm text-rose-100">{error}</div> : null}
-              <Field label="Artículo">
-                <div className="rounded-[1rem] border border-white/10 bg-white/[0.04] px-4 py-3 text-base text-ivory">{report.item.name} · {formatInventoryQuantity(report.item.balance, report.item.base_unit, report.item.precision_scale)}</div>
-              </Field>
-              <Field label={report.kind === 'count' ? 'Cantidad física observada' : 'Cantidad'}>
-                <input className={inputClassName} type="number" min={report.kind === 'count' ? '0' : report.item.precision_scale > 0 ? '0.001' : '1'} step={report.item.precision_scale > 0 ? '0.001' : '1'} required value={quantity} onChange={(event) => setQuantity(event.target.value)} />
-              </Field>
-              <Field label={report.kind === 'damage' ? 'Descripción del daño o pérdida' : 'Nota opcional'}>
-                <textarea className={inputClassName} rows={3} required={report.kind === 'damage'} value={notes} onChange={(event) => setNotes(event.target.value)} />
-              </Field>
-              <p className="text-sm text-mist">El reporte se enviará para revisión y no cambiará las existencias por sí solo.</p>
-              <div className="flex flex-wrap justify-end gap-2 pt-2">
-                <button type="button" className={ghostButtonClassName} onClick={() => setReport(null)}>Cancelar</button>
-                <button type="submit" className={primaryButtonClassName} disabled={saving || quantity === '' || (report.kind === 'damage' && !notes.trim())}>{saving ? 'Enviando…' : 'Enviar reporte'}</button>
-              </div>
-            </form>
-          </div>
-        </div>
-      ) : null}
     </section>
   );
 }
