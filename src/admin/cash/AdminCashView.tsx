@@ -99,6 +99,7 @@ export function AdminCashView({ embedded = false, initialAction = null, onClose 
   const [sessionId, setSessionId] = useState("");
   const [month, setMonth] = useState(() => bogotaToday().slice(0, 7));
   const [modal, setModal] = useState<'session' | 'movement' | null>(initialAction);
+  const [baseSavedForClose, setBaseSavedForClose] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -162,8 +163,9 @@ export function AdminCashView({ embedded = false, initialAction = null, onClose 
   const selected = data?.sessions.find((s) => s.id === sessionId);
   const active = data?.sessions.find((s) => s.status === "open");
   const monthSessions = (data?.sessions ?? []).filter(s => s.business_date.startsWith(month));
-  function closeModal() { if (busy) return; setModal(null); onClose?.(); }
+  function closeModal() { if (busy) return; setBaseSavedForClose(false); setModal(null); onClose?.(); }
   function openModal(action: 'session' | 'movement') {
+    setBaseSavedForClose(false);
     if (active) setMonth(active.business_date.slice(0, 7));
     setSessionId(active?.id ?? ''); setCounted(''); setError(''); setModal(action);
   }
@@ -193,6 +195,7 @@ export function AdminCashView({ embedded = false, initialAction = null, onClose 
   const totals = movementTotals(movements);
   async function run(payload: Record<string, unknown>, form?: HTMLFormElement) {
     if (inFlight.current) return;
+    const continueToClose = modal === 'session' && payload.action === 'open' && Boolean(active) && payload.session === active?.id;
     inFlight.current = true;
     setBusy(true);
     setError("");
@@ -223,8 +226,9 @@ export function AdminCashView({ embedded = false, initialAction = null, onClose 
       if (payload.action === "open")
         setSessionId(String(result.sales_session_id));
       setNotice("Operación guardada.");
-      setModal(null);
-      if (payload.action === 'open') setMonth(salesDayOptions().suggested.slice(0, 7));
+      if (continueToClose) setBaseSavedForClose(true);
+      else setModal(null);
+      if (payload.action === 'open') setMonth((active?.business_date ?? salesDayOptions().suggested).slice(0, 7));
       try {
         await refresh();
       } catch (e) {
@@ -232,7 +236,7 @@ export function AdminCashView({ embedded = false, initialAction = null, onClose 
           `Se guardó, pero no se pudo actualizar la vista: ${(e as Error).message}`,
         );
       }
-      onClose?.();
+      if (!continueToClose) onClose?.();
     } catch (e) {
       if ((e as { confirmedRejection?: boolean }).confirmedRejection) {
         localStorage.removeItem(pendingKey);
@@ -314,7 +318,11 @@ export function AdminCashView({ embedded = false, initialAction = null, onClose 
         {pending && <button type="button" disabled={busy} className={button} onClick={() => void run(pending.payload)}>Reintentar operación pendiente</button>}
         {!data ? <p>Cargando caja...</p> : <>
             <div className="space-y-4">
-              {(modal === "session" && (!active || (isActive && !register))) && (
+              {baseSavedForClose && !register && <div className={panel}>
+                <p>Base guardada. Actualiza los datos para continuar con el arqueo.</p>
+                <button type="button" className={button} disabled={busy} onClick={() => { setError(''); void refresh().catch(e => setError(e.message)); }}>Continuar al arqueo</button>
+              </div>}
+              {(!baseSavedForClose && modal === "session" && (!active || (isActive && !register))) && (
                 <form className={panel} onSubmit={(e) => submit(e, "open")}>
                   <h2 className="text-xl">
                     {active

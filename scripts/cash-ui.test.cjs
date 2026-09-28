@@ -109,6 +109,7 @@ test("apertura calcula fecha comercial automaticamente y completar base conserva
   assert.equal(saved[1].session, "session");
 });
 function harness({
+  onClose,
   initialAction = 'session',
   embedded = false,
   role = "cashier",
@@ -197,7 +198,7 @@ function harness({
     storage,
     render() {
       cursor = 0;
-      const tree = expand(context.exports.AdminCashView({ initialAction, embedded }));
+      const tree = expand(context.exports.AdminCashView({ initialAction, embedded, onClose }));
       for (const effect of effects) effect();
       effects = [];
       mounted = true;
@@ -205,6 +206,29 @@ function harness({
     },
   };
 }
+test('guardar base pendiente cambia automaticamente al arqueo sin cerrar el modal del POS', async () => {
+  for (const embedded of [false, true]) {
+    const data=fixture(); data.registers=[];
+    let closes=0;
+    const saved=[];
+    const h=harness({data,embedded,onClose:()=>closes++,save:async(_,payload)=>{
+      saved.push(payload);
+      data.registers=fixture().registers;
+      return {sales_session_id:'session'};
+    }});
+    h.render(); await settle();
+    const base=nodes(h.render(),'form').find(f=>text(f).includes('Completar base'));
+    submit(base,{amount:'100.000',notes:''}); await settle();
+    const tree=h.render();
+    assert.equal(saved[0].action,'open');
+    assert.equal(saved[0].session,'session');
+    assert.equal(saved[0].business_date,undefined);
+    assert.equal(closes,0);
+    assert.ok(!nodes(tree,'form').some(f=>text(f).includes('Completar base')));
+    assert.ok(nodes(tree,'form').some(f=>text(f).includes('Arqueo y cierre de jornada')));
+    assert.equal(nodes(tree,'div').filter(n=>n.props.role==='dialog').length,1);
+  }
+});
 test('consulta mensual limita jornadas y movimientos; caja no muestra enlace al reporte', async () => {
   const data=fixture();
   data.sessions.push({...data.sessions[0],id:'old',session_label:'Antigua',business_date:'2020-02-01',status:'closed'});
