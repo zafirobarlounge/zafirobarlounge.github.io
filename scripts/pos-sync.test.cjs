@@ -64,7 +64,8 @@ test('inventario operativo filtra por área, búsqueda y estados mutuamente excl
 });
 
 test('reportes operativos usan submit enviado y la cantidad correcta sin mutar saldos', () => {
-  const build = loadNamedHelpers(areaInventoryPath, ['buildAreaInventorySubmissionPayload']);
+  const encodeInventorySubmissionLineNotes = (notes, presentation) => presentation ? `snapshot:${JSON.stringify({ presentation, notes: notes.trim() })}` : notes.trim();
+  const build = loadNamedHelpers(areaInventoryPath, ['buildAreaInventorySubmissionPayload'], { encodeInventorySubmissionLineNotes });
   const replenishment = plain(build('bar', 'item-1', 'replenishment', 6, 'Hace falta'));
   const count = plain(build('kitchen', 'item-2', 'count', 0, 'Conteo físico'));
   const damage = plain(build('bar', 'item-3', 'damage', 2, 'Botellas rotas'));
@@ -75,6 +76,22 @@ test('reportes operativos usan submit enviado y la cantidad correcta sin mutar s
     assert.equal('balance' in payload, false);
     assert.equal('quantity_delta' in payload, false);
   }
+});
+
+test('solicitud por presentación convierte paquetes a cantidad base y conserva snapshot', () => {
+  const calculate = loadNamedHelpers(areaInventoryPath, ['calculateInventoryRequestedBaseQuantity']);
+  assert.equal(calculate(1, 12), 12);
+  assert.equal(calculate(1, 4), 4);
+  assert.equal(calculate(2, 24), 48);
+  assert.equal(calculate(1.5, 12), null);
+
+  const encodeInventorySubmissionLineNotes = (notes, presentation) => `snapshot:${JSON.stringify({ presentation, notes: notes.trim() })}`;
+  const build = loadNamedHelpers(areaInventoryPath, ['buildAreaInventorySubmissionPayload'], { encodeInventorySubmissionLineNotes });
+  const presentation = { presentation_id: 'paca-12', presentation_name: 'Paca x12', content_per_package: 12, content_unit: 'unit', package_quantity: 2 };
+  const payload = plain(build('bar', 'coca-cola', 'replenishment', calculate(2, 12), 'Para barra', presentation));
+  assert.equal(payload.lines[0].requested_quantity, 24);
+  assert.match(payload.lines[0].notes, /Paca x12/);
+  assert.match(payload.lines[0].notes, /package_quantity.*2/);
 });
 
 test('Bar y Cocina integran inventario operativo sin costos ni acciones administrativas', () => {
@@ -89,6 +106,10 @@ test('Bar y Cocina integran inventario operativo sin costos ni acciones administ
   assert.match(panel, /submission\.area === area/);
   assert.match(panel, /statusLabels\[submission\.status\]/);
   assert.doesNotMatch(panel, /setInterval|poll/i);
+  assert.match(panel, /presentations\.filter\(\(presentation\) => presentation\.active/);
+  assert.match(panel, /Solicitud directa en unidad base/);
+  assert.match(panel, /Cantidad de paquetes\/pacas\/envases/);
+  assert.match(panel, /Enviar solicitud/);
 });
 
 test('inventario del área inicia cerrado y solo solicita datos al primer despliegue', () => {

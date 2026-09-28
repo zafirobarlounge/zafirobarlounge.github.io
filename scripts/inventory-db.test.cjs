@@ -247,9 +247,12 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
 
     await t.test('solicitud no mueve stock, aprobación parcial y conteo reconcilia movimientos posteriores', () => {
       const before = sql(`select sum(quantity_delta) from public.inventory_movements where item_id='${bread.id}';`);
-      const request = command('kitchen@test.invalid', { action: 'submit', kind: 'replenishment', area: 'kitchen', status: 'sent', notes: 'Faltan panes', lines: [{ item_id: bread.id, requested_quantity: 10 }] });
+      const snapshotNotes = `zafiro-presentation-v1:${JSON.stringify({ presentation:{ presentation_id:'presentation-qa',presentation_name:'Paquete x4',content_per_package:4,content_unit:'unit',package_quantity:3 },notes:'Faltan panes' })}`;
+      const request = command('kitchen@test.invalid', { action: 'submit', kind: 'replenishment', area: 'kitchen', status: 'sent', notes: 'Faltan panes', lines: [{ item_id: bread.id, requested_quantity: 12, notes: snapshotNotes }] });
       assert.equal(sql(`select sum(quantity_delta) from public.inventory_movements where item_id='${bread.id}';`), before);
       const requestLine = sql(`select id from public.inventory_submission_lines where submission_id='${request.id}';`);
+      assert.equal(sql(`select requested_quantity from public.inventory_submission_lines where id='${requestLine}';`), '12.000');
+      assert.equal(sql(`select notes from public.inventory_submission_lines where id='${requestLine}';`), snapshotNotes);
       command('cashier@test.invalid', { action: 'review_submission', submission_id: request.id, status: 'partially_approved', notes: 'Aprueba 6', lines: [{ line_id: requestLine, approved_quantity: 6 }] });
       command('cashier@test.invalid', { action: 'receive', supplier: 'Parcial QA', lines: [{ item_id: bread.id, base_quantity: 4, submission_line_id: requestLine }] });
       assert.equal(sql(`select status from public.inventory_submissions where id='${request.id}';`), 'partially_received');

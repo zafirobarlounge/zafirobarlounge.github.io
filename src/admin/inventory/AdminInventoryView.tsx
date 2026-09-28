@@ -4,7 +4,7 @@ import * as XLSX from 'xlsx';
 import { AdminLayout } from '../AdminLayout';
 import { useSupabaseAuth } from '../../auth/SupabaseAuthProvider';
 import {
-  filterInventoryStockItems, formatConfiguredInventoryQuantity, formatInventoryMoneyInput, formatInventoryQuantity, inventoryItemMatchesSearch, inventoryMoneyInput, inventoryMovementCsv, inventoryUnitLabels, movementLabels, receiptCostPreview, submissionKindLabels,
+  filterInventoryStockItems, formatConfiguredInventoryQuantity, formatInventoryMoneyInput, formatInventoryQuantity, inventoryItemMatchesSearch, inventoryMoneyInput, inventoryMovementCsv, inventoryUnitLabels, movementLabels, parseInventorySubmissionLineNotes, receiptCostPreview, submissionKindLabels,
   type InventoryArea, type InventoryData, type InventoryItem, type InventoryStockAreaFilter, type InventoryStockOrder, type InventoryStockStatusFilter, type InventorySubmission, type InventorySubmissionKind, type InventoryUnit,
 } from './inventory.domain';
 import { createInventoryTemplateWorkbook, inventoryImportFingerprint, parseInventoryWorkbook, type ParsedInventoryImport } from './inventory-import';
@@ -136,11 +136,22 @@ function RequestsTab({ data, area, busy, onCreate, onRun }: { data: InventoryDat
   return <section className="mt-5"><div className="flex flex-wrap items-end justify-between gap-3"><div><h2 className={sectionTitle}>Solicitudes, conteos y daños</h2><p className={sectionCopy}>Enviar no cambia el saldo. Los conteos guardan el saldo y momento de referencia para reconciliar movimientos posteriores.</p></div><button className={primaryButton} onClick={onCreate}>Nuevo reporte</button></div>
     {area ? <p className="mt-4 rounded-[0.9rem] border border-cyanGlow/20 bg-cyanGlow/[0.06] px-4 py-3 text-sm text-mist">Vista operativa de {area === 'bar' ? 'Barra' : 'Cocina'}: puedes consultar, contar, reportar daños y solicitar. La aprobación corresponde a administración o caja.</p> : null}
     <div className="mt-5 space-y-4">{data.submissions.map((entry) => <article key={entry.id} className={card}><div className="flex flex-wrap justify-between gap-3"><div><p className="font-semibold text-ivory">{submissionKindLabels[entry.kind]} · {entry.area === 'bar' ? 'Barra' : 'Cocina'}</p><p className="mt-1 text-sm text-mist">{dateTime(entry.created_at)} · {entry.created_by}</p></div><span className="h-fit rounded-full border border-white/10 px-3 py-1 text-xs text-cyanGlow">{statusLabels[entry.status] ?? entry.status}</span></div>
-      <div className="mt-4 space-y-2">{entry.lines.map((line) => <div key={line.id} className="grid gap-2 rounded-[0.9rem] bg-black/20 p-3 text-sm sm:grid-cols-[1fr_auto_auto]"><div><strong className="text-ivory">{line.item_name}</strong><p className="text-mist">{line.notes || 'Sin nota'}</p></div><p className="text-mist">{entry.kind === 'count' ? `Observado: ${line.observed_quantity}` : `Cantidad: ${line.requested_quantity}`}</p>{data.can_manage && ['sent','partially_approved'].includes(entry.status) ? <input aria-label={`Cantidad aprobada ${line.item_name}`} className={`${inputClass} w-32`} value={amounts[line.id] ?? String(line.requested_quantity ?? line.observed_quantity ?? 0)} onChange={(event) => setAmounts((current) => ({ ...current, [line.id]: event.target.value }))} /> : <p className="text-mist">Aprobado: {line.approved_quantity ?? 'Pendiente'}</p>}</div>)}</div>
+      <div className="mt-4 space-y-2">{entry.lines.map((line) => <SubmissionLineDetails key={line.id} data={data} entry={entry} line={line} amount={amounts[line.id]} canEdit={data.can_manage && ['sent','partially_approved'].includes(entry.status)} onAmountChange={(value) => setAmounts((current) => ({ ...current, [line.id]: value }))} />)}</div>
       {entry.notes ? <p className="mt-3 text-sm text-mist">{entry.notes}</p> : null}
       {entry.status === 'draft' ? <div className="mt-4"><button disabled={busy} className={primaryButton} onClick={() => void onRun({ action:'send_submission', submission_id:entry.id },'Reporte enviado para revisión.')}>Enviar borrador</button></div> : null}
       {data.can_manage && ['sent','partially_approved'].includes(entry.status) ? <div className="mt-4 flex flex-wrap gap-2"><button disabled={busy} className={primaryButton} onClick={() => void review(entry,'approved')}>Aprobar</button>{entry.kind === 'replenishment' ? <button disabled={busy} className={ghostButton} onClick={() => void review(entry,'partially_approved')}>Aprobar parcial</button> : null}<button disabled={busy} className={dangerButton} onClick={() => void review(entry,'rejected')}>Rechazar</button></div> : null}</article>)}{!data.submissions.length ? <StateCard title="Sin reportes">No hay solicitudes, conteos ni daños registrados.</StateCard> : null}</div>
   </section>;
+}
+
+function SubmissionLineDetails({ data, entry, line, amount, canEdit, onAmountChange }: { data: InventoryData; entry: InventorySubmission; line: InventorySubmission['lines'][number]; amount: string | undefined; canEdit: boolean; onAmountChange: (value: string) => void }) {
+  const parsedNotes = parseInventorySubmissionLineNotes(line.notes);
+  const item = data.items.find((candidate) => candidate.id === line.item_id);
+  const requested = Number(line.requested_quantity ?? 0);
+  return <div className="grid gap-3 rounded-[0.9rem] bg-black/20 p-3 text-sm sm:grid-cols-[minmax(0,1fr)_auto_auto]">
+    <div><strong className="text-ivory">{line.item_name}</strong>{entry.kind === 'replenishment' && parsedNotes.presentation ? <div className="mt-1 text-mist"><p>Solicitado: {parsedNotes.presentation.package_quantity} × {parsedNotes.presentation.presentation_name}</p><p>Equivale a: {item ? formatInventoryQuantity(requested, item.base_unit, item.precision_scale) : requested}</p></div> : null}<p className="mt-1 text-mist">{parsedNotes.notes || 'Sin nota'}</p></div>
+    {entry.kind === 'count' ? <p className="text-mist">Observado: {line.observed_quantity}</p> : !parsedNotes.presentation ? <p className="text-mist">Cantidad: {item ? formatInventoryQuantity(requested, item.base_unit, item.precision_scale) : line.requested_quantity}</p> : null}
+    {canEdit ? <input aria-label={`Cantidad aprobada ${line.item_name}`} className={`${inputClass} w-32`} value={amount ?? String(line.requested_quantity ?? line.observed_quantity ?? 0)} onChange={(event) => onAmountChange(event.target.value)} /> : <p className="text-mist">Aprobado: {line.approved_quantity ?? 'Pendiente'}</p>}
+  </div>;
 }
 
 function HistoryTab({ data }: { data: InventoryData }) {

@@ -35,6 +35,8 @@ Cada área ve solo sus artículos y no ve costos. El recorrido es: consultar exi
 
 En el POS, las pestañas operativas **Bar** y **Cocina** incluyen **Inventario del área** debajo de la cola de preparación. El bloque inicia cerrado y consulta inventario solo al pulsar **Ver inventario** por primera vez; ocultarlo y volverlo a abrir conserva los datos mientras el workspace siga montado. **Actualizar** y el envío de un reporte vuelven a consultar. El contenido permite buscar y filtrar por estado, muestra primero los reportes recientes de esa misma área y después los artículos. Los artículos compartidos aparecen en ambas pestañas. Desde este panel los tres tipos de reporte se envían directamente a revisión; no ofrece recepciones, ajustes, configuración ni datos de costos.
 
+Las solicitudes de reposición usan las presentaciones activas del artículo. Una presentación se selecciona automáticamente; si hay varias se elige una, y si no hay ninguna se solicita directamente en unidad base. La cantidad equivalente en unidad base sigue siendo la autoridad para aprobación y recepción. La línea conserva además un snapshot versionado con presentación, contenido y paquetes solicitados para que cambios posteriores de configuración no alteren lo pedido.
+
 ## POS
 
 Al entregar, el POS descuenta una sola vez la receta vigente y guarda una copia de sus componentes y del último costo real vigente. El producto sin receta se entrega normalmente y se identifica como sin seguimiento. Una alerta de posible agotado o control parcial informa, pero no oculta productos ni bloquea ventas. En recetas parciales se muestra el costo vigente de los componentes controlados y solo se incluyen los componentes configurados.

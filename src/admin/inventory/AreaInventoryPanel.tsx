@@ -2,12 +2,15 @@ import { useCallback, useDeferredValue, useMemo, useRef, useState, type ReactNod
 import {
   formatConfiguredInventoryQuantity,
   formatInventoryQuantity,
+  encodeInventorySubmissionLineNotes,
   inventoryItemMatchesSearch,
   inventoryUnitLabels,
   submissionKindLabels,
   type InventoryArea,
   type InventoryData,
   type InventoryItem,
+  type InventoryPresentation,
+  type InventoryReplenishmentPresentationSnapshot,
   type InventorySubmission,
   type InventorySubmissionKind,
 } from './inventory.domain';
@@ -83,6 +86,7 @@ export function buildAreaInventorySubmissionPayload(
   kind: InventorySubmissionKind,
   quantity: number,
   notes: string,
+  presentation?: InventoryReplenishmentPresentationSnapshot | null,
 ): Record<string, unknown> {
   return {
     action: 'submit',
@@ -93,9 +97,14 @@ export function buildAreaInventorySubmissionPayload(
     lines: [{
       item_id: itemId,
       [kind === 'count' ? 'observed_quantity' : 'requested_quantity']: quantity,
-      notes: notes.trim(),
+      notes: encodeInventorySubmissionLineNotes(notes, kind === 'replenishment' ? presentation : null),
     }],
   };
+}
+
+export function calculateInventoryRequestedBaseQuantity(packageQuantity: number, contentPerPackage: number) {
+  if (!Number.isInteger(packageQuantity) || packageQuantity <= 0 || !Number.isFinite(contentPerPackage) || contentPerPackage <= 0) return null;
+  return Number((packageQuantity * contentPerPackage).toFixed(3));
 }
 
 function getSubmissionQuantity(submission: InventorySubmission) {
@@ -116,6 +125,7 @@ export function AreaInventoryPanel({ area }: { area: InventoryArea }) {
   const [report, setReport] = useState<{ item: InventoryItem; kind: InventorySubmissionKind } | null>(null);
   const [quantity, setQuantity] = useState('');
   const [notes, setNotes] = useState('');
+  const [selectedPresentationId, setSelectedPresentationId] = useState('');
   const [saving, setSaving] = useState(false);
   const loadingRef = useRef(false);
   const deferredSearch = useDeferredValue(search);
@@ -161,9 +171,11 @@ export function AreaInventoryPanel({ area }: { area: InventoryArea }) {
   };
 
   const openReport = (item: InventoryItem, kind: InventorySubmissionKind) => {
+    const firstActivePresentation = data.presentations.find((presentation) => presentation.active && presentation.item_id === item.id);
     setReport({ item, kind });
     setQuantity('');
     setNotes('');
+    setSelectedPresentationId(kind === 'replenishment' ? firstActivePresentation?.id ?? '' : '');
     setError(null);
     setNotice(null);
   };
@@ -171,9 +183,26 @@ export function AreaInventoryPanel({ area }: { area: InventoryArea }) {
   const submitReport = async () => {
     if (!report) return;
     const numericQuantity = Number(quantity);
-    const quantityIsValid = report.kind === 'count' ? numericQuantity >= 0 : numericQuantity > 0;
+    const activePresentations = data.presentations.filter((presentation) => presentation.active && presentation.item_id === report.item.id);
+    const selectedPresentation = report.kind === 'replenishment'
+      ? activePresentations.find((presentation) => presentation.id === selectedPresentationId) ?? null
+      : null;
+    const packageRequest = report.kind === 'replenishment' && activePresentations.length > 0;
+    const quantityIsValid = report.kind === 'count'
+      ? numericQuantity >= 0
+      : packageRequest
+        ? Number.isInteger(numericQuantity) && numericQuantity > 0
+        : numericQuantity > 0;
     if (!Number.isFinite(numericQuantity) || !quantityIsValid) {
       setError(report.kind === 'count' ? 'Indica una cantidad observada válida.' : 'Indica una cantidad mayor que cero.');
+      return;
+    }
+    if (packageRequest && !selectedPresentation) {
+      setError('Selecciona una presentación activa.');
+      return;
+    }
+    if (selectedPresentation && selectedPresentation.content_unit !== report.item.base_unit) {
+      setError('La presentación no coincide con la unidad base del artículo.');
       return;
     }
     if (report.kind === 'damage' && !notes.trim()) {
@@ -184,9 +213,23 @@ export function AreaInventoryPanel({ area }: { area: InventoryArea }) {
     setSaving(true);
     setError(null);
     try {
+      const baseQuantity = selectedPresentation
+        ? calculateInventoryRequestedBaseQuantity(numericQuantity, Number(selectedPresentation.content_per_package))
+        : numericQuantity;
+      if (baseQuantity == null) {
+        setError('No se pudo calcular la equivalencia de la presentación.');
+        return;
+      }
+      const presentationSnapshot: InventoryReplenishmentPresentationSnapshot | null = selectedPresentation ? {
+        presentation_id: selectedPresentation.id,
+        presentation_name: selectedPresentation.name,
+        content_per_package: Number(selectedPresentation.content_per_package),
+        content_unit: selectedPresentation.content_unit,
+        package_quantity: numericQuantity,
+      } : null;
       await saveInventoryCommand(
         crypto.randomUUID(),
-        buildAreaInventorySubmissionPayload(area, report.item.id, report.kind, numericQuantity, notes),
+        buildAreaInventorySubmissionPayload(area, report.item.id, report.kind, baseQuantity, notes, presentationSnapshot),
       );
       setNotice('Reporte enviado. Las existencias no cambian hasta la revisión correspondiente.');
       setReport(null);
@@ -292,10 +335,13 @@ export function AreaInventoryPanel({ area }: { area: InventoryArea }) {
           item={report.item}
           kind={report.kind}
           notes={notes}
+          presentations={data.presentations.filter((presentation) => presentation.active && presentation.item_id === report.item.id)}
           quantity={quantity}
+          selectedPresentationId={selectedPresentationId}
           onClose={() => setReport(null)}
           onNotesChange={setNotes}
           onQuantityChange={setQuantity}
+          onSelectedPresentationChange={setSelectedPresentationId}
           onSubmit={submitReport}
         />
       ) : null}
@@ -333,19 +379,29 @@ function AreaInventoryItemCard({ item, onReport }: { item: InventoryItem; onRepo
   );
 }
 
-function InventoryReportDialog({ areaLabel, busy, error, item, kind, notes, quantity, onClose, onNotesChange, onQuantityChange, onSubmit }: {
+function InventoryReportDialog({ areaLabel, busy, error, item, kind, notes, presentations, quantity, selectedPresentationId, onClose, onNotesChange, onQuantityChange, onSelectedPresentationChange, onSubmit }: {
   areaLabel: string;
   busy: boolean;
   error: string | null;
   item: InventoryItem;
   kind: InventorySubmissionKind;
   notes: string;
+  presentations: InventoryPresentation[];
   quantity: string;
+  selectedPresentationId: string;
   onClose: () => void;
   onNotesChange: (value: string) => void;
   onQuantityChange: (value: string) => void;
+  onSelectedPresentationChange: (value: string) => void;
   onSubmit: () => Promise<void>;
 }) {
+  const selectedPresentation = presentations.find((presentation) => presentation.id === selectedPresentationId) ?? null;
+  const packageQuantity = Number(quantity);
+  const equivalentQuantity = selectedPresentation && Number.isInteger(packageQuantity) && packageQuantity > 0
+    ? calculateInventoryRequestedBaseQuantity(packageQuantity, Number(selectedPresentation.content_per_package))
+    : kind === 'replenishment' && !presentations.length && Number.isFinite(packageQuantity) && packageQuantity > 0
+      ? packageQuantity
+      : null;
   return (
     <div className="fixed inset-0 z-[100] flex items-end justify-center bg-black/75 p-3 sm:items-center" role="dialog" aria-modal="true">
       <div className="max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-[1.4rem] border border-white/12 bg-[#0d0d13] p-5 shadow-2xl sm:p-7">
@@ -356,10 +412,22 @@ function InventoryReportDialog({ areaLabel, busy, error, item, kind, notes, quan
         <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); void onSubmit(); }}>
           {error ? <div role="alert" className="rounded-[1rem] border border-rose-300/30 bg-rose-300/10 p-4 text-sm text-rose-100">{error}</div> : null}
           <Field label="Artículo"><div className="rounded-[1rem] border border-white/10 bg-white/[0.04] px-4 py-3 text-base text-ivory">{item.name} · {formatInventoryQuantity(item.balance, item.base_unit, item.precision_scale)}</div></Field>
-          <Field label={kind === 'count' ? 'Cantidad física observada' : 'Cantidad'}><input className={inputClass} type="number" min={kind === 'count' ? '0' : item.precision_scale > 0 ? '0.001' : '1'} step={item.precision_scale > 0 ? '0.001' : '1'} required value={quantity} onChange={(event) => onQuantityChange(event.target.value)} /></Field>
+          {kind === 'replenishment' ? (
+            <>
+              <Field label="Presentación">
+                {!presentations.length ? <div className={lockedValueClass}>Solicitud directa en unidad base · {inventoryUnitLabels[item.base_unit]}</div> : presentations.length === 1 ? <div className={lockedValueClass}>{presentations[0].name} · {formatInventoryQuantity(Number(presentations[0].content_per_package), presentations[0].content_unit, item.precision_scale)}</div> : <select aria-label="Presentación solicitada" className={inputClass} required value={selectedPresentationId} onChange={(event) => onSelectedPresentationChange(event.target.value)}>{presentations.map((presentation) => <option key={presentation.id} value={presentation.id}>{presentation.name} · {formatInventoryQuantity(Number(presentation.content_per_package), presentation.content_unit, item.precision_scale)}</option>)}</select>}
+              </Field>
+              <Field label={presentations.length ? 'Cantidad de paquetes/pacas/envases' : `Cantidad a solicitar en ${inventoryUnitLabels[item.base_unit]}`}>
+                <input className={inputClass} type="number" min={presentations.length ? '1' : item.precision_scale > 0 ? '0.001' : '1'} step={presentations.length ? '1' : item.precision_scale > 0 ? '0.001' : '1'} required value={quantity} onChange={(event) => onQuantityChange(event.target.value)} />
+              </Field>
+              <Field label="Equivale a">
+                <div className={lockedValueClass}>{equivalentQuantity == null ? 'Indica una cantidad para calcular la equivalencia.' : selectedPresentation ? `${packageQuantity} × ${selectedPresentation.name} = ${formatInventoryQuantity(equivalentQuantity, item.base_unit, item.precision_scale)}` : formatInventoryQuantity(equivalentQuantity, item.base_unit, item.precision_scale)}</div>
+              </Field>
+            </>
+          ) : <Field label={kind === 'count' ? 'Cantidad física observada' : 'Cantidad'}><input className={inputClass} type="number" min={kind === 'count' ? '0' : item.precision_scale > 0 ? '0.001' : '1'} step={item.precision_scale > 0 ? '0.001' : '1'} required value={quantity} onChange={(event) => onQuantityChange(event.target.value)} /></Field>}
           <Field label={kind === 'damage' ? 'Descripción del daño o pérdida' : 'Nota opcional'}><textarea className={inputClass} rows={3} required={kind === 'damage'} value={notes} onChange={(event) => onNotesChange(event.target.value)} /></Field>
           <p className="text-sm text-mist">El reporte se enviará para revisión y no cambiará las existencias por sí solo.</p>
-          <div className="flex flex-wrap justify-end gap-2 pt-2"><button type="button" className={ghostButton} onClick={onClose}>Cancelar</button><button type="submit" className={primaryButton} disabled={busy || quantity === '' || (kind === 'damage' && !notes.trim())}>{busy ? 'Enviando…' : 'Enviar reporte'}</button></div>
+          <div className="flex flex-wrap justify-end gap-2 pt-2"><button type="button" className={ghostButton} onClick={onClose}>Cancelar</button><button type="submit" className={primaryButton} disabled={busy || quantity === '' || (kind === 'replenishment' && presentations.length > 0 && !selectedPresentation) || (kind === 'damage' && !notes.trim())}>{busy ? 'Enviando…' : kind === 'replenishment' ? 'Enviar solicitud' : 'Enviar reporte'}</button></div>
         </form>
       </div>
     </div>
@@ -379,6 +447,7 @@ function formatDateTime(value: string) {
 }
 
 const inputClass = 'w-full rounded-[0.9rem] border border-white/10 bg-obsidian/60 px-4 py-3 text-base text-ivory outline-none transition focus:border-cyanGlow/40';
+const lockedValueClass = 'w-full rounded-[0.9rem] border border-white/10 bg-white/[0.04] px-4 py-3 text-base text-ivory';
 const primaryButton = 'rounded-full border border-cyanGlow/30 bg-cyanGlow/12 px-4 py-2.5 text-xs font-semibold uppercase tracking-[0.18em] text-cyanGlow transition hover:bg-cyanGlow/18 disabled:cursor-not-allowed disabled:opacity-50';
 const ghostButton = 'rounded-full border border-white/12 bg-white/[0.05] px-4 py-2.5 text-xs font-semibold uppercase tracking-[0.18em] text-ivory transition hover:border-cyanGlow/25 hover:bg-white/[0.09] disabled:cursor-not-allowed disabled:opacity-50';
 const smallPrimaryButton = 'min-w-0 rounded-full border border-cyanGlow/30 bg-cyanGlow/12 px-2 py-2 text-[0.62rem] font-semibold uppercase tracking-[0.1em] text-cyanGlow transition hover:bg-cyanGlow/18';

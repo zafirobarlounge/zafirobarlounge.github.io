@@ -46,6 +46,14 @@ export interface InventorySubmissionLine {
   notes: string;
 }
 
+export interface InventoryReplenishmentPresentationSnapshot {
+  presentation_id: string;
+  presentation_name: string;
+  content_per_package: number;
+  content_unit: InventoryUnit;
+  package_quantity: number;
+}
+
 export interface InventorySubmission {
   id: string;
   kind: InventorySubmissionKind;
@@ -153,6 +161,40 @@ export const movementLabels: Record<string, string> = {
 export const submissionKindLabels: Record<InventorySubmissionKind, string> = {
   replenishment: 'Solicitud de reposición', count: 'Conteo físico', damage: 'Daño o pérdida',
 };
+
+const submissionPresentationSnapshotPrefix = 'zafiro-presentation-v1:';
+
+export function encodeInventorySubmissionLineNotes(notes: string, presentation?: InventoryReplenishmentPresentationSnapshot | null) {
+  if (!presentation) return notes.trim();
+  return `${submissionPresentationSnapshotPrefix}${JSON.stringify({ presentation, notes: notes.trim() })}`;
+}
+
+export function parseInventorySubmissionLineNotes(value: string | null | undefined): { notes: string; presentation: InventoryReplenishmentPresentationSnapshot | null } {
+  const raw = value ?? '';
+  if (!raw.startsWith(submissionPresentationSnapshotPrefix)) return { notes: raw, presentation: null };
+  try {
+    const parsed = JSON.parse(raw.slice(submissionPresentationSnapshotPrefix.length)) as { notes?: unknown; presentation?: Partial<InventoryReplenishmentPresentationSnapshot> };
+    const presentation = parsed.presentation;
+    if (!presentation || typeof presentation.presentation_id !== 'string' || typeof presentation.presentation_name !== 'string'
+      || !['unit', 'gram', 'milliliter'].includes(String(presentation.content_unit))
+      || !Number.isFinite(Number(presentation.content_per_package)) || Number(presentation.content_per_package) <= 0
+      || !Number.isFinite(Number(presentation.package_quantity)) || Number(presentation.package_quantity) <= 0) {
+      return { notes: raw, presentation: null };
+    }
+    return {
+      notes: typeof parsed.notes === 'string' ? parsed.notes : '',
+      presentation: {
+        presentation_id: presentation.presentation_id,
+        presentation_name: presentation.presentation_name,
+        content_per_package: Number(presentation.content_per_package),
+        content_unit: presentation.content_unit as InventoryUnit,
+        package_quantity: Number(presentation.package_quantity),
+      },
+    };
+  } catch {
+    return { notes: raw, presentation: null };
+  }
+}
 
 export function formatInventoryQuantity(value: number | null, unit: InventoryUnit, precision = 3) {
   if (value == null) return 'Sin conteo inicial';

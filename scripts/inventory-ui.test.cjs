@@ -16,6 +16,15 @@ test('cantidades distinguen ausencia de cero y respetan precisión', () => {
   assert.match(domain.exports.formatInventoryQuantity(12.5, 'gram', 3), /12,5 g/);
 });
 
+test('snapshot de presentación conserva conversión y nota sin romper solicitudes anteriores', () => {
+  const presentation = { presentation_id:'p1',presentation_name:'Paca x12',content_per_package:12,content_unit:'unit',package_quantity:2 };
+  const encoded = domain.exports.encodeInventorySubmissionLineNotes('Para barra', presentation);
+  const parsed = JSON.parse(JSON.stringify(domain.exports.parseInventorySubmissionLineNotes(encoded)));
+  assert.deepEqual(parsed, { notes:'Para barra',presentation });
+  assert.deepEqual(JSON.parse(JSON.stringify(domain.exports.parseInventorySubmissionLineNotes('Nota anterior'))), { notes:'Nota anterior',presentation:null });
+  assert.deepEqual(JSON.parse(JSON.stringify(domain.exports.parseInventorySubmissionLineNotes('zafiro-presentation-v1:{mal'))), { notes:'zafiro-presentation-v1:{mal',presentation:null });
+});
+
 test('búsqueda, área y estados filtran existencias sin confundir null con cero', () => {
   const items = [
     { id:'cola',import_code:'BAR_COLA',name:'Coca-Cola 400 ml',areas:['bar'],balance:36,minimum_quantity:null },
@@ -126,6 +135,14 @@ test('acciones por tarjeta bloquean el artículo y reutilizan los flujos existen
   assert.doesNotMatch(view, /Conteo inicial o corrección/);
   for (const label of ['Buscar existencias','Buscar artículos configurados','Buscar artículo para presentación','Buscar componente','Buscar artículo para reporte','Buscar artículo para entrada']) assert.match(view, new RegExp(label));
   assert.match(view, /selected&&!matching\.some/);
+});
+
+test('administración muestra presentación solicitada y equivalencia base', () => {
+  const view = readFileSync('src/admin/inventory/AdminInventoryView.tsx', 'utf8');
+  assert.match(view, /parseInventorySubmissionLineNotes/);
+  assert.match(view, /Solicitado:/);
+  assert.match(view, /Equivale a:/);
+  assert.match(view, /formatInventoryQuantity\(requested, item\.base_unit/);
 });
 
 test('migración 006 congela costos y aplica valoración sin acoplarla a gastos', () => {
