@@ -264,6 +264,19 @@ test('acciones por tarjeta bloquean el artículo y reutilizan los flujos existen
   assert.match(view, /function SearchableInventoryItemSelect[\s\S]*getInventoryItemSearchSelection/);
 });
 
+test('crear presentación explica campos faltantes y muestra errores por encima del modal', () => {
+  const view = readFileSync('src/admin/inventory/AdminInventoryView.tsx', 'utf8');
+  const dialog = view.slice(view.indexOf('function PresentationDialog'), view.indexOf('function RecipeDialog'));
+  assert.match(dialog, /noValidate onSubmit=\{save\}/);
+  assert.match(dialog, /Selecciona un artículo válido/);
+  assert.match(dialog, /Escribe el nombre de la presentación/);
+  assert.match(dialog, /contenido por paquete o envase mayor que cero/);
+  assert.match(dialog, /<DialogButtons busy=\{busy\} onClose=\{onClose\} label="Guardar presentación"\/>/);
+  assert.doesNotMatch(dialog, /label="Guardar presentación" disabled=/);
+  assert.match(view, /top-4 z-\[70\]/);
+  assert.match(view, /Cerrar aviso/);
+});
+
 test('administración muestra presentación solicitada y equivalencia base', () => {
   const view = readFileSync('src/admin/inventory/AdminInventoryView.tsx', 'utf8');
   assert.match(view, /parseInventorySubmissionLineNotes/);
