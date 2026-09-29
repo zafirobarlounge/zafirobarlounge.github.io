@@ -42,7 +42,25 @@ test('búsqueda, área y estados filtran existencias sin confundir null con cero
   assert.deepEqual(filter('','all','depleted'), ['limon']);
   assert.deepEqual(filter('','all','in_stock'), ['cola','pan']);
   assert.deepEqual(filter('','all','all','name_desc'), ['salsa','pan','limon','cola']);
+  assert.deepEqual(filter('','all','all','operational_priority'), ['salsa','limon','pan','cola']);
   assert.equal(items.find((item)=>item.id==='cola').id, 'cola');
+});
+
+test('Caja ordena por prioridad operativa y conserva orden alfabético dentro de cada grupo', () => {
+  const base = { active:true,areas:['bar'],import_code:null,base_unit:'unit',precision_scale:0,target_quantity:null,tracking_started_at:null,last_unit_cost:null,average_unit_cost:null,inventory_value:null };
+  const items = [
+    { ...base,id:'normal-z',name:'Zumo',balance:20,minimum_quantity:5,pending_incoming:0 },
+    { ...base,id:'pending-z',name:'Yerbabuena',balance:20,minimum_quantity:5,pending_incoming:3 },
+    { ...base,id:'pending-a',name:'Agua',balance:20,minimum_quantity:5,pending_incoming:2 },
+    { ...base,id:'low',name:'Pan',balance:2,minimum_quantity:5,pending_incoming:4 },
+    { ...base,id:'depleted',name:'Limón',balance:0,minimum_quantity:5,pending_incoming:0 },
+    { ...base,id:'uncounted',name:'Salsa',balance:null,minimum_quantity:null,pending_incoming:0 },
+    { ...base,id:'normal-a',name:'Cerveza',balance:20,minimum_quantity:5,pending_incoming:0 },
+  ];
+  assert.deepEqual(Array.from(domain.exports.filterInventoryStockItems(items,'','all','all','operational_priority'), (item) => item.id), ['uncounted','depleted','low','pending-a','pending-z','normal-a','normal-z']);
+  const view = readFileSync('src/admin/inventory/AdminInventoryView.tsx', 'utf8');
+  assert.match(view, /useState<InventoryStockOrder>\('operational_priority'\)/);
+  assert.match(view, /<option value="operational_priority">Prioridad operativa<\/option>/);
 });
 
 test('todos los selectores filtrados excluyen el articulo anterior y seleccionan la coincidencia', () => {

@@ -3,6 +3,7 @@ import {
   formatConfiguredInventoryQuantity,
   formatInventoryQuantity,
   encodeInventorySubmissionLineNotes,
+  getInventoryOperationalPriority,
   getInventoryMessageDuration,
   inventoryItemMatchesSearch,
   inventoryUnitLabels,
@@ -52,7 +53,10 @@ export function filterAreaInventoryItems(
     .filter((item) => item.active && item.areas.includes(area))
     .filter((item) => inventoryItemMatchesSearch(item, search))
     .filter((item) => status === 'all' || getAreaInventoryItemState(item) === status)
-    .sort((left, right) => left.name.localeCompare(right.name, 'es', { sensitivity: 'base' }));
+    .sort((left, right) => {
+      const priorityDifference = getInventoryOperationalPriority(left) - getInventoryOperationalPriority(right);
+      return priorityDifference || left.name.localeCompare(right.name, 'es', { sensitivity: 'base' });
+    });
 }
 
 export function summarizeAreaInventory(items: InventoryItem[], area: InventoryArea) {
@@ -286,7 +290,7 @@ export function AreaInventoryPanel({ area }: { area: InventoryArea }) {
                     <option value="uncounted">Sin conteo inicial</option>
                   </select>
                 </Field>
-                <p className="text-xs text-mist sm:col-span-2">Mostrando {items.length} de {summary.total} artículos asignados a {areaLabel.toLowerCase()}.</p>
+                <p className="text-xs text-mist sm:col-span-2">Mostrando {items.length} de {summary.total} artículos asignados a {areaLabel.toLowerCase()}. Orden: sin conteo, agotados, bajo mínimo, reposición pendiente y disponibles.</p>
               </div>
 
               <div className="mt-5 rounded-[1.1rem] border border-white/10 bg-white/[0.02] p-4">
@@ -352,11 +356,14 @@ export function AreaInventoryPanel({ area }: { area: InventoryArea }) {
 
 function AreaInventoryItemCard({ item, onReport }: { item: InventoryItem; onReport: (kind: InventorySubmissionKind) => void }) {
   const state = getAreaInventoryItemState(item);
-  const stateLabel = state === 'uncounted' ? 'Sin conteo inicial' : state === 'depleted' ? 'Agotado' : state === 'low' ? 'Bajo mínimo' : 'Disponible';
+  const hasPendingIncoming = state === 'available' && Number(item.pending_incoming ?? 0) > 0;
+  const stateLabel = state === 'uncounted' ? 'Sin conteo inicial' : state === 'depleted' ? 'Agotado' : state === 'low' ? 'Bajo mínimo' : hasPendingIncoming ? 'Reposición pendiente' : 'Disponible';
   const stateClass = state === 'depleted'
     ? 'border-rose-300/35 bg-rose-300/[0.08] text-rose-100'
     : state === 'low' || state === 'uncounted'
       ? 'border-amberGlow/30 bg-amberGlow/[0.08] text-amber-100'
+      : hasPendingIncoming
+        ? 'border-cyanGlow/30 bg-cyanGlow/[0.08] text-cyanGlow'
       : 'border-emerald-300/25 bg-emerald-300/[0.07] text-emerald-100';
   return (
     <article className="rounded-[1.05rem] border border-white/10 bg-white/[0.035] p-4">

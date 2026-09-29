@@ -48,20 +48,41 @@ function loadNamedHelpers(filePath, names, context = {}) {
 
 test('inventario operativo filtra por área, búsqueda y estados mutuamente excluyentes', () => {
   const match = (item, search) => `${item.name} ${item.import_code ?? ''}`.toLocaleLowerCase('es-CO').includes(search.trim().toLocaleLowerCase('es-CO'));
-  const filter = loadNamedHelpers(areaInventoryPath, ['getAreaInventoryItemState', 'filterAreaInventoryItems'], { inventoryItemMatchesSearch: match });
+  const priority = (item) => item.balance == null ? 0 : item.balance <= 0 ? 1 : item.minimum_quantity != null && item.balance < item.minimum_quantity ? 2 : Number(item.pending_incoming ?? 0) > 0 ? 3 : 4;
+  const filter = loadNamedHelpers(areaInventoryPath, ['getAreaInventoryItemState', 'filterAreaInventoryItems'], { inventoryItemMatchesSearch: match, getInventoryOperationalPriority: priority });
   const items = [
-    { id: 'bar', name: 'Cerveza', import_code: 'BAR_1', active: true, areas: ['bar'], balance: 8, minimum_quantity: 4 },
-    { id: 'shared', name: 'Limón', import_code: 'SHARED', active: true, areas: ['bar', 'kitchen'], balance: 0, minimum_quantity: 4 },
-    { id: 'low', name: 'Pan', import_code: 'KITCHEN_1', active: true, areas: ['kitchen'], balance: 2, minimum_quantity: 5 },
-    { id: 'uncounted', name: 'Salsa', import_code: 'KITCHEN_2', active: true, areas: ['kitchen'], balance: null, minimum_quantity: null },
+    { id: 'bar', name: 'Cerveza', import_code: 'BAR_1', active: true, areas: ['bar'], balance: 8, minimum_quantity: 4, pending_incoming: 0 },
+    { id: 'shared', name: 'Limón', import_code: 'SHARED', active: true, areas: ['bar', 'kitchen'], balance: 0, minimum_quantity: 4, pending_incoming: 0 },
+    { id: 'low', name: 'Pan', import_code: 'KITCHEN_1', active: true, areas: ['kitchen'], balance: 2, minimum_quantity: 5, pending_incoming: 0 },
+    { id: 'uncounted', name: 'Salsa', import_code: 'KITCHEN_2', active: true, areas: ['kitchen'], balance: null, minimum_quantity: null, pending_incoming: 0 },
   ];
   const ids = (area, search, status) => Array.from(filter(items, area, search, status), (item) => item.id);
-  assert.deepEqual(ids('bar', '', 'all'), ['bar', 'shared']);
-  assert.deepEqual(ids('kitchen', '', 'all'), ['shared', 'low', 'uncounted']);
+  assert.deepEqual(ids('bar', '', 'all'), ['shared', 'bar']);
+  assert.deepEqual(ids('kitchen', '', 'all'), ['uncounted', 'shared', 'low']);
   assert.deepEqual(ids('kitchen', 'pan', 'all'), ['low']);
   assert.deepEqual(ids('kitchen', '', 'depleted'), ['shared']);
   assert.deepEqual(ids('kitchen', '', 'low'), ['low']);
   assert.deepEqual(ids('kitchen', '', 'uncounted'), ['uncounted']);
+});
+
+test('inventario de Bar y Cocina prioriza estados accionables y ordena cada grupo por nombre', () => {
+  const match = () => true;
+  const priority = (item) => item.balance == null ? 0 : item.balance <= 0 ? 1 : item.minimum_quantity != null && item.balance < item.minimum_quantity ? 2 : Number(item.pending_incoming ?? 0) > 0 ? 3 : 4;
+  const filter = loadNamedHelpers(areaInventoryPath, ['getAreaInventoryItemState', 'filterAreaInventoryItems'], { inventoryItemMatchesSearch: match, getInventoryOperationalPriority: priority });
+  const base = { active: true, areas: ['bar', 'kitchen'], import_code: null };
+  const items = [
+    { ...base, id: 'normal-z', name: 'Zumo', balance: 20, minimum_quantity: 5, pending_incoming: 0 },
+    { ...base, id: 'pending-z', name: 'Yerbabuena', balance: 20, minimum_quantity: 5, pending_incoming: 4 },
+    { ...base, id: 'low-z', name: 'Pan', balance: 2, minimum_quantity: 5, pending_incoming: 8 },
+    { ...base, id: 'depleted', name: 'Limón', balance: 0, minimum_quantity: 5, pending_incoming: 0 },
+    { ...base, id: 'uncounted', name: 'Salsa', balance: null, minimum_quantity: null, pending_incoming: 0 },
+    { ...base, id: 'pending-a', name: 'Agua', balance: 20, minimum_quantity: 5, pending_incoming: 2 },
+    { ...base, id: 'normal-a', name: 'Cerveza', balance: 20, minimum_quantity: 5, pending_incoming: 0 },
+  ];
+  const expected = ['uncounted', 'depleted', 'low-z', 'pending-a', 'pending-z', 'normal-a', 'normal-z'];
+  for (const area of ['bar', 'kitchen']) {
+    assert.deepEqual(Array.from(filter(items, area, '', 'all'), (item) => item.id), expected);
+  }
 });
 
 test('reportes operativos usan submit enviado y la cantidad correcta sin mutar saldos', () => {
@@ -161,6 +182,8 @@ test('contenido desplegado prioriza reportes y evita duplicar Sin conteo inicial
   const panel = readFileSync(path.join(root, areaInventoryPath), 'utf8');
   assert.ok(panel.indexOf('Reportes recientes del área') < panel.indexOf('<AreaInventoryItemCard'));
   assert.match(panel, /state !== 'uncounted' \? <span/);
+  assert.match(panel, /Reposición pendiente/);
+  assert.match(panel, /Orden: sin conteo, agotados, bajo mínimo, reposición pendiente y disponibles/);
   assert.match(panel, /formatInventoryQuantity\(item\.balance/);
   assert.match(panel, /onChange=\{\(event\) => setSearch\(event\.target\.value\)\}/);
   assert.match(panel, /onChange=\{\(event\) => setStatus\(event\.target\.value as AreaInventoryStatusFilter\)\}/);

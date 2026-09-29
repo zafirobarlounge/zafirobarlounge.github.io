@@ -4,7 +4,7 @@ export type InventorySubmissionKind = 'replenishment' | 'count' | 'damage';
 export type InventorySubmissionStatus = 'draft' | 'sent' | 'partially_approved' | 'approved' | 'partially_received' | 'received' | 'rejected';
 export type InventoryStockAreaFilter = 'all' | InventoryArea;
 export type InventoryStockStatusFilter = 'all' | 'uncounted' | 'low' | 'depleted' | 'in_stock';
-export type InventoryStockOrder = 'name_asc' | 'name_desc';
+export type InventoryStockOrder = 'operational_priority' | 'name_asc' | 'name_desc';
 
 export interface InventoryItem {
   id: string;
@@ -241,6 +241,14 @@ export function filterInventoryItemsByArea(items: InventoryItem[], area: Invento
   return items.filter((item) => item.areas.includes(area));
 }
 
+export function getInventoryOperationalPriority(item: Pick<InventoryItem, 'balance' | 'minimum_quantity' | 'pending_incoming'>) {
+  if (item.balance == null) return 0;
+  if (item.balance <= 0) return 1;
+  if (item.minimum_quantity != null && item.balance < item.minimum_quantity) return 2;
+  if (Number(item.pending_incoming ?? 0) > 0) return 3;
+  return 4;
+}
+
 export function filterInventoryStockItems(items: InventoryItem[], search: string, area: InventoryStockAreaFilter, status: InventoryStockStatusFilter, order: InventoryStockOrder) {
   const filtered = items.filter((item) => {
     if (!inventoryItemMatchesSearch(item, search) || (area !== 'all' && !item.areas.includes(area))) return false;
@@ -250,7 +258,12 @@ export function filterInventoryStockItems(items: InventoryItem[], search: string
     if (status === 'in_stock') return item.balance != null && item.balance > 0;
     return true;
   });
-  return filtered.sort((a, b) => (order === 'name_desc' ? -1 : 1) * a.name.localeCompare(b.name, 'es', { sensitivity: 'base' }));
+  return filtered.sort((a, b) => {
+    const nameDifference = a.name.localeCompare(b.name, 'es', { sensitivity: 'base' });
+    if (order === 'name_desc') return -nameDifference;
+    if (order === 'name_asc') return nameDifference;
+    return getInventoryOperationalPriority(a) - getInventoryOperationalPriority(b) || nameDifference;
+  });
 }
 
 export function inventoryMoneyInput(raw: string): { display: string; value: number | null } {
