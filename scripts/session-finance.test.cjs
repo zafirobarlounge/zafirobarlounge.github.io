@@ -380,3 +380,20 @@ test('linked detail outside period never changes metrics, comparisons or either 
   }
   assert.deepEqual(results[0],results[1]);
 });
+
+test('productos destacados permite alternar entre Top 5 y todos los productos', async () => {
+  const products=Array.from({length:6},(_,index)=>({productName:`Producto ${index+1}`,quantity:6-index,totalAmount:(6-index)*1000}));
+  const session={id:'ranking',businessDate:'2020-01-10',sessionLabel:'Ranking',status:'closed',openedAt:'2020-01-10T18:00:00Z',closedAt:'2020-01-11T04:00:00Z',updatedAt:'2020-01-11T04:00:00Z',notes:'',totalSold:21000,totalCollected:21000,orderCount:1,paymentCount:1,summary:{grossSales:21000,totalCollected:21000,orderCount:1,confirmedPayments:1,pendingBalance:0,products,paymentMethods:[]}};
+  const h=reportHarness({history:[session],query:null}); h.render(); await settle(); h.render(); await settle();
+  let tree=h.render();
+  nodes(tree,'select').find(n=>nodes(n,'option').some(o=>o.props.value==='all')).props.onChange({target:{value:'all'}});
+  tree=h.render();
+  assert.match(text(tree),/Top 5 del periodo/);
+  assert.doesNotMatch(text(tree),/Producto 6/);
+  nodes(tree,'button').find(n=>text(n)==='Ver todos los productos').props.onClick();
+  tree=h.render();
+  assert.match(text(tree),/Todos los productos del periodo/);
+  assert.match(text(tree),/Producto 6/);
+  nodes(tree,'button').find(n=>text(n)==='Ver Top 5').props.onClick();
+  assert.doesNotMatch(text(h.render()),/Producto 6/);
+});

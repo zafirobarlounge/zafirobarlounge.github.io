@@ -1056,24 +1056,26 @@ function MetricCard({ insight, label, value }: { insight?: string | null; label:
 }
 
 function ProductRanking({ products }: { products: Array<{ productName: string; quantity: number; totalAmount: number }> }) {
+  const [showAll,setShowAll]=useState(false);
   if (!products.length) {
     return null;
   }
 
   const maxQuantity = Math.max(...products.map((product) => product.quantity), 1);
+  const displayedProducts=showAll?products:products.slice(0,5);
 
   return (
     <section className="rounded-[1.25rem] border border-white/10 bg-white/[0.03] p-4">
       <div className="flex flex-wrap items-end justify-between gap-2">
         <div>
           <p className="text-[0.68rem] uppercase tracking-[0.24em] text-cyanGlow/80">Productos destacados</p>
-          <h2 className="mt-2 font-display text-2xl text-ivory">Top 5 del periodo</h2>
+          <h2 className="mt-2 font-display text-2xl text-ivory">{showAll?'Todos los productos del periodo':'Top 5 del periodo'}</h2>
         </div>
-        <p className="text-sm text-mist">Cantidad y valor vendido.</p>
+        <div className="flex flex-wrap items-center justify-end gap-3"><p className="text-sm text-mist">Cantidad y valor vendido.</p>{products.length>5?<button type="button" className={ghostButtonClassName} onClick={()=>setShowAll((current)=>!current)}>{showAll?'Ver Top 5':'Ver todos los productos'}</button>:null}</div>
       </div>
 
       <div className="mt-4 grid gap-3 lg:grid-cols-5">
-        {products.slice(0, 5).map((product, index) => (
+        {displayedProducts.map((product, index) => (
           <article key={product.productName} className="min-w-0 border-l border-white/10 pl-3 first:border-l-cyanGlow/60">
             <p className="text-[0.6rem] uppercase tracking-[0.2em] text-cyanGlow/70">#{index + 1}</p>
             <p className="mt-1 truncate font-semibold text-ivory">{product.productName}</p>
