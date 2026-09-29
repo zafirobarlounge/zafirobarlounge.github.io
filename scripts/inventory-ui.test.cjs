@@ -111,30 +111,45 @@ test('áreas configurables alimentan etiquetas, filtros y formularios sin volver
   assert.doesNotMatch(panel, /operations/);
 });
 
-test('receta distingue componentes controlados y descriptivos y calcula solo el costo controlado', () => {
+test('receta separa componentes medidos del descuento automatico y calcula su costo', () => {
   const complete = JSON.parse(JSON.stringify(domain.exports.summarizeInventoryRecipeCost([
-    { active:true,controls_inventory:true,tracked_component_cost:2000 },
-    { active:true,controls_inventory:true,tracked_component_cost:800 },
+    { active:true,quantity_base:1,tracked_component_cost:2000 },
+    { active:true,quantity_base:30,tracked_component_cost:300 },
   ])));
-  assert.deepEqual(complete, { hasControlled:true,hasDescriptive:false,cost:2800 });
+  assert.deepEqual(complete, { hasMeasured:true,isPartial:false,cost:2300 });
   const partial = JSON.parse(JSON.stringify(domain.exports.summarizeInventoryRecipeCost([
-    { active:true,controls_inventory:true,tracked_component_cost:2000 },
-    { active:true,controls_inventory:false,tracked_component_cost:null },
+    { active:true,quantity_base:1,tracked_component_cost:2000 },
+    { active:true,quantity_base:null,tracked_component_cost:null },
   ])));
-  assert.deepEqual(partial, { hasControlled:true,hasDescriptive:true,cost:2000 });
+  assert.deepEqual(partial, { hasMeasured:true,isPartial:true,cost:2000 });
+  const unknownCost = JSON.parse(JSON.stringify(domain.exports.summarizeInventoryRecipeCost([
+    { active:true,quantity_base:1,tracked_component_cost:2000 },
+    { active:true,quantity_base:15,tracked_component_cost:null },
+  ])));
+  assert.deepEqual(unknownCost, { hasMeasured:true,isPartial:true,cost:2000 });
   const descriptiveOnly = JSON.parse(JSON.stringify(domain.exports.summarizeInventoryRecipeCost([
-    { active:true,controls_inventory:false,tracked_component_cost:null },
+    { active:true,quantity_base:null,tracked_component_cost:null },
   ])));
-  assert.deepEqual(descriptiveOnly, { hasControlled:false,hasDescriptive:true,cost:null });
+  assert.deepEqual(descriptiveOnly, { hasMeasured:false,isPartial:true,cost:null });
   const view = readFileSync('src/admin/inventory/AdminInventoryView.tsx', 'utf8');
-  assert.match(view, /Controlar inventario/);
+  assert.match(view, /Descontar del inventario autom.ticamente/);
   assert.match(view, /role="switch"/);
   assert.match(view, /aria-checked=\{component\.controls_inventory\}/);
-  assert.match(view, /Este componente forma parte de la receta, pero no se descontará automáticamente/);
-  assert.match(view, /Costo controlado parcial/);
-  assert.match(view, /quantity_base:row\.controls_inventory\?Number\(row\.quantity_base\):null/);
+  assert.match(view, /Se usar. para calcular el costo, pero no generar. movimientos autom.ticos de inventario/);
+  assert.match(view, /Componente descriptivo sin cantidad definida/);
+  assert.match(view, /Costo calculado parcial/);
+  assert.match(view, /quantity_base:row\.quantity_base===''\?null:Number\(row\.quantity_base\)/);
   assert.doesNotMatch(view, /Control completo de componentes medidos/);
   assert.doesNotMatch(view, /<Field label="Cobertura">/);
+});
+
+test('migracion 013 permite cantidades de costo sin descuento automatico', () => {
+  const migration = readFileSync('supabase/migrations/202609290013_inventory_recipe_cost_quantity.sql', 'utf8');
+  assert.match(migration, /not controls_inventory and \(quantity_base is null or quantity_base > 0\)/);
+  assert.match(migration, /component->>'quantity_base' is not null and \(component->>'quantity_base'\)::numeric<=0/);
+  assert.match(migration, /case when r\.quantity_base is null or v\.last_unit_cost is null then null/);
+  assert.doesNotMatch(migration, /case when not r\.controls_inventory or v\.last_unit_cost is null/);
+  assert.match(migration, /inventory_deliver_pos_item and inventory_menu_alerts remain unchanged/);
 });
 
 test('mensajes operativos de inventario vencen y las validaciones permanecen visibles', () => {
@@ -229,7 +244,7 @@ test('interfaz muestra conversión congelada y separa recepción de gasto', () =
   assert.doesNotMatch(view, /Costo promedio rastreado/);
   assert.match(view, /Valor contable rastreado/);
   assert.match(view, /última compra real/);
-  assert.match(view, /Solo los componentes marcados para controlar inventario/);
+  assert.match(view, /Solo los marcados para descuento autom.tico generan movimientos de inventario/);
   assert.doesNotMatch(view, /costo total del plato/i);
   assert.doesNotMatch(view, /utilidad neta|margen neto/i);
 });

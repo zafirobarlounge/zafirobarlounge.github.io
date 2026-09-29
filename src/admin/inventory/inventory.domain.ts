@@ -113,17 +113,14 @@ export interface InventoryRecipe {
   tracked_component_cost: number | null;
 }
 
-export function summarizeInventoryRecipeCost(components: Array<Pick<InventoryRecipe, 'active' | 'controls_inventory' | 'tracked_component_cost'>>) {
+export function summarizeInventoryRecipeCost(components: Array<Pick<InventoryRecipe, 'active' | 'quantity_base' | 'tracked_component_cost'>>) {
   const active = components.filter((component) => component.active);
-  const controlled = active.filter((component) => component.controls_inventory);
-  const hasDescriptive = active.some((component) => !component.controls_inventory);
-  const hasUnknownCost = controlled.some((component) => component.tracked_component_cost == null);
+  const measured = active.filter((component) => component.quantity_base != null && component.quantity_base > 0);
+  const known = measured.filter((component) => component.tracked_component_cost != null);
   return {
-    hasControlled: controlled.length > 0,
-    hasDescriptive,
-    cost: controlled.length === 0 || hasUnknownCost
-      ? null
-      : controlled.reduce((total, component) => total + Number(component.tracked_component_cost), 0),
+    hasMeasured: measured.length > 0,
+    isPartial: active.some((component) => component.quantity_base == null || component.tracked_component_cost == null),
+    cost: known.length ? known.reduce((total, component) => total + Number(component.tracked_component_cost), 0) : null,
   };
 }
 

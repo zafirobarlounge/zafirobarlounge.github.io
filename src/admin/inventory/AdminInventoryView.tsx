@@ -255,10 +255,10 @@ function RecipeDialog({ data,busy,onClose,onSave }: DialogProps & {data:Inventor
     void onSave({
       action:'save_recipe',
       menu_item_source_key:menuKey,
-      components:components.map((row)=>({item_id:row.item_id,controls_inventory:row.controls_inventory,quantity_base:row.controls_inventory?Number(row.quantity_base):null})),
+      components:components.map((row)=>({item_id:row.item_id,controls_inventory:row.controls_inventory,quantity_base:row.quantity_base===''?null:Number(row.quantity_base)})),
     },'Consumo futuro del producto actualizado.');
   };
-  const invalid=!menuKey||!components.length||components.some((row)=>!row.item_id||(row.controls_inventory&&Number(row.quantity_base)<=0));
+  const invalid=!menuKey||!components.length||components.some((row)=>!row.item_id||(row.controls_inventory&&Number(row.quantity_base)<=0)||(row.quantity_base!==''&&Number(row.quantity_base)<=0));
   return <Dialog title="Consumo por producto del menú" onClose={onClose}>
     <form className="space-y-4" onSubmit={save}>
       <Field label="Producto del menú"><select className={inputClass} value={menuKey} onChange={(event)=>setMenuKey(event.target.value)}>{data.menu_items.map((row)=><option key={row.source_key} value={row.source_key}>{row.name}</option>)}</select></Field>
@@ -272,21 +272,22 @@ function RecipeDialog({ data,busy,onClose,onSave }: DialogProps & {data:Inventor
             </div>
             <div>
               <Field label="Artículo"><SearchableInventoryItemSelect items={recipeItems} value={component.item_id} ariaLabel={`Buscar componente ${index+1}`} onChange={(itemId)=>setComponents((current)=>current.map((row,i)=>i===index?{...row,item_id:itemId}:row))}/></Field>
-              <div className="mt-3 grid gap-3 md:grid-cols-[13rem_minmax(0,1fr)] md:items-end">
+              <div className="mt-3 grid gap-3 md:grid-cols-[minmax(0,1fr)_17rem] md:items-end">
+                <Field label={`Cantidad por producto${component.controls_inventory?'':' (opcional)'}`}><div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2"><input aria-label={`Cantidad del componente ${index+1}`} className={inputClass} type="number" min="0.001" step="0.001" required={component.controls_inventory} value={component.quantity_base} placeholder={component.controls_inventory?'Obligatoria':'Sin definir'} onChange={(event)=>setComponents((current)=>current.map((row,i)=>i===index?{...row,quantity_base:event.target.value}:row))}/><span className="whitespace-nowrap text-xs text-mist">{selectedItem?inventoryUnitLabels[selectedItem.base_unit]:'Unidad base'}</span></div></Field>
                 <div className="flex min-h-[3rem] items-center justify-between gap-3 rounded-[0.85rem] border border-white/10 bg-black/15 px-3">
-                  <span className="text-xs font-semibold uppercase tracking-[0.14em] text-mist">Controlar inventario</span>
-                  <button type="button" role="switch" aria-label={`Controlar inventario del componente ${index+1}`} aria-checked={component.controls_inventory} className={`relative h-7 w-12 shrink-0 rounded-full border transition ${component.controls_inventory?'border-cyanGlow/55 bg-cyanGlow/30':'border-white/15 bg-white/[0.06]'}`} onClick={()=>setComponents((current)=>current.map((row,i)=>i===index?{...row,controls_inventory:!row.controls_inventory,quantity_base:row.controls_inventory?'':row.quantity_base}:row))}><span className={`absolute top-1 h-[1.15rem] w-[1.15rem] rounded-full transition ${component.controls_inventory?'left-[1.55rem] bg-cyanGlow':'left-1 bg-mist'}`}/></button>
+                  <span className="text-[0.68rem] font-semibold uppercase leading-4 tracking-[0.12em] text-mist">Descontar del inventario automáticamente</span>
+                  <button type="button" role="switch" aria-label={`Descontar automáticamente el componente ${index+1}`} aria-checked={component.controls_inventory} className={`relative h-7 w-12 shrink-0 rounded-full border transition ${component.controls_inventory?'border-cyanGlow/55 bg-cyanGlow/30':'border-white/15 bg-white/[0.06]'}`} onClick={()=>setComponents((current)=>current.map((row,i)=>i===index?{...row,controls_inventory:!row.controls_inventory}:row))}><span className={`absolute top-1 h-[1.15rem] w-[1.15rem] rounded-full transition ${component.controls_inventory?'left-[1.55rem] bg-cyanGlow':'left-1 bg-mist'}`}/></button>
                 </div>
-                {component.controls_inventory?<Field label="Cantidad por producto"><div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2"><input aria-label={`Cantidad del componente ${index+1}`} className={inputClass} type="number" min="0.001" step="0.001" required value={component.quantity_base} onChange={(event)=>setComponents((current)=>current.map((row,i)=>i===index?{...row,quantity_base:event.target.value}:row))}/><span className="whitespace-nowrap text-xs text-mist">{selectedItem?inventoryUnitLabels[selectedItem.base_unit]:'Unidad base'}</span></div></Field>:<p className="rounded-[0.8rem] border border-amberGlow/15 bg-black/15 px-3 py-2 text-xs leading-5 text-amber-100">Este componente forma parte de la receta, pero no se descontará automáticamente.</p>}
               </div>
+              {!component.controls_inventory?<p className="mt-3 rounded-[0.8rem] border border-amberGlow/15 bg-black/15 px-3 py-2 text-xs leading-5 text-amber-100">{component.quantity_base===''?'Componente descriptivo sin cantidad definida. No se descontará ni podrá costearse automáticamente.':'Se usará para calcular el costo, pero no generará movimientos automáticos de inventario.'}</p>:null}
             </div>
           </div>;
         })}
       </div>
       <button type="button" className={ghostButton} onClick={()=>setComponents((current)=>[...current,{item_id:recipeItems[0]?.id??'',controls_inventory:true,quantity_base:''}])}>Añadir componente</button>
       <div className="rounded-[0.9rem] border border-white/10 bg-black/15 p-4 text-sm text-mist">
-        <p>{costSummary.hasControlled?(costSummary.hasDescriptive?'Costo controlado parcial':'Costo controlado'):'Sin componentes controlados'}: <strong className="text-ivory">{costSummary.hasControlled?(costSummary.cost==null?'Sin costo conocido':money(costSummary.cost)):'No calculable'}</strong>.</p>
-        <p className="mt-2 text-xs">Solo los componentes marcados para controlar inventario descuentan existencias y participan en este costo según la última compra real. El cambio afecta entregas futuras; cada consumo anterior conserva su receta y costo.</p>
+        <p>{costSummary.isPartial?'Costo calculado parcial':'Costo calculado'}: <strong className="text-ivory">{costSummary.cost==null?'Sin costo conocido':money(costSummary.cost)}</strong>.</p>
+        <p className="mt-2 text-xs">Todo componente con cantidad definida participa en el costo según la última compra real. Solo los marcados para descuento automático generan movimientos de inventario. El cambio afecta entregas futuras; cada consumo anterior conserva su receta y costo.</p>
       </div>
       <DialogButtons busy={busy} onClose={onClose} label="Guardar receta" disabled={invalid}/>
     </form>
