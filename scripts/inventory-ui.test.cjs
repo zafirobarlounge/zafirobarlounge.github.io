@@ -99,6 +99,9 @@ test('áreas configurables alimentan etiquetas, filtros y formularios sin volver
   const panel = readFileSync('src/admin/inventory/AreaInventoryPanel.tsx', 'utf8');
   const repository = readFileSync('src/admin/inventory/inventory.repository.ts', 'utf8');
   assert.match(view, /Áreas de inventario/);
+  assert.match(view, /<details className="group mt-6/);
+  assert.match(view, /<summary[^>]+>.*Áreas de inventario/s);
+  assert.match(view, /group-open:hidden/);
   assert.match(view, /data\.areas\.filter\(\(entry\)=>entry\.active\)/);
   assert.match(view, /inventoryAreaName\(data\.areas,entry\.area\)/);
   assert.match(view, /action:'save_area'/);
