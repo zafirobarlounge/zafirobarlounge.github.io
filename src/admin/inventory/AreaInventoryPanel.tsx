@@ -294,7 +294,7 @@ export function AreaInventoryPanel({ area }: { area: PosInventoryArea }) {
 
           {hasLoaded ? (
             <>
-              <div role="tablist" aria-label={`Tipo de inventario de ${areaLabel}`} className="mb-4 inline-flex rounded-full border border-white/10 bg-black/20 p-1">{(['consumable','operational'] as InventoryUsageType[]).map((value)=><button key={value} role="tab" aria-selected={usageType===value} className={`rounded-full px-4 py-2 text-xs font-semibold uppercase tracking-[0.14em] transition ${usageType===value?'bg-cyanGlow/14 text-cyanGlow':'text-mist hover:text-ivory'}`} onClick={()=>selectUsageType(value)}>{value==='consumable'?'Consumibles':'Operativos'}</button>)}</div>
+              <div role="tablist" aria-label={`Tipo de inventario de ${areaLabel}`} className="mb-4 grid w-full max-w-sm grid-cols-2 gap-1 rounded-[1rem] border border-white/12 bg-black/25 p-1.5">{(['consumable','operational'] as InventoryUsageType[]).map((value)=><button type="button" key={value} role="tab" aria-selected={usageType===value} className={`rounded-[0.75rem] border px-3 py-2.5 text-[0.68rem] font-semibold uppercase tracking-[0.12em] transition ${usageType===value?'border-cyanGlow/40 bg-cyanGlow/15 text-cyanGlow':'border-transparent bg-white/[0.025] text-mist hover:bg-white/[0.06] hover:text-ivory'}`} onClick={()=>selectUsageType(value)}>{value==='consumable'?'Consumibles':'Operativos'}</button>)}</div>
               <div className="mt-4 grid gap-3 rounded-[1.1rem] border border-white/10 bg-black/15 p-4 sm:grid-cols-2">
                 <Field label="Buscar artículo">
                   <input aria-label={`Buscar inventario de ${areaLabel}`} className={inputClass} value={search} onChange={(event) => setFilters((current)=>({...current,[usageType]:{...current[usageType],search:event.target.value}}))} placeholder="Nombre" />
@@ -338,7 +338,7 @@ export function AreaInventoryPanel({ area }: { area: PosInventoryArea }) {
                   </div> : null}
               </div>
 
-              {!items.length ? <div className="mt-5"><EmptyState message="No hay artículos que coincidan con la búsqueda y el filtro seleccionados." /></div> : null}
+              {!items.length ? <div className="mt-5"><EmptyState message={!data.items.length && usageType==='operational'?'No hay artículos operativos asignados a esta área. Los artículos existentes son Consumibles hasta que Administración cambie su Tipo de uso.':'No hay artículos que coincidan con la búsqueda y el filtro seleccionados.'} /></div> : null}
               {items.length ? (
                 <div className="mt-5 grid gap-3 sm:grid-cols-2 2xl:grid-cols-3">
                   {items.map((item) => <AreaInventoryItemCard key={item.id} item={item} onReport={(kind) => openReport(item, kind)} />)}

@@ -4,7 +4,7 @@ import type { InventoryImportPayload } from './inventory-import';
 
 export async function loadInventory(usageType: InventoryUsageType | null = null, area: InventoryArea | null = null): Promise<InventoryData> {
   const { data, error } = await getSupabaseClient().rpc('inventory_read' as never, { requested_usage_type: usageType, requested_area: area } as never);
-  if (error) throw new Error(`No se pudo cargar inventario: ${error.message}. Verifica que las migraciones 005 y 006 estén aplicadas en QA.`);
+  if (error) throw new Error(`No se pudo cargar inventario: ${error.message}. Verifica que la migración 015 esté aplicada en QA.`);
   return data as unknown as InventoryData;
 }
 
