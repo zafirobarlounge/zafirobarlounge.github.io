@@ -310,6 +310,18 @@ test("cajero consulta/exporta sin controles administrativos y enlace expande fue
     );
   }
 });
+test("la lista de jornadas inicia completamente contraída sin enlace directo", async () => {
+  const h = reportHarness({ query: null });
+  h.render();
+  await settle();
+  h.render();
+  await settle();
+  let tree = h.render();
+  nodes(tree, "select").find((node) => nodes(node, "option").some((option) => option.props.value === "all")).props.onChange({ target: { value: "all" } });
+  tree = h.render();
+  assert.match(text(tree), /Jornada antigua/);
+  assert.equal(nodes(tree, "finance").length, 0);
+});
 test("roles denegados no cargan datos; ID inexistente y error caja son explícitos y recuperables", async () => {
   for (const roles of [[], ["waiter"], ["kitchen"], ["bar"]]) {
     const h = reportHarness({ roles });

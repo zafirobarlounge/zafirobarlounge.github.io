@@ -160,7 +160,7 @@ export function AdminSalesSessionsView() {
           return current;
         }
 
-        return history.find((session) => session.status === 'closed')?.id ?? history[0]?.id ?? null;
+        return null;
       });
     } catch (error) {
       if (isMountedRef.current && requestId === loadRequestIdRef.current) {
@@ -209,7 +209,7 @@ export function AdminSalesSessionsView() {
     }
 
     if (expandedSessionId && !detailSessions.some((session) => session.id === expandedSessionId)) {
-      setExpandedSessionId(detailSessions[0].id);
+      setExpandedSessionId(null);
     }
   }, [expandedSessionId, detailSessions]);
 
