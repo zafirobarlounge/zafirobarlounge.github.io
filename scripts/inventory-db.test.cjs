@@ -59,6 +59,10 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
     sql(readFileSync('supabase/migrations/202609280009_inventory_receipt_request_application.sql', 'utf8'));
     sql(readFileSync('supabase/migrations/202609290010_inventory_history_pagination.sql', 'utf8'));
     sql(readFileSync('supabase/migrations/202609290011_dynamic_inventory_areas.sql', 'utf8'));
+    sql(`insert into public.menu_items(source_key,legacy_id,slug,hoja_origen,tipo,name,orden) values ('menu-legacy-recipe',8999,'legacy-recipe','test','Comida','Receta anterior',0);
+      insert into public.inventory_menu_tracking(menu_item_source_key,control_mode,updated_by) values('menu-legacy-recipe','complete','legacy@test.invalid');
+      insert into public.inventory_menu_recipe_components(menu_item_source_key,item_id,quantity_base,created_by,updated_by) values('menu-legacy-recipe','${legacyItemId}',1,'legacy@test.invalid','legacy@test.invalid');`);
+    sql(readFileSync('supabase/migrations/202609290012_inventory_recipe_component_control.sql', 'utf8'));
     sql(`insert into public.admin_users(email) values ('admin@test.invalid');
       insert into public.staff_profiles(email,full_name,is_active) values ('cashier@test.invalid','Caja',true),('bar@test.invalid','Bar',true),('kitchen@test.invalid','Cocina',true),('waiter@test.invalid','Mesero',true),('inactive@test.invalid','Inactivo',false);
       insert into public.staff_role_assignments(email,role) values ('cashier@test.invalid','cashier'),('bar@test.invalid','bar'),('kitchen@test.invalid','kitchen'),('waiter@test.invalid','waiter'),('inactive@test.invalid','cashier');
@@ -74,6 +78,8 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
       assert.equal(sql(`select count(*) from public.inventory_movements where item_id='${legacyItemId}';`), compatibilityBefore.movements);
       assert.equal(Number(sql(`select applied_submission_quantity from public.inventory_receipt_lines where receipt_id='${historicalReceiptId}';`)), 12);
       assert.equal(sql(`select count(*) from public.inventory_receipt_lines where item_id='${legacyItemId}' and applied_submission_quantity is not null;`), '0');
+      assert.equal(sql(`select controls_inventory||':'||(quantity_base=1) from public.inventory_menu_recipe_components where menu_item_source_key='menu-legacy-recipe';`), 'true:true');
+      assert.equal(sql(`select control_mode from public.inventory_menu_tracking where menu_item_source_key='menu-legacy-recipe';`), 'complete');
     });
     await t.test('áreas dinámicas conservan compatibilidad, permisos y límites POS', () => {
       assert.equal(sql(`select string_agg(code||':'||active||':'||operational||':'||system_protected,',' order by code) from public.inventory_areas;`), 'bar:true:true:true,kitchen:true:true:true,operations:true:false:false');
@@ -276,6 +282,65 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
       assert.equal(Number(sql(`select unit_cost_snapshot from public.inventory_movements where operation_key='void:return:${voidRequest}:${consumption.id}';`)), 24.95);
       assert.equal(Number(sql(`select tracked_value_delta from public.inventory_movements where operation_key='void:return:${voidRequest}:${consumption.id}';`)), 374.25);
       assert.equal(Number(sql(`select average_unit_cost from public.inventory_item_valuations where item_id='${sauce.id}';`)), 24.95);
+    });
+
+    await t.test('recetas mezclan componentes controlados y descriptivos sin inventar consumo ni costo', async () => {
+      const poker = command('admin@test.invalid', { action: 'save_item', name: 'Poker inventario', base_unit: 'unit', precision_scale: 0, areas: ['bar'] });
+      const tomato = command('admin@test.invalid', { action: 'save_item', name: 'Tomate descriptivo', base_unit: 'gram', precision_scale: 3, areas: ['kitchen'] });
+      command('cashier@test.invalid', { action: 'initial_count', item_id: poker.id, quantity: 0, reason: 'Inicio Poker' });
+      command('cashier@test.invalid', { action: 'initial_count', item_id: tomato.id, quantity: 0, reason: 'Inicio tomate' });
+      command('cashier@test.invalid', { action: 'receive', total_cost: 20000, lines: [{ item_id: poker.id, base_quantity: 10, line_total_cost: 20000 }] });
+      command('cashier@test.invalid', { action: 'receive', total_cost: 9000, lines: [{ item_id: tomato.id, base_quantity: 1000, line_total_cost: 9000 }] });
+      sql(`insert into public.menu_items(source_key,legacy_id,slug,hoja_origen,tipo,name,orden) values
+        ('menu-mixed-recipe',9010,'mixed-recipe','test','Comida','Hamburguesa mixta',10),
+        ('menu-poker-direct',9011,'poker-direct','test','Bebida','Poker',11),
+        ('menu-description-only',9012,'description-only','test','Comida','Producto descriptivo',12);`);
+
+      fails(login('admin@test.invalid') + `select public.inventory_command('${randomUUID()}',${quote(JSON.stringify({ action: 'save_recipe', menu_item_source_key: 'menu-mixed-recipe', components: [{ item_id: poker.id, controls_inventory: true, quantity_base: null }] }))}::jsonb);`, 'cantidad mayor que cero');
+      fails(login('admin@test.invalid') + `select public.inventory_command('${randomUUID()}',${quote(JSON.stringify({ action: 'save_recipe', menu_item_source_key: 'menu-mixed-recipe', components: [{ item_id: tomato.id, controls_inventory: false, quantity_base: 1 }] }))}::jsonb);`, 'no deben tener cantidad');
+      const operationsOnlyId = sql(`select id from public.inventory_items where name='Trapero';`);
+      fails(login('admin@test.invalid') + `select public.inventory_command('${randomUUID()}',${quote(JSON.stringify({ action: 'save_recipe', menu_item_source_key: 'menu-mixed-recipe', components: [{ item_id: operationsOnlyId, controls_inventory: false, quantity_base: null }] }))}::jsonb);`, 'Barra o Cocina');
+      fails(`insert into public.inventory_menu_recipe_components(menu_item_source_key,item_id,controls_inventory,quantity_base,created_by,updated_by) values('menu-mixed-recipe','${poker.id}',false,1,'x','x');`, 'inventory_menu_recipe_components_control_quantity_check');
+
+      command('admin@test.invalid', { action: 'save_recipe', menu_item_source_key: 'menu-mixed-recipe', components: [
+        { item_id: poker.id, controls_inventory: true, quantity_base: 1 },
+        { item_id: tomato.id, controls_inventory: false, quantity_base: null },
+      ] });
+      const recipeRows = JSON.parse(sql(login('admin@test.invalid') + 'select public.inventory_read();')).recipes.filter((row) => row.menu_item_source_key === 'menu-mixed-recipe');
+      assert.equal(recipeRows.length, 2);
+      assert.equal(recipeRows.find((row) => row.item_id === poker.id).controls_inventory, true);
+      assert.equal(Number(recipeRows.find((row) => row.item_id === poker.id).tracked_component_cost), 2000);
+      assert.equal(recipeRows.find((row) => row.item_id === tomato.id).controls_inventory, false);
+      assert.equal(recipeRows.find((row) => row.item_id === tomato.id).quantity_base, null);
+      assert.equal(recipeRows.find((row) => row.item_id === tomato.id).tracked_component_cost, null);
+      const mixedAlert = JSON.parse(sql(login('admin@test.invalid') + 'select public.inventory_menu_alerts();')).find((row) => row.menu_item_source_key === 'menu-mixed-recipe');
+      assert.equal(Number(mixedAlert.controlled_units_available), 10);
+
+      const mixedOrder = randomUUID(), mixedItem = randomUUID();
+      sql(login('waiter@test.invalid') + `insert into public.pos_orders(id,sales_session_id,opened_by_email) values('${mixedOrder}','${openSessionId}','waiter@test.invalid');
+        insert into public.pos_order_items(id,order_id,menu_item_source_key,product_name,product_slug,prep_area,quantity,unit_price,total_price,operational_status,ready_at,created_by_email) values('${mixedItem}','${mixedOrder}','menu-mixed-recipe','Hamburguesa mixta','mixed-recipe','kitchen',2,10000,20000,'ready',now(),'waiter@test.invalid');`);
+      const mixedDelivery = login('waiter@test.invalid') + `select public.inventory_deliver_pos_item('${mixedItem}',false);`;
+      await Promise.all([parallel(mixedDelivery), parallel(mixedDelivery)]);
+      assert.equal(sql(`select count(*) from public.inventory_pos_consumption_lines cl join public.inventory_pos_consumptions c on c.id=cl.consumption_id where c.pos_order_item_id='${mixedItem}';`), '1');
+      assert.equal(sql(`select count(*) from public.inventory_movements where order_item_id='${mixedItem}' and item_id='${poker.id}';`), '1');
+      assert.equal(sql(`select quantity_delta from public.inventory_movements where order_item_id='${mixedItem}' and item_id='${poker.id}';`), '-2.000');
+      assert.equal(sql(`select count(*) from public.inventory_movements where order_item_id='${mixedItem}' and item_id='${tomato.id}';`), '0');
+
+      command('admin@test.invalid', { action: 'save_recipe', menu_item_source_key: 'menu-poker-direct', components: [{ item_id: poker.id, controls_inventory: true, quantity_base: 1 }] });
+      const pokerOrder = randomUUID(), pokerOrderItem = randomUUID();
+      sql(login('waiter@test.invalid') + `insert into public.pos_orders(id,sales_session_id,opened_by_email) values('${pokerOrder}','${openSessionId}','waiter@test.invalid');
+        insert into public.pos_order_items(id,order_id,menu_item_source_key,product_name,product_slug,prep_area,quantity,unit_price,total_price,operational_status,ready_at,created_by_email) values('${pokerOrderItem}','${pokerOrder}','menu-poker-direct','Poker','poker-direct','bar',1,5000,5000,'ready',now(),'waiter@test.invalid');`);
+      sql(login('waiter@test.invalid') + `select public.inventory_deliver_pos_item('${pokerOrderItem}',false);`);
+      assert.equal(sql(`select quantity_delta from public.inventory_movements where order_item_id='${pokerOrderItem}';`), '-1.000');
+
+      command('admin@test.invalid', { action: 'save_recipe', menu_item_source_key: 'menu-description-only', components: [{ item_id: tomato.id, controls_inventory: false, quantity_base: null }] });
+      assert.equal(sql(login('admin@test.invalid') + `select count(*) from jsonb_array_elements(public.inventory_menu_alerts()) row where row->>'menu_item_source_key'='menu-description-only';`), '0');
+      const descriptiveOrder = randomUUID(), descriptiveOrderItem = randomUUID();
+      sql(login('waiter@test.invalid') + `insert into public.pos_orders(id,sales_session_id,opened_by_email) values('${descriptiveOrder}','${openSessionId}','waiter@test.invalid');
+        insert into public.pos_order_items(id,order_id,menu_item_source_key,product_name,product_slug,prep_area,quantity,unit_price,total_price,operational_status,ready_at,created_by_email) values('${descriptiveOrderItem}','${descriptiveOrder}','menu-description-only','Producto descriptivo','description-only','kitchen',1,5000,5000,'ready',now(),'waiter@test.invalid');`);
+      sql(login('waiter@test.invalid') + `select public.inventory_deliver_pos_item('${descriptiveOrderItem}',false);`);
+      assert.equal(sql(`select count(*) from public.inventory_pos_consumption_lines cl join public.inventory_pos_consumptions c on c.id=cl.consumption_id where c.pos_order_item_id='${descriptiveOrderItem}';`), '0');
+      assert.equal(sql(`select count(*) from public.inventory_movements where order_item_id='${descriptiveOrderItem}';`), '0');
     });
 
     await t.test('saldo negativo conserva costo, recepción reinicia promedio y ausencia de costo no inventa cero', () => {

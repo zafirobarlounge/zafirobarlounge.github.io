@@ -111,6 +111,30 @@ test('áreas configurables alimentan etiquetas, filtros y formularios sin volver
   assert.doesNotMatch(panel, /operations/);
 });
 
+test('receta distingue componentes controlados y descriptivos y calcula solo el costo controlado', () => {
+  const complete = JSON.parse(JSON.stringify(domain.exports.summarizeInventoryRecipeCost([
+    { active:true,controls_inventory:true,tracked_component_cost:2000 },
+    { active:true,controls_inventory:true,tracked_component_cost:800 },
+  ])));
+  assert.deepEqual(complete, { hasControlled:true,hasDescriptive:false,cost:2800 });
+  const partial = JSON.parse(JSON.stringify(domain.exports.summarizeInventoryRecipeCost([
+    { active:true,controls_inventory:true,tracked_component_cost:2000 },
+    { active:true,controls_inventory:false,tracked_component_cost:null },
+  ])));
+  assert.deepEqual(partial, { hasControlled:true,hasDescriptive:true,cost:2000 });
+  const descriptiveOnly = JSON.parse(JSON.stringify(domain.exports.summarizeInventoryRecipeCost([
+    { active:true,controls_inventory:false,tracked_component_cost:null },
+  ])));
+  assert.deepEqual(descriptiveOnly, { hasControlled:false,hasDescriptive:true,cost:null });
+  const view = readFileSync('src/admin/inventory/AdminInventoryView.tsx', 'utf8');
+  assert.match(view, /Controlar inventario/);
+  assert.match(view, /Este componente forma parte de la receta, pero no se descontará automáticamente/);
+  assert.match(view, /Costo controlado parcial/);
+  assert.match(view, /quantity_base:row\.controls_inventory\?Number\(row\.quantity_base\):null/);
+  assert.doesNotMatch(view, /Control completo de componentes medidos/);
+  assert.doesNotMatch(view, /<Field label="Cobertura">/);
+});
+
 test('mensajes operativos de inventario vencen y las validaciones permanecen visibles', () => {
   assert.equal(domain.exports.getInventoryMessageDuration(false), 5000);
   assert.equal(domain.exports.getInventoryMessageDuration(true), 8000);
@@ -203,7 +227,7 @@ test('interfaz muestra conversión congelada y separa recepción de gasto', () =
   assert.doesNotMatch(view, /Costo promedio rastreado/);
   assert.match(view, /Valor contable rastreado/);
   assert.match(view, /última compra real/);
-  assert.match(view, /solo incluye los componentes configurados/);
+  assert.match(view, /Solo los componentes marcados para controlar inventario/);
   assert.doesNotMatch(view, /costo total del plato/i);
   assert.doesNotMatch(view, /utilidad neta|margen neto/i);
 });
