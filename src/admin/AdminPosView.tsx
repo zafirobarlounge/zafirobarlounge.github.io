@@ -5616,20 +5616,61 @@ function InventoryVoidResolutionDialog({ value, busy, onChange, onClose, onConfi
   onClose: () => void;
   onConfirm: () => void;
 }) {
-  const update = (index: number, field: 'returned'|'waste'|'internal'|'client', next: string) => onChange({
-    ...value,
-    lines: value.lines.map((line, lineIndex) => lineIndex === index ? { ...line, [field]: next } : line),
-  });
+  const update = (index: number, field: InventoryVoidQuantityField, next: string) => {
+    const line = value.lines[index];
+    if (!line || !isInventoryVoidQuantityInput(next, line.base_unit)) return;
+    onChange({
+      ...value,
+      lines: value.lines.map((current, lineIndex) => lineIndex === index ? updateInventoryVoidAllocation(current, field, next) : current),
+    });
+  };
+  const canConfirm = value.lines.every((line) => calculateInventoryVoidAllocation(line).valid);
   return <div className="fixed inset-0 z-[100] flex items-end justify-center bg-black/75 p-3 sm:items-center" role="dialog" aria-modal="true">
     <div className="max-h-[92vh] w-full max-w-4xl overflow-y-auto rounded-[1.4rem] border border-white/12 bg-[#0d0d13] p-5 shadow-2xl sm:p-7">
-      <div className="flex items-start justify-between gap-3"><div><p className="text-xs uppercase tracking-[0.2em] text-amberGlow">Anulación después de entregar</p><h2 className="mt-2 font-display text-3xl text-ivory">Destino de los componentes</h2><p className="mt-2 text-sm text-mist">1 × {value.item.productName}. La suma de cada fila debe coincidir con su cantidad consumida.</p></div><button type="button" className={ghostButtonClassName} onClick={onClose}>Cerrar</button></div>
-      {value.lines.length ? <div className="mt-6 space-y-4">{value.lines.map((line,index) => <article key={line.consumption_line_id} className="rounded-[1rem] border border-white/10 bg-white/[0.035] p-4"><div className="flex flex-wrap justify-between gap-2"><strong className="text-ivory">{line.item_name}</strong><span className="text-sm text-cyanGlow">Total: {line.quantity} {inventoryUnitLabelsForPos[line.base_unit]}</span></div><div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4"><Field label="Regresa disponible"><input className={inputClassName} type="number" min="0" step="0.001" value={line.returned} onChange={(e)=>update(index,'returned',e.target.value)} /></Field><Field label="Merma"><input className={inputClassName} type="number" min="0" step="0.001" value={line.waste} onChange={(e)=>update(index,'waste',e.target.value)} /></Field><Field label="Interno / cortesía"><input className={inputClassName} type="number" min="0" step="0.001" value={line.internal} onChange={(e)=>update(index,'internal',e.target.value)} /></Field><Field label="Consumido por cliente"><input className={inputClassName} type="number" min="0" step="0.001" value={line.client} onChange={(e)=>update(index,'client',e.target.value)} /></Field></div></article>)}</div> : <p className="mt-6 rounded-[1rem] border border-white/10 bg-white/[0.03] p-4 text-sm text-mist">Este producto no tenía componentes de inventario configurados al entregarse. La anulación financiera no moverá existencias.</p>}
-      <p className="mt-5 text-sm text-mist">Motivo: {value.reason}</p><div className="mt-6 flex flex-wrap justify-end gap-2"><button type="button" className={ghostButtonClassName} onClick={onClose}>Cancelar</button><button type="button" disabled={busy} className={dangerButtonClassName} onClick={onConfirm}>{busy ? 'Guardando…' : 'Confirmar anulación y destino'}</button></div>
+      <div className="flex items-start justify-between gap-3"><div><p className="text-xs uppercase tracking-[0.2em] text-amberGlow">Anulación después de entregar</p><h2 className="mt-2 font-display text-3xl text-ivory">Destino de los componentes</h2><p className="mt-2 text-sm text-mist">1 × {value.item.productName}. Indica qué ocurrió con cada componente. Lo que asignes a devolución, merma o interno se resta automáticamente de “Consumido por cliente”.</p></div><button type="button" className={ghostButtonClassName} onClick={onClose}>Cerrar</button></div>
+      {value.lines.length ? <div className="mt-6 space-y-4">{value.lines.map((line,index) => { const allocation=calculateInventoryVoidAllocation(line); const step=line.base_unit==='unit'?'1':'0.001'; return <article key={line.consumption_line_id} className="rounded-[1rem] border border-white/10 bg-white/[0.035] p-4"><div className="flex flex-wrap justify-between gap-2"><strong className="text-ivory">{line.item_name}</strong><span className="text-sm text-cyanGlow">Total consumido: {formatInventoryVoidQuantity(Number(line.quantity),line.base_unit)}</span></div><div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4"><Field label="Regresa disponible"><input className={inputClassName} type="number" inputMode={line.base_unit==='unit'?'numeric':'decimal'} min="0" max={line.quantity} step={step} value={line.returned} onChange={(e)=>update(index,'returned',e.target.value)} /></Field><Field label="Merma"><input className={inputClassName} type="number" inputMode={line.base_unit==='unit'?'numeric':'decimal'} min="0" max={line.quantity} step={step} value={line.waste} onChange={(e)=>update(index,'waste',e.target.value)} /></Field><Field label="Interno / cortesía"><input className={inputClassName} type="number" inputMode={line.base_unit==='unit'?'numeric':'decimal'} min="0" max={line.quantity} step={step} value={line.internal} onChange={(e)=>update(index,'internal',e.target.value)} /></Field><Field label="Consumido por cliente"><input className={inputClassName} type="number" inputMode={line.base_unit==='unit'?'numeric':'decimal'} min="0" max={line.quantity} step={step} value={line.client} onChange={(e)=>update(index,'client',e.target.value)} /></Field></div><p className={`mt-3 text-sm ${allocation.valid?'text-emerald-200':'text-rose-200'}`}>{allocation.valid?`Distribución completa: ${formatInventoryVoidQuantity(allocation.assigned,line.base_unit)}.`:allocation.remaining>0?`Falta asignar ${formatInventoryVoidQuantity(allocation.remaining,line.base_unit)}.`:`La distribución excede el total por ${formatInventoryVoidQuantity(Math.abs(allocation.remaining),line.base_unit)}.`}</p></article>; })}</div> : <p className="mt-6 rounded-[1rem] border border-white/10 bg-white/[0.03] p-4 text-sm text-mist">Este producto no tenía componentes de inventario configurados al entregarse. La anulación financiera no moverá existencias.</p>}
+      <p className="mt-5 text-sm text-mist">Motivo: {value.reason}</p><div className="mt-6 flex flex-wrap justify-end gap-2"><button type="button" className={ghostButtonClassName} onClick={onClose}>Cancelar</button><button type="button" disabled={busy||!canConfirm} className={dangerButtonClassName} onClick={onConfirm}>{busy ? 'Guardando…' : 'Confirmar anulación y destino'}</button></div>
     </div>
   </div>;
 }
 
 const inventoryUnitLabelsForPos = { unit: 'unidad(es)', gram: 'g', milliliter: 'ml' } as const;
+
+type InventoryVoidQuantityField = 'returned'|'waste'|'internal'|'client';
+
+function inventoryVoidQuantityPrecision(baseUnit: PosConsumptionResolutionLine['base_unit']) {
+  return baseUnit === 'unit' ? 0 : 3;
+}
+
+function isInventoryVoidQuantityInput(value: string, baseUnit: PosConsumptionResolutionLine['base_unit']) {
+  if (value === '') return true;
+  const precision = inventoryVoidQuantityPrecision(baseUnit);
+  return precision === 0 ? /^\d+$/.test(value) : new RegExp(`^\\d*(?:\\.\\d{0,${precision}})?$`).test(value);
+}
+
+function roundInventoryVoidQuantity(value: number, baseUnit: PosConsumptionResolutionLine['base_unit']) {
+  const factor = 10 ** inventoryVoidQuantityPrecision(baseUnit);
+  return Math.round((value + Number.EPSILON) * factor) / factor;
+}
+
+function formatInventoryVoidQuantity(value: number, baseUnit: PosConsumptionResolutionLine['base_unit']) {
+  return `${new Intl.NumberFormat('es-CO', { maximumFractionDigits: inventoryVoidQuantityPrecision(baseUnit) }).format(value)} ${inventoryUnitLabelsForPos[baseUnit]}`;
+}
+
+function calculateInventoryVoidAllocation(line: InventoryVoidAllocation) {
+  const assigned = roundInventoryVoidQuantity(Number(line.returned||0)+Number(line.waste||0)+Number(line.internal||0)+Number(line.client||0),line.base_unit);
+  const remaining = roundInventoryVoidQuantity(Number(line.quantity)-assigned,line.base_unit);
+  const values=[line.returned,line.waste,line.internal,line.client].map((entry)=>Number(entry||0));
+  return { assigned, remaining, valid: values.every((entry)=>Number.isFinite(entry)&&entry>=0)&&remaining===0 };
+}
+
+function updateInventoryVoidAllocation(line: InventoryVoidAllocation, field: InventoryVoidQuantityField, next: string) {
+  const updated={...line,[field]:next};
+  if(field==='client') return updated;
+  const assignedElsewhere=Number(updated.returned||0)+Number(updated.waste||0)+Number(updated.internal||0);
+  updated.client=String(roundInventoryVoidQuantity(Math.max(Number(line.quantity)-assignedElsewhere,0),line.base_unit));
+  return updated;
+}
 
 function InventoryAvailabilityNotice({ alert }: { alert: InventoryMenuAlert }) {
   const message = alert.has_uncounted

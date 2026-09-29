@@ -38,6 +38,24 @@ test('POS vende productos disponibles aunque no estén visibles en la web', () =
   assert.doesNotMatch(loader, /menu_items_public|visible/);
 });
 
+test('anulación entregada respeta la unidad base y mantiene completa la distribución', () => {
+  const accepts = loadNamedHelpers(posPath, ['inventoryVoidQuantityPrecision', 'isInventoryVoidQuantityInput']);
+  assert.equal(accepts('1', 'unit'), true);
+  assert.equal(accepts('0.005', 'unit'), false);
+  assert.equal(accepts('0.005', 'gram'), true);
+  assert.equal(accepts('0.0005', 'gram'), false);
+
+  const update = loadNamedHelpers(posPath, ['inventoryVoidQuantityPrecision', 'roundInventoryVoidQuantity', 'updateInventoryVoidAllocation']);
+  const unitLine = { quantity: 1, base_unit: 'unit', returned: '', waste: '', internal: '', client: '1' };
+  assert.deepEqual(plain(update(unitLine, 'returned', '1')), { ...unitLine, returned: '1', client: '0' });
+  const gramLine = { quantity: 110, base_unit: 'gram', returned: '', waste: '', internal: '', client: '110' };
+  assert.deepEqual(plain(update(gramLine, 'waste', '5.125')), { ...gramLine, waste: '5.125', client: '104.875' });
+
+  const calculate = loadNamedHelpers(posPath, ['inventoryVoidQuantityPrecision', 'roundInventoryVoidQuantity', 'calculateInventoryVoidAllocation']);
+  assert.deepEqual(plain(calculate(update(unitLine, 'returned', '1'))), { assigned: 1, remaining: 0, valid: true });
+  assert.deepEqual(plain(calculate({ ...unitLine, returned: '1', client: '1' })), { assigned: 2, remaining: -1, valid: false });
+});
+
 function evaluate(source, context) {
   const compiled = ts.transpileModule(source, {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, jsx: ts.JsxEmit.ReactJSX },
