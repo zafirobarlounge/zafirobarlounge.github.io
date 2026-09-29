@@ -59,7 +59,7 @@ test('Caja ordena por prioridad operativa y conserva orden alfabético dentro de
   ];
   assert.deepEqual(Array.from(domain.exports.filterInventoryStockItems(items,'','all','all','operational_priority'), (item) => item.id), ['uncounted','depleted','low','pending-a','pending-z','normal-a','normal-z']);
   const view = readFileSync('src/admin/inventory/AdminInventoryView.tsx', 'utf8');
-  assert.match(view, /useState<InventoryStockOrder>\('operational_priority'\)/);
+  assert.match(view, /operational:\{search:'',area:'all',status:'all',order:'operational_priority'\}/);
   assert.match(view, /<option value="operational_priority">Prioridad operativa<\/option>/);
 });
 
@@ -106,9 +106,23 @@ test('áreas configurables alimentan etiquetas, filtros y formularios sin volver
   assert.match(view, /inventoryAreaName\(data\.areas,entry\.area\)/);
   assert.match(view, /action:'save_area'/);
   assert.match(repository, /requested_area: area/);
-  assert.match(view, /recipeItems=data\.items\.filter\(\(item\)=>item\.areas\.includes\('bar'\)\|\|item\.areas\.includes\('kitchen'\)\)/);
+  assert.match(view, /usage_type\?\?'consumable'.*item\.areas\.includes\('bar'\).*item\.areas\.includes\('kitchen'\)/);
   assert.match(panel, /PosInventoryArea/);
   assert.doesNotMatch(panel, /operations/);
+});
+
+test('tipos de uso separan cargas y limitan recetas desde UI y PostgreSQL', () => {
+  const view = readFileSync('src/admin/inventory/AdminInventoryView.tsx', 'utf8');
+  const repository = readFileSync('src/admin/inventory/inventory.repository.ts', 'utf8');
+  const migration = readFileSync('supabase/migrations/202609290015_inventory_item_usage_type.sql', 'utf8');
+  assert.match(view, /useState<InventoryUsageType>\('consumable'\)/);
+  assert.match(view, /Consumibles/);
+  assert.match(view, /Operativos/);
+  assert.match(view, /Tipo de uso/);
+  assert.match(repository, /requested_usage_type: usageType/);
+  assert.match(migration, /usage_type text not null default 'consumable'/);
+  assert.match(migration, /Las recetas solo admiten articulos consumibles/);
+  assert.match(migration, /i\.usage_type='consumable'/);
 });
 
 test('receta separa componentes medidos del descuento automatico y calcula su costo', () => {

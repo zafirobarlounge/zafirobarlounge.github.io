@@ -1,4 +1,5 @@
 export type InventoryUnit = 'unit' | 'gram' | 'milliliter';
+export type InventoryUsageType = 'consumable' | 'operational';
 export type InventoryArea = string;
 export type PosInventoryArea = 'bar' | 'kitchen';
 export type InventorySubmissionKind = 'replenishment' | 'count' | 'damage';
@@ -21,6 +22,7 @@ export interface InventoryItem {
   import_code?: string | null;
   name: string;
   active: boolean;
+  usage_type: InventoryUsageType;
   base_unit: InventoryUnit;
   precision_scale: number;
   minimum_quantity: number | null;
@@ -33,6 +35,11 @@ export interface InventoryItem {
   inventory_value: number | null;
   areas: InventoryArea[];
 }
+
+export const inventoryUsageTypeLabels: Record<InventoryUsageType, string> = {
+  consumable: 'Consumible',
+  operational: 'Operativo',
+};
 
 export interface InventoryPresentation {
   id: string;

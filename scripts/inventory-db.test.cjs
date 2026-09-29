@@ -65,6 +65,7 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
     sql(readFileSync('supabase/migrations/202609290012_inventory_recipe_component_control.sql', 'utf8'));
     sql(readFileSync('supabase/migrations/202609290013_inventory_recipe_cost_quantity.sql', 'utf8'));
     sql(readFileSync('supabase/migrations/202609290014_inventory_pending_submissions_filter.sql', 'utf8'));
+    sql(readFileSync('supabase/migrations/202609290015_inventory_item_usage_type.sql', 'utf8'));
     sql(`insert into public.admin_users(email) values ('admin@test.invalid');
       insert into public.staff_profiles(email,full_name,is_active) values ('cashier@test.invalid','Caja',true),('bar@test.invalid','Bar',true),('kitchen@test.invalid','Cocina',true),('waiter@test.invalid','Mesero',true),('inactive@test.invalid','Inactivo',false);
       insert into public.staff_role_assignments(email,role) values ('cashier@test.invalid','cashier'),('bar@test.invalid','bar'),('kitchen@test.invalid','kitchen'),('waiter@test.invalid','waiter'),('inactive@test.invalid','cashier');
@@ -82,10 +83,32 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
       assert.equal(sql(`select count(*) from public.inventory_receipt_lines where item_id='${legacyItemId}' and applied_submission_quantity is not null;`), '0');
       assert.equal(sql(`select controls_inventory||':'||(quantity_base=1) from public.inventory_menu_recipe_components where menu_item_source_key='menu-legacy-recipe';`), 'true:true');
       assert.equal(sql(`select control_mode from public.inventory_menu_tracking where menu_item_source_key='menu-legacy-recipe';`), 'complete');
+      assert.equal(sql(`select usage_type from public.inventory_items where id='${legacyItemId}';`), 'consumable');
+    });
+    await t.test('consumibles y operativos se separan y las recetas rechazan operativos', () => {
+      const operational = command('admin@test.invalid', { action:'save_item',name:'Cuchara de prueba',base_unit:'unit',precision_scale:0,usage_type:'operational',areas:['kitchen'] });
+      assert.equal(operational.usage_type, 'operational');
+      command('admin@test.invalid', { action:'initial_count',item_id:operational.id,quantity:10,reason:'Conteo operativo' });
+      command('cashier@test.invalid', { action:'receive',supplier:'Proveedor',lines:[{ item_id:operational.id,base_quantity:2 }] });
+      command('kitchen@test.invalid', { action:'submit',kind:'replenishment',area:'kitchen',status:'sent',lines:[{ item_id:operational.id,requested_quantity:3 }] });
+      command('kitchen@test.invalid', { action:'submit',kind:'count',area:'kitchen',status:'sent',lines:[{ item_id:operational.id,observed_quantity:12 }] });
+      command('kitchen@test.invalid', { action:'submit',kind:'damage',area:'kitchen',status:'sent',lines:[{ item_id:operational.id,requested_quantity:1,notes:'Rota' }] });
+      assert.equal(Number(sql(`select current_quantity from public.inventory_item_valuations where item_id='${operational.id}';`)), 12);
+      fails(login('admin@test.invalid')+`select public.inventory_command('${randomUUID()}',${quote(JSON.stringify({ action:'save_recipe',menu_item_source_key:'menu-burger',components:[{item_id:operational.id,controls_inventory:true,quantity_base:1}] }))}::jsonb);`, 'Las recetas solo admiten articulos consumibles');
+      const consumable = command('admin@test.invalid', { action:'save_item',name:'Pan receta tipo',base_unit:'unit',precision_scale:0,usage_type:'consumable',areas:['kitchen'] });
+      command('admin@test.invalid', { action:'save_recipe',menu_item_source_key:'menu-burger',components:[{item_id:consumable.id,controls_inventory:true,quantity_base:1}] });
+      fails(login('admin@test.invalid')+`select public.inventory_command('${randomUUID()}',${quote(JSON.stringify({ action:'save_item',id:consumable.id,name:'Pan receta tipo',active:true,usage_type:'operational',minimum_quantity:null,target_quantity:null,areas:['kitchen'] }))}::jsonb);`, 'No puedes cambiar a operativo');
+      const consumableRead=JSON.parse(sql(login('cashier@test.invalid')+`select public.inventory_read('consumable',null);`));
+      const operationalRead=JSON.parse(sql(login('cashier@test.invalid')+`select public.inventory_read('operational','kitchen');`));
+      assert.ok(consumableRead.items.some((item)=>item.id===consumable.id));
+      assert.ok(!consumableRead.items.some((item)=>item.id===operational.id));
+      assert.deepEqual(operationalRead.items.map((item)=>item.id), [operational.id]);
+      assert.equal(JSON.parse(sql(login('bar@test.invalid')+`select public.inventory_read('operational','bar');`)).items.length, 0);
+      assert.equal(operationalRead.items[0].last_unit_cost, null);
     });
     await t.test('áreas dinámicas conservan compatibilidad, permisos y límites POS', () => {
       assert.equal(sql(`select string_agg(code||':'||active||':'||operational||':'||system_protected,',' order by code) from public.inventory_areas;`), 'bar:true:true:true,kitchen:true:true:true,operations:true:false:false');
-      assert.equal(sql(`select count(*) from public.inventory_submissions where area in ('bar','kitchen');`), '1');
+      assert.equal(sql(`select count(*) from public.inventory_submissions where id='${historicalSubmissionId}';`), '1');
       const warehouse = command('admin@test.invalid', { action: 'save_area', code: 'warehouse', name: 'Bodega', active: true });
       assert.equal(warehouse.code, 'warehouse');
       const renamed = command('admin@test.invalid', { action: 'save_area', id: warehouse.id, code: 'ignored', name: 'Bodega principal', active: true });

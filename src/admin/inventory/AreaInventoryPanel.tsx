@@ -16,6 +16,7 @@ import {
   type InventoryReplenishmentPresentationSnapshot,
   type InventorySubmission,
   type InventorySubmissionKind,
+  type InventoryUsageType,
   type PosInventoryArea,
 } from './inventory.domain';
 import { loadInventory, loadInventoryRecentSubmissions, saveInventoryCommand } from './inventory.repository';
@@ -118,11 +119,12 @@ export function AreaInventoryPanel({ area }: { area: PosInventoryArea }) {
   const [recentReportsExpanded, setRecentReportsExpanded] = useState(false);
   const [data, setData] = useState<InventoryData>(emptyData);
   const [hasLoaded, setHasLoaded] = useState(false);
+  const [usageType, setUsageType] = useState<InventoryUsageType>('consumable');
+  const inventoryCache = useRef<Partial<Record<InventoryUsageType, InventoryData>>>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [search, setSearch] = useState('');
-  const [status, setStatus] = useState<AreaInventoryStatusFilter>('all');
+  const [filters, setFilters] = useState<Record<InventoryUsageType,{search:string;status:AreaInventoryStatusFilter}>>({ consumable: { search: '', status: 'all' }, operational: { search: '', status: 'all' } });
   const [report, setReport] = useState<{ item: InventoryItem; kind: InventorySubmissionKind } | null>(null);
   const [quantity, setQuantity] = useState('');
   const [notes, setNotes] = useState('');
@@ -130,16 +132,20 @@ export function AreaInventoryPanel({ area }: { area: PosInventoryArea }) {
   const [saving, setSaving] = useState(false);
   const [recentSubmissions, setRecentSubmissions] = useState<InventorySubmission[]>([]);
   const loadingRef = useRef(false);
+  const { search, status } = filters[usageType];
   const deferredSearch = useDeferredValue(search);
   const areaLabel = area === 'bar' ? 'Bar' : 'Cocina';
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (force = false) => {
     if (loadingRef.current) return;
+    const cached = inventoryCache.current[usageType];
+    if (!force && cached) { setData(cached); setHasLoaded(true); return; }
     loadingRef.current = true;
     setLoading(true);
     setError(null);
     try {
-      const [inventory, reports] = await Promise.all([loadInventory(), loadInventoryRecentSubmissions(area)]);
+      const [inventory, reports] = await Promise.all([loadInventory(usageType, area), loadInventoryRecentSubmissions(area)]);
+      inventoryCache.current[usageType] = inventory;
       setData(inventory);
       setRecentSubmissions(reports);
       setHasLoaded(true);
@@ -149,7 +155,8 @@ export function AreaInventoryPanel({ area }: { area: PosInventoryArea }) {
       loadingRef.current = false;
       setLoading(false);
     }
-  }, [area]);
+  }, [area, usageType]);
+  useEffect(() => { if (expanded) void refresh(); }, [expanded, refresh]);
 
   const summary = useMemo(() => summarizeAreaInventory(data.items, area), [area, data.items]);
   const items = useMemo(
@@ -173,6 +180,13 @@ export function AreaInventoryPanel({ area }: { area: PosInventoryArea }) {
     }
     setExpanded(true);
     if (action === 'open-and-load') void refresh();
+  };
+
+  const selectUsageType = (next: InventoryUsageType) => {
+    const cached = inventoryCache.current[next];
+    if (cached) { setData(cached); setHasLoaded(true); }
+    else setHasLoaded(false);
+    setUsageType(next);
   };
 
   const openReport = (item: InventoryItem, kind: InventorySubmissionKind) => {
@@ -240,7 +254,8 @@ export function AreaInventoryPanel({ area }: { area: PosInventoryArea }) {
       setReport(null);
       setQuantity('');
       setNotes('');
-      await refresh();
+      inventoryCache.current = {};
+      await refresh(true);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'No se pudo enviar el reporte.');
     } finally {
@@ -260,9 +275,9 @@ export function AreaInventoryPanel({ area }: { area: PosInventoryArea }) {
           <p className="mt-2 text-sm text-mist">{summaryText}</p>
         </div>
         <div className="flex items-center gap-2 self-end sm:self-auto">
-          {expanded && hasLoaded ? <button type="button" aria-label="Recargar inventario" title="Recargar inventario" className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-white/12 bg-white/[0.05] text-cyanGlow transition hover:border-cyanGlow/30 hover:bg-cyanGlow/10 disabled:cursor-wait disabled:opacity-50" disabled={loading} onClick={() => void refresh()}><RefreshCw aria-hidden="true" className={`h-4 w-4 ${loading?'animate-spin':''}`}/></button> : null}
+          {expanded && hasLoaded ? <button type="button" aria-label="Recargar inventario" title="Recargar inventario" className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-white/12 bg-white/[0.05] text-cyanGlow transition hover:border-cyanGlow/30 hover:bg-cyanGlow/10 disabled:cursor-wait disabled:opacity-50" disabled={loading} onClick={() => void refresh(true)}><RefreshCw aria-hidden="true" className={`h-4 w-4 ${loading?'animate-spin':''}`}/></button> : null}
           <button type="button" aria-expanded={expanded} className={ghostButton} onClick={toggleInventory}>
-            {expanded ? 'Ocultar inventario' : 'Ver inventario'}
+            {expanded ? 'Ocultar' : 'Ver inventario'}
           </button>
         </div>
       </div>
@@ -279,19 +294,20 @@ export function AreaInventoryPanel({ area }: { area: PosInventoryArea }) {
 
           {hasLoaded ? (
             <>
+              <div role="tablist" aria-label={`Tipo de inventario de ${areaLabel}`} className="mb-4 inline-flex rounded-full border border-white/10 bg-black/20 p-1">{(['consumable','operational'] as InventoryUsageType[]).map((value)=><button key={value} role="tab" aria-selected={usageType===value} className={`rounded-full px-4 py-2 text-xs font-semibold uppercase tracking-[0.14em] transition ${usageType===value?'bg-cyanGlow/14 text-cyanGlow':'text-mist hover:text-ivory'}`} onClick={()=>selectUsageType(value)}>{value==='consumable'?'Consumibles':'Operativos'}</button>)}</div>
               <div className="mt-4 grid gap-3 rounded-[1.1rem] border border-white/10 bg-black/15 p-4 sm:grid-cols-2">
                 <Field label="Buscar artículo">
-                  <input aria-label={`Buscar inventario de ${areaLabel}`} className={inputClass} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Nombre" />
+                  <input aria-label={`Buscar inventario de ${areaLabel}`} className={inputClass} value={search} onChange={(event) => setFilters((current)=>({...current,[usageType]:{...current[usageType],search:event.target.value}}))} placeholder="Nombre" />
                 </Field>
                 <Field label="Estado">
-                  <select aria-label={`Filtrar inventario de ${areaLabel} por estado`} className={inputClass} value={status} onChange={(event) => setStatus(event.target.value as AreaInventoryStatusFilter)}>
+                  <select aria-label={`Filtrar inventario de ${areaLabel} por estado`} className={inputClass} value={status} onChange={(event) => setFilters((current)=>({...current,[usageType]:{...current[usageType],status:event.target.value as AreaInventoryStatusFilter}}))}>
                     <option value="all">Todos</option>
                     <option value="low">Bajo mínimo</option>
                     <option value="depleted">Agotados</option>
                     <option value="uncounted">Sin conteo inicial</option>
                   </select>
                 </Field>
-                <p className="text-xs text-mist sm:col-span-2">Mostrando {items.length} de {summary.total} artículos asignados a {areaLabel.toLowerCase()}. Orden: sin conteo, agotados, bajo mínimo, reposición pendiente y disponibles.</p>
+                <p className="text-xs text-mist sm:col-span-2">Orden: sin conteo, agotados, bajo mínimo, reposición pendiente y disponibles.</p>
               </div>
 
               <div className="mt-5 rounded-[1.1rem] border border-white/10 bg-white/[0.02] p-4">

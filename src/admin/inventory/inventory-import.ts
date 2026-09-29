@@ -2,12 +2,14 @@ import * as XLSX from 'xlsx';
 
 export type ImportUnit = 'unit' | 'gram' | 'milliliter';
 export type ImportArea = string;
+export type ImportUsageType = 'consumable' | 'operational';
 
 export interface InventoryImportArticle {
   code: string;
   name: string;
   area: ImportArea;
   base_unit: ImportUnit;
+  usage_type: ImportUsageType;
   initial_quantity: number | null;
   initial_unit_cost: number | null;
   minimum_quantity: number | null;
@@ -45,13 +47,14 @@ export interface ParsedInventoryImport {
 }
 
 export const inventoryImportHeaders = {
-  Articulos: ['codigo', 'nombre', 'area', 'unidad_base', 'existencia_inicial', 'costo_unitario_inicial', 'minimo', 'objetivo', 'observaciones'],
+  Articulos: ['codigo', 'nombre', 'area', 'unidad_base', 'tipo_uso', 'existencia_inicial', 'costo_unitario_inicial', 'minimo', 'objetivo', 'observaciones'],
   Presentaciones: ['codigo_articulo', 'presentacion', 'contenido', 'unidad', 'costo_sugerido', 'observaciones'],
   ConsumoMenu: ['producto_menu', 'codigo_articulo', 'cantidad_base', 'unidad', 'tipo_control'],
   Pendientes: ['articulo_relacion', 'dato_faltante', 'motivo'],
 } as const;
 
 const units: Record<string, ImportUnit> = { unidad: 'unit', gramo: 'gram', mililitro: 'milliliter' };
+const usageTypes: Record<string, ImportUsageType> = { consumible: 'consumable', consumable: 'consumable', operativo: 'operational', operational: 'operational' };
 const normalizeAreaPart = (value: string) => value.trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase('es-CO');
 function normalizeAreaSpec(value: unknown): ImportArea | null {
   const raw = text(value);
@@ -83,7 +86,7 @@ function rows(workbook: XLSX.WorkBook, sheetName: keyof typeof inventoryImportHe
   const matrix = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: null, raw: true });
   const headers = (matrix[0] ?? []).map((value) => text(value));
   const expected = inventoryImportHeaders[sheetName];
-  const missing = expected.filter((column) => !headers.includes(column));
+  const missing = expected.filter((column) => column !== 'tipo_uso' && !headers.includes(column));
   if (missing.length) errors.push(`${sheetName}: faltan columnas ${missing.join(', ')}.`);
   return matrix.slice(1).map((values) => Object.fromEntries(headers.map((header, index) => [header, values[index]])))
     .filter((row) => Object.values(row).some((value) => text(value) !== ''));
@@ -103,6 +106,8 @@ export function parseInventoryWorkbook(input: ArrayBuffer | Uint8Array): ParsedI
     const code = key(row.codigo), name = text(row.nombre);
     const area = normalizeAreaSpec(row.area);
     const baseUnit = units[text(row.unidad_base).toLowerCase()];
+    const rawUsageType = text(row.tipo_uso).toLowerCase();
+    const usageType = rawUsageType ? usageTypes[rawUsageType] : 'consumable';
     const initialQuantity = optionalNumber(row.existencia_inicial, `${prefix}, existencia_inicial`, errors);
     const initialCost = optionalNumber(row.costo_unitario_inicial, `${prefix}, costo_unitario_inicial`, errors);
     const minimum = optionalNumber(row.minimo, `${prefix}, minimo`, errors);
@@ -110,9 +115,10 @@ export function parseInventoryWorkbook(input: ArrayBuffer | Uint8Array): ParsedI
     if (!code || !name) errors.push(`${prefix}: código y nombre son obligatorios.`);
     if (!area) errors.push(`${prefix}: el área es obligatoria.`);
     if (!baseUnit) errors.push(`${prefix}: unidad inválida; usa unidad, gramo o mililitro.`);
+    if (!usageType) errors.push(`${prefix}: tipo_uso inválido; usa consumible u operativo.`);
     if ([initialQuantity, initialCost, minimum, target].some((value) => value != null && value < 0)) errors.push(`${prefix}: cantidades y costos no pueden ser negativos.`);
     if (minimum != null && target != null && target < minimum) errors.push(`${prefix}: objetivo no puede ser menor que mínimo.`);
-    return { code, name, area: area ?? 'both', base_unit: baseUnit ?? 'unit', initial_quantity: initialQuantity, initial_unit_cost: initialCost, minimum_quantity: minimum, target_quantity: target, notes: text(row.observaciones) };
+    return { code, name, area: area ?? 'both', base_unit: baseUnit ?? 'unit', usage_type: usageType ?? 'consumable', initial_quantity: initialQuantity, initial_unit_cost: initialCost, minimum_quantity: minimum, target_quantity: target, notes: text(row.observaciones) };
   });
 
   const costsWithoutCount = articles.filter((article) => article.initial_quantity == null && article.initial_unit_cost != null).length;
@@ -148,6 +154,7 @@ export function parseInventoryWorkbook(input: ArrayBuffer | Uint8Array): ParsedI
     if (mode !== 'parcial') errors.push(`${prefix}: tipo_control debe ser parcial.`);
     const article = articleByCode.get(itemCode);
     if (!article) errors.push(`${prefix}: no existe el artículo ${itemCode} en el archivo.`);
+    else if (article.usage_type === 'operational') errors.push(`${prefix}: el artículo ${itemCode} es operativo y no puede asociarse al consumo del menú.`);
     else if (unit && article.base_unit !== unit) errors.push(`${prefix}: ${text(row.unidad)} no coincide con la unidad base de ${itemCode}; tajadas, tiras, hojas y rodajas requieren conversión explícita.`);
     return { menu_item_source_key: sourceKey, item_code: itemCode, quantity_base: quantity ?? 0, unit: unit ?? 'unit', control_mode: 'partial' };
   });

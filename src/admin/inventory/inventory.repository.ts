@@ -1,9 +1,9 @@
 import { getSupabaseClient } from '../../integrations/supabase/client';
-import type { InventoryArea, InventoryCursor, InventoryCursorPage, InventoryData, InventoryMenuAlert, InventoryMovement, InventoryReceipt, InventorySubmission, InventorySubmissionKind, PosInventoryArea } from './inventory.domain';
+import type { InventoryArea, InventoryCursor, InventoryCursorPage, InventoryData, InventoryMenuAlert, InventoryMovement, InventoryReceipt, InventorySubmission, InventorySubmissionKind, InventoryUsageType, PosInventoryArea } from './inventory.domain';
 import type { InventoryImportPayload } from './inventory-import';
 
-export async function loadInventory(): Promise<InventoryData> {
-  const { data, error } = await getSupabaseClient().rpc('inventory_read' as never);
+export async function loadInventory(usageType: InventoryUsageType | null = null, area: InventoryArea | null = null): Promise<InventoryData> {
+  const { data, error } = await getSupabaseClient().rpc('inventory_read' as never, { requested_usage_type: usageType, requested_area: area } as never);
   if (error) throw new Error(`No se pudo cargar inventario: ${error.message}. Verifica que las migraciones 005 y 006 estén aplicadas en QA.`);
   return data as unknown as InventoryData;
 }

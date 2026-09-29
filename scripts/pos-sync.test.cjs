@@ -123,7 +123,7 @@ test('Bar y Cocina integran inventario operativo sin costos ni acciones administ
   const panel = readFileSync(path.join(root, areaInventoryPath), 'utf8');
   for (const text of ['Inventario del área', 'Solicitar', 'Contar', 'Daño', 'Reportes recientes del área', 'Unidad base']) assert.match(panel, new RegExp(text));
   for (const forbidden of ['last_unit_cost', 'average_unit_cost', 'inventory_value', 'Registrar entrada', 'Conteo / corregir', "action: 'receive'", "action: 'correction'", "action: 'initial_count'"]) assert.doesNotMatch(panel, new RegExp(forbidden.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
-  assert.match(panel, /loadInventory\(\)/);
+  assert.match(panel, /loadInventory\(usageType, area\)/);
   assert.match(panel, /loadInventoryRecentSubmissions\(area\)/);
   assert.match(panel, /saveInventoryCommand/);
   assert.doesNotMatch(panel, /submission\.area === area/);
@@ -148,13 +148,13 @@ test('inventario del área inicia cerrado y solo solicita datos al primer despli
   const panel = readFileSync(path.join(root, areaInventoryPath), 'utf8');
   assert.match(panel, /const \[expanded, setExpanded\] = useState\(false\)/);
   assert.match(panel, /if \(action === 'open-and-load'\) void refresh\(\)/);
-  assert.doesNotMatch(panel, /useEffect\(\(\) => \{\s*void refresh/);
-  assert.match(panel, /expanded \? 'Ocultar inventario' : 'Ver inventario'/);
+  assert.match(panel, /if \(expanded\) void refresh\(\)/);
+  assert.match(panel, /expanded \? 'Ocultar' : 'Ver inventario'/);
   assert.match(panel, /aria-label="Recargar inventario" title="Recargar inventario"/);
   assert.match(panel, /<RefreshCw aria-hidden="true"/);
   assert.match(panel, /loading\?'animate-spin':''/);
   assert.equal((panel.match(/\{summaryText\}/g) ?? []).length, 1);
-  assert.match(panel, /await saveInventoryCommand[\s\S]*await refresh\(\)/);
+  assert.match(panel, /await saveInventoryCommand[\s\S]*await refresh\(true\)/);
 });
 
 test('mensajes del inventario del área usan los tiempos definidos en POS', () => {
@@ -187,8 +187,8 @@ test('contenido desplegado prioriza reportes y evita duplicar Sin conteo inicial
   assert.match(panel, /Reposición pendiente/);
   assert.match(panel, /Orden: sin conteo, agotados, bajo mínimo, reposición pendiente y disponibles/);
   assert.match(panel, /formatInventoryQuantity\(item\.balance/);
-  assert.match(panel, /onChange=\{\(event\) => setSearch\(event\.target\.value\)\}/);
-  assert.match(panel, /onChange=\{\(event\) => setStatus\(event\.target\.value as AreaInventoryStatusFilter\)\}/);
+  assert.match(panel, /search:event\.target\.value/);
+  assert.match(panel, /status:event\.target\.value as AreaInventoryStatusFilter/);
 });
 
 function loadRepository(client) {

@@ -25,7 +25,7 @@ const workbookBuffer = (sheets) => {
 test('plantilla contiene las cuatro hojas y los encabezados exactos', () => {
   const workbook = createInventoryTemplateWorkbook();
   assert.deepEqual(Array.from(workbook.SheetNames), ['Articulos','Presentaciones','ConsumoMenu','Pendientes']);
-  assert.deepEqual(Array.from(XLSX.utils.sheet_to_json(workbook.Sheets.Articulos, { header: 1 })[0]), ['codigo','nombre','area','unidad_base','existencia_inicial','costo_unitario_inicial','minimo','objetivo','observaciones']);
+  assert.deepEqual(Array.from(XLSX.utils.sheet_to_json(workbook.Sheets.Articulos, { header: 1 })[0]), ['codigo','nombre','area','unidad_base','tipo_uso','existencia_inicial','costo_unitario_inicial','minimo','objetivo','observaciones']);
 });
 
 test('lee varias hojas, omite filas vacías y conserva vacío como null', () => {
@@ -39,8 +39,24 @@ test('lee varias hojas, omite filas vacías y conserva vacío como null', () => 
   assert.equal(parsed.payload.articles.length, 1);
   assert.equal(parsed.payload.articles[0].initial_quantity, null);
   assert.equal(parsed.payload.articles[0].initial_unit_cost, null);
+  assert.equal(parsed.payload.articles[0].usage_type, 'consumable');
   assert.equal(parsed.payload.presentations.length, 2);
   assert.equal(parsed.payload.presentations[0].suggested_package_cost, null);
+});
+
+test('normaliza tipos de uso y rechaza operativos en recetas', () => {
+  const buffer = workbookBuffer({
+    Articulos: [
+      {codigo:'PAN',nombre:'Pan',area:'cocina',unidad_base:'unidad',tipo_uso:'consumible'},
+      {codigo:'CUCHARA',nombre:'Cuchara',area:'cocina',unidad_base:'unidad',tipo_uso:'operational'},
+    ],
+    Presentaciones: [],
+    ConsumoMenu: [{producto_menu:'comida::prueba::1',codigo_articulo:'CUCHARA',cantidad_base:1,unidad:'unidad',tipo_control:'parcial'}],
+  });
+  const parsed = parseInventoryWorkbook(buffer);
+  assert.equal(parsed.payload.articles[0].usage_type, 'consumable');
+  assert.equal(parsed.payload.articles[1].usage_type, 'operational');
+  assert.ok(parsed.errors.some((value) => value.includes('operativo')));
 });
 
 test('detecta duplicados, claves libres y conversiones incompatibles', () => {
