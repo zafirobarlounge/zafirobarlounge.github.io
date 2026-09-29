@@ -128,6 +128,8 @@ test('receta distingue componentes controlados y descriptivos y calcula solo el 
   assert.deepEqual(descriptiveOnly, { hasControlled:false,hasDescriptive:true,cost:null });
   const view = readFileSync('src/admin/inventory/AdminInventoryView.tsx', 'utf8');
   assert.match(view, /Controlar inventario/);
+  assert.match(view, /role="switch"/);
+  assert.match(view, /aria-checked=\{component\.controls_inventory\}/);
   assert.match(view, /Este componente forma parte de la receta, pero no se descontará automáticamente/);
   assert.match(view, /Costo controlado parcial/);
   assert.match(view, /quantity_base:row\.controls_inventory\?Number\(row\.quantity_base\):null/);
