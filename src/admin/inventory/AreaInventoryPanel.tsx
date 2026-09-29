@@ -1,4 +1,5 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { RefreshCw } from 'lucide-react';
 import {
   formatConfiguredInventoryQuantity,
   formatInventoryQuantity,
@@ -258,9 +259,12 @@ export function AreaInventoryPanel({ area }: { area: PosInventoryArea }) {
           <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyanGlow/80">Inventario del área</p>
           <p className="mt-2 text-sm text-mist">{summaryText}</p>
         </div>
-        <button type="button" aria-expanded={expanded} className={ghostButton} onClick={toggleInventory}>
-          {expanded ? 'Ocultar inventario' : 'Ver inventario'}
-        </button>
+        <div className="flex items-center gap-2 self-end sm:self-auto">
+          {expanded && hasLoaded ? <button type="button" aria-label="Recargar inventario" title="Recargar inventario" className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-white/12 bg-white/[0.05] text-cyanGlow transition hover:border-cyanGlow/30 hover:bg-cyanGlow/10 disabled:cursor-wait disabled:opacity-50" disabled={loading} onClick={() => void refresh()}><RefreshCw aria-hidden="true" className={`h-4 w-4 ${loading?'animate-spin':''}`}/></button> : null}
+          <button type="button" aria-expanded={expanded} className={ghostButton} onClick={toggleInventory}>
+            {expanded ? 'Ocultar inventario' : 'Ver inventario'}
+          </button>
+        </div>
       </div>
 
       {expanded ? (
@@ -275,11 +279,6 @@ export function AreaInventoryPanel({ area }: { area: PosInventoryArea }) {
 
           {hasLoaded ? (
             <>
-              <div className="flex flex-wrap items-center justify-between gap-3 rounded-[1rem] border border-cyanGlow/15 bg-cyanGlow/[0.05] px-4 py-3">
-                <p className="text-sm font-medium text-ivory">{summaryText}</p>
-                <button type="button" className={ghostButton} disabled={loading} onClick={() => void refresh()}>{loading ? 'Recargando…' : 'Recargar inventario'}</button>
-              </div>
-
               <div className="mt-4 grid gap-3 rounded-[1.1rem] border border-white/10 bg-black/15 p-4 sm:grid-cols-2">
                 <Field label="Buscar artículo">
                   <input aria-label={`Buscar inventario de ${areaLabel}`} className={inputClass} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Nombre" />

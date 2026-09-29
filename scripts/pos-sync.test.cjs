@@ -150,8 +150,10 @@ test('inventario del área inicia cerrado y solo solicita datos al primer despli
   assert.match(panel, /if \(action === 'open-and-load'\) void refresh\(\)/);
   assert.doesNotMatch(panel, /useEffect\(\(\) => \{\s*void refresh/);
   assert.match(panel, /expanded \? 'Ocultar inventario' : 'Ver inventario'/);
-  assert.match(panel, /disabled=\{loading\} onClick=\{\(\) => void refresh\(\)\}/);
-  assert.match(panel, /loading \? 'Recargando…' : 'Recargar inventario'/);
+  assert.match(panel, /aria-label="Recargar inventario" title="Recargar inventario"/);
+  assert.match(panel, /<RefreshCw aria-hidden="true"/);
+  assert.match(panel, /loading\?'animate-spin':''/);
+  assert.equal((panel.match(/\{summaryText\}/g) ?? []).length, 1);
   assert.match(panel, /await saveInventoryCommand[\s\S]*await refresh\(\)/);
 });
 
