@@ -361,9 +361,10 @@ test('solicitudes abren en pendientes y filtran estados terminales desde Postgre
   assert.match(requests, /useState<'pending'\|'all'>\('pending'\)/);
   assert.match(requests, /<Field label="Vista">[\s\S]*?<option value="pending">Pendientes<\/option><option value="all">Todos<\/option>/);
   assert.match(requests, /status==='all'\?\(scope==='pending'\?'pending':null\):status/);
-  assert.match(requests, /'draft','sent','partially_approved','approved','partially_received'/);
+  assert.match(requests, /'sent','partially_approved','approved','partially_received'/);
+  assert.doesNotMatch(requests.match(/const pendingStatuses=\[[^\]]+\]/)?.[0] ?? '', /draft/);
   assert.match(requests, /scope==='all'\|\|pendingStatuses\.includes\(value\)/);
-  assert.match(migration, /requested_status='pending' and s\.status in \('draft','sent','partially_approved','approved','partially_received'\)/);
+  assert.match(migration, /requested_status='pending' and s\.status in \('sent','partially_approved','approved','partially_received'\)/);
   assert.match(migration, /order by s\.created_at desc,s\.id desc limit 21/);
 });
 

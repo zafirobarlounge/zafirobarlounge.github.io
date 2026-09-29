@@ -16,7 +16,7 @@ begin
       'lines',(select coalesce(jsonb_agg(jsonb_build_object('id',l.id,'item_id',l.item_id,'item_name',i.name,'requested_quantity',l.requested_quantity,'observed_quantity',l.observed_quantity,'approved_quantity',l.approved_quantity,'received_quantity',l.received_quantity,'reference_balance',l.reference_balance,'reference_at',l.reference_at,'notes',l.notes) order by l.id),'[]'::jsonb) from public.inventory_submission_lines l join public.inventory_items i on i.id=l.item_id where l.submission_id=s.id)) row_data
     from public.inventory_submissions s
     where (requested_kind is null or s.kind=requested_kind)
-      and (requested_status is null or (requested_status='pending' and s.status in ('draft','sent','partially_approved','approved','partially_received')) or (requested_status<>'pending' and s.status=requested_status))
+      and (requested_status is null or (requested_status='pending' and s.status in ('sent','partially_approved','approved','partially_received')) or (requested_status<>'pending' and s.status=requested_status))
       and (requested_area is null or s.area=requested_area)
       and (costs or lower(s.created_by)=public.inventory_actor_email() or exists(select 1 from public.staff_role_assignments r where lower(r.email)=public.inventory_actor_email() and r.role=s.area))
       and (before_created_at is null or (s.created_at,s.id)<(before_created_at,before_id))

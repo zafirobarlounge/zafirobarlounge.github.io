@@ -544,6 +544,8 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
       submissionSql.push(`insert into public.inventory_submissions(id,request_id,kind,area,status,created_at,created_by) values('${countSubmissionId}','${randomUUID()}','count','bar','rejected','2026-09-30T22:31:00Z','bar@test.invalid'); insert into public.inventory_submission_lines(id,submission_id,item_id,observed_quantity,notes) values('${randomUUID()}','${countSubmissionId}','${pageItem.id}',1,'fixture');`);
       const pendingSubmissionId = randomUUID();
       submissionSql.push(`insert into public.inventory_submissions(id,request_id,kind,area,status,created_at,created_by) values('${pendingSubmissionId}','${randomUUID()}','replenishment','bar','sent','2026-09-30T22:32:00Z','bar@test.invalid'); insert into public.inventory_submission_lines(id,submission_id,item_id,requested_quantity,notes) values('${randomUUID()}','${pendingSubmissionId}','${pageItem.id}',1,'fixture pending');`);
+      const draftSubmissionId = randomUUID();
+      submissionSql.push(`insert into public.inventory_submissions(id,request_id,kind,area,status,created_at,created_by) values('${draftSubmissionId}','${randomUUID()}','replenishment','bar','draft','2026-09-30T22:33:00Z','bar@test.invalid'); insert into public.inventory_submission_lines(id,submission_id,item_id,requested_quantity,notes) values('${randomUUID()}','${draftSubmissionId}','${pageItem.id}',1,'fixture draft');`);
       sql(submissionSql.join('\n'));
       const firstSubmissions = JSON.parse(sql(login('cashier@test.invalid') + "select public.inventory_submissions_page('damage','rejected',null,null);"));
       assert.equal(firstSubmissions.rows.length, 20);
@@ -558,8 +560,10 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
       assert.ok(countFiltered.rows.every((row) => row.kind === 'count' && row.status === 'rejected'));
       const pendingFiltered = JSON.parse(sql(login('cashier@test.invalid') + "select public.inventory_submissions_page(null,'pending',null,null);"));
       assert.ok(pendingFiltered.rows.some((row) => row.id === pendingSubmissionId));
-      assert.ok(pendingFiltered.rows.every((row) => ['draft','sent','partially_approved','approved','partially_received'].includes(row.status)));
-      assert.ok(!pendingFiltered.rows.some((row) => rejectedDamageIds.includes(row.id) || row.id === countSubmissionId));
+      assert.ok(pendingFiltered.rows.every((row) => ['sent','partially_approved','approved','partially_received'].includes(row.status)));
+      assert.ok(!pendingFiltered.rows.some((row) => rejectedDamageIds.includes(row.id) || row.id === countSubmissionId || row.id === draftSubmissionId));
+      const allFiltered = JSON.parse(sql(login('cashier@test.invalid') + 'select public.inventory_submissions_page(null,null,null,null);'));
+      assert.ok(allFiltered.rows.some((row) => row.id === draftSubmissionId));
       const recentBar = JSON.parse(sql(login('bar@test.invalid') + "select public.inventory_recent_submissions('bar');"));
       assert.equal(recentBar.length, 8);
       assert.ok(recentBar.every((row) => row.area === 'bar'));
