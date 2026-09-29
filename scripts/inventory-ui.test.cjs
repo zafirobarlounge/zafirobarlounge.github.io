@@ -59,7 +59,7 @@ test('Caja ordena por prioridad operativa y conserva orden alfabético dentro de
   ];
   assert.deepEqual(Array.from(domain.exports.filterInventoryStockItems(items,'','all','all','operational_priority'), (item) => item.id), ['uncounted','depleted','low','pending-a','pending-z','normal-a','normal-z']);
   const view = readFileSync('src/admin/inventory/AdminInventoryView.tsx', 'utf8');
-  assert.match(view, /operational:\{search:'',area:'all',status:'all',order:'operational_priority'\}/);
+  assert.match(view, /useState<InventoryStockOrder>\('operational_priority'\)/);
   assert.match(view, /<option value="operational_priority">Prioridad operativa<\/option>/);
 });
 
@@ -115,7 +115,9 @@ test('tipos de uso separan cargas y limitan recetas desde UI y PostgreSQL', () =
   const view = readFileSync('src/admin/inventory/AdminInventoryView.tsx', 'utf8');
   const repository = readFileSync('src/admin/inventory/inventory.repository.ts', 'utf8');
   const migration = readFileSync('supabase/migrations/202609290015_inventory_item_usage_type.sql', 'utf8');
-  assert.match(view, /useState<InventoryUsageType>\('consumable'\)/);
+  assert.match(view, /useState<InventoryUsageType \| 'all'>\('all'\)/);
+  assert.match(view, /aria-label="Filtrar existencias por tipo"/);
+  assert.match(view, /<option value="all">Todos<\/option><option value="consumable">Consumibles<\/option><option value="operational">Operativos<\/option>/);
   assert.match(view, /Consumibles/);
   assert.match(view, /Operativos/);
   assert.match(view, /Tipo de uso/);
