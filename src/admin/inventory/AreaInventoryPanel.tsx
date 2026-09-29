@@ -16,20 +16,11 @@ import {
   type InventorySubmissionKind,
 } from './inventory.domain';
 import { loadInventory, loadInventoryRecentSubmissions, saveInventoryCommand } from './inventory.repository';
+import { InventoryStatusBadge } from './InventoryStatusBadge';
 
 export type AreaInventoryStatusFilter = 'all' | 'low' | 'depleted' | 'uncounted';
 export type AreaInventoryItemState = Exclude<AreaInventoryStatusFilter, 'all'> | 'available';
 export type AreaInventoryToggleAction = 'close' | 'open' | 'open-and-load';
-
-const statusLabels: Record<string, string> = {
-  approved: 'Aprobada',
-  draft: 'Borrador',
-  partially_approved: 'Aprobación parcial',
-  partially_received: 'Recibida parcialmente',
-  received: 'Recibida',
-  rejected: 'Rechazada',
-  sent: 'Enviada',
-};
 
 const emptyData: InventoryData = {
   can_manage: false,
@@ -317,7 +308,7 @@ export function AreaInventoryPanel({ area }: { area: InventoryArea }) {
                                 {quantityValue == null ? 'Cantidad sin registrar' : item ? formatInventoryQuantity(quantityValue, item.base_unit, item.precision_scale) : String(quantityValue)} · {formatDateTime(submission.created_at)}
                               </p>
                             </div>
-                            <span className="rounded-full border border-white/10 px-2.5 py-1 text-[0.65rem] text-cyanGlow">{statusLabels[submission.status] ?? submission.status}</span>
+                            <InventoryStatusBadge status={submission.status} />
                           </div>
                         </article>
                       );

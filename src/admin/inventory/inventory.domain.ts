@@ -1,6 +1,7 @@
 export type InventoryUnit = 'unit' | 'gram' | 'milliliter';
 export type InventoryArea = 'bar' | 'kitchen';
 export type InventorySubmissionKind = 'replenishment' | 'count' | 'damage';
+export type InventorySubmissionStatus = 'draft' | 'sent' | 'partially_approved' | 'approved' | 'partially_received' | 'received' | 'rejected';
 export type InventoryStockAreaFilter = 'all' | InventoryArea;
 export type InventoryStockStatusFilter = 'all' | 'uncounted' | 'low' | 'depleted' | 'in_stock';
 export type InventoryStockOrder = 'name_asc' | 'name_desc';
@@ -58,7 +59,7 @@ export interface InventorySubmission {
   id: string;
   kind: InventorySubmissionKind;
   area: InventoryArea;
-  status: string;
+  status: InventorySubmissionStatus;
   sales_session_id: string | null;
   notes: string;
   created_at: string;

@@ -264,3 +264,21 @@ test('migracion 010 pagina historiales en PostgreSQL y la UI consume sus RPC', (
   assert.doesNotMatch(adminView, /mercanc\?a|administraci\?n|p\?gina|m\?s|l\?nea|presentaci\?n|da\?os|tu \?rea|Reposici\?n|Da\?o|revisi\?n|Art\?culo|Operaci\?n|exportaci\?n/);
   assert.equal(domain.exports.inventoryMonthValue(new Date('2026-09-28T12:00:00Z')), '2026-09');
 });
+
+test('estados de solicitudes reutilizan una pildora visual central con indicador de color', () => {
+  const badge = readFileSync('src/admin/inventory/InventoryStatusBadge.tsx', 'utf8');
+  const adminView = readFileSync('src/admin/inventory/AdminInventoryView.tsx', 'utf8');
+  const areaPanel = readFileSync('src/admin/inventory/AreaInventoryPanel.tsx', 'utf8');
+  for (const status of ['draft','sent','partially_approved','approved','partially_received','received','rejected']) {
+    assert.match(badge, new RegExp(`${status}:`));
+  }
+  for (const tone of ['text-mist','text-cyanGlow','text-amber-100','text-emerald-200','text-orange-200','text-emerald-100','text-rose-100']) {
+    assert.match(badge, new RegExp(tone));
+  }
+  assert.match(badge, /rounded-full border/);
+  assert.match(badge, /aria-hidden="true"/);
+  assert.match(badge, /h-1\.5 w-1\.5 shrink-0 rounded-full bg-current/);
+  assert.match(adminView, /<InventoryStatusBadge status=\{entry\.status\}/);
+  assert.match(areaPanel, /<InventoryStatusBadge status=\{submission\.status\}/);
+  assert.match(adminView, /Object\.entries\(inventoryStatusLabels\)/);
+});

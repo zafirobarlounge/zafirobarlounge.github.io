@@ -106,7 +106,7 @@ test('Bar y Cocina integran inventario operativo sin costos ni acciones administ
   assert.match(panel, /loadInventoryRecentSubmissions\(area\)/);
   assert.match(panel, /saveInventoryCommand/);
   assert.doesNotMatch(panel, /submission\.area === area/);
-  assert.match(panel, /statusLabels\[submission\.status\]/);
+  assert.match(panel, /<InventoryStatusBadge status=\{submission\.status\}/);
   assert.doesNotMatch(panel, /setInterval|poll/i);
   assert.match(panel, /presentations\.filter\(\(presentation\) => presentation\.active/);
   assert.match(panel, /Solicitud directa en unidad base/);
