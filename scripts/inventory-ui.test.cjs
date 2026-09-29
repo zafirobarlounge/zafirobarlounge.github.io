@@ -256,5 +256,9 @@ test('migracion 010 pagina historiales en PostgreSQL y la UI consume sus RPC', (
   assert.match(adminView, /type="month"/);
   assert.match(adminView, /Anterior/);
   assert.match(adminView, /Siguiente/);
+  assert.match(adminView, /disabled=\{loading\|\|page===0\}/);
+  assert.match(adminView, /disabled=\{loading\|\|!hasMore\}/);
+  assert.match(adminView, /Última página/);
+  assert.match(adminView, /disabled:cursor-not-allowed/);
   assert.equal(domain.exports.inventoryMonthValue(new Date('2026-09-28T12:00:00Z')), '2026-09');
 });
