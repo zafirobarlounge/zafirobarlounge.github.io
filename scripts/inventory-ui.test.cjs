@@ -94,6 +94,20 @@ test('nuevo reporte limita artículos al área elegida incluso para administraci
   assert.doesNotMatch(view, /data\.can_manage\|\|item\.areas\.includes\(selectedArea\)/);
 });
 
+test('áreas configurables alimentan etiquetas, filtros y formularios sin volver dinámico el POS', () => {
+  const view = readFileSync('src/admin/inventory/AdminInventoryView.tsx', 'utf8');
+  const panel = readFileSync('src/admin/inventory/AreaInventoryPanel.tsx', 'utf8');
+  const repository = readFileSync('src/admin/inventory/inventory.repository.ts', 'utf8');
+  assert.match(view, /Áreas de inventario/);
+  assert.match(view, /data\.areas\.filter\(\(entry\)=>entry\.active\)/);
+  assert.match(view, /inventoryAreaName\(data\.areas,entry\.area\)/);
+  assert.match(view, /action:'save_area'/);
+  assert.match(repository, /requested_area: area/);
+  assert.match(view, /recipeItems=data\.items\.filter\(\(item\)=>item\.areas\.includes\('bar'\)\|\|item\.areas\.includes\('kitchen'\)\)/);
+  assert.match(panel, /PosInventoryArea/);
+  assert.doesNotMatch(panel, /operations/);
+});
+
 test('mensajes operativos de inventario vencen y las validaciones permanecen visibles', () => {
   assert.equal(domain.exports.getInventoryMessageDuration(false), 5000);
   assert.equal(domain.exports.getInventoryMessageDuration(true), 8000);

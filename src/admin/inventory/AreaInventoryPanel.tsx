@@ -15,6 +15,7 @@ import {
   type InventoryReplenishmentPresentationSnapshot,
   type InventorySubmission,
   type InventorySubmissionKind,
+  type PosInventoryArea,
 } from './inventory.domain';
 import { loadInventory, loadInventoryRecentSubmissions, saveInventoryCommand } from './inventory.repository';
 import { InventoryStatusBadge } from './InventoryStatusBadge';
@@ -27,6 +28,7 @@ const emptyData: InventoryData = {
   can_manage: false,
   can_configure: false,
   pending_review_count: 0,
+  areas: [],
   items: [],
   presentations: [],
   recipes: [],
@@ -110,7 +112,7 @@ function getSubmissionQuantity(submission: InventorySubmission) {
   return submission.kind === 'count' ? line.observed_quantity : line.requested_quantity;
 }
 
-export function AreaInventoryPanel({ area }: { area: InventoryArea }) {
+export function AreaInventoryPanel({ area }: { area: PosInventoryArea }) {
   const [expanded, setExpanded] = useState(false);
   const [recentReportsExpanded, setRecentReportsExpanded] = useState(false);
   const [data, setData] = useState<InventoryData>(emptyData);

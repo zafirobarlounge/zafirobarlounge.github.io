@@ -1,7 +1,7 @@
 import * as XLSX from 'xlsx';
 
 export type ImportUnit = 'unit' | 'gram' | 'milliliter';
-export type ImportArea = 'bar' | 'kitchen' | 'both';
+export type ImportArea = string;
 
 export interface InventoryImportArticle {
   code: string;
@@ -52,7 +52,21 @@ export const inventoryImportHeaders = {
 } as const;
 
 const units: Record<string, ImportUnit> = { unidad: 'unit', gramo: 'gram', mililitro: 'milliliter' };
-const areas: Record<string, ImportArea> = { barra: 'bar', cocina: 'kitchen', ambas: 'both' };
+const normalizeAreaPart = (value: string) => value.trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase('es-CO');
+function normalizeAreaSpec(value: unknown): ImportArea | null {
+  const raw = text(value);
+  if (!raw) return null;
+  const normalized = normalizeAreaPart(raw);
+  if (normalized === 'ambas' || normalized === 'both') return 'both';
+  const parts = raw.split(/\s*[+,;]\s*/).map((part) => part.trim()).filter(Boolean);
+  if (!parts.length) return null;
+  return parts.map((part) => {
+    const partKey = normalizeAreaPart(part);
+    if (partKey === 'barra') return 'bar';
+    if (partKey === 'cocina') return 'kitchen';
+    return part;
+  }).join('+');
+}
 const text = (value: unknown) => value == null ? '' : String(value).trim();
 const key = (value: unknown) => text(value).toUpperCase();
 
@@ -87,14 +101,14 @@ export function parseInventoryWorkbook(input: ArrayBuffer | Uint8Array): ParsedI
   const articles: InventoryImportArticle[] = articleRows.map((row, index) => {
     const prefix = `Articulos fila ${index + 2}`;
     const code = key(row.codigo), name = text(row.nombre);
-    const area = areas[text(row.area).toLowerCase()];
+    const area = normalizeAreaSpec(row.area);
     const baseUnit = units[text(row.unidad_base).toLowerCase()];
     const initialQuantity = optionalNumber(row.existencia_inicial, `${prefix}, existencia_inicial`, errors);
     const initialCost = optionalNumber(row.costo_unitario_inicial, `${prefix}, costo_unitario_inicial`, errors);
     const minimum = optionalNumber(row.minimo, `${prefix}, minimo`, errors);
     const target = optionalNumber(row.objetivo, `${prefix}, objetivo`, errors);
     if (!code || !name) errors.push(`${prefix}: código y nombre son obligatorios.`);
-    if (!area) errors.push(`${prefix}: área inválida; usa barra, cocina o ambas.`);
+    if (!area) errors.push(`${prefix}: el área es obligatoria.`);
     if (!baseUnit) errors.push(`${prefix}: unidad inválida; usa unidad, gramo o mililitro.`);
     if ([initialQuantity, initialCost, minimum, target].some((value) => value != null && value < 0)) errors.push(`${prefix}: cantidades y costos no pueden ser negativos.`);
     if (minimum != null && target != null && target < minimum) errors.push(`${prefix}: objetivo no puede ser menor que mínimo.`);

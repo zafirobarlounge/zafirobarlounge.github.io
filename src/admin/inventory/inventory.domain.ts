@@ -1,10 +1,20 @@
 export type InventoryUnit = 'unit' | 'gram' | 'milliliter';
-export type InventoryArea = 'bar' | 'kitchen';
+export type InventoryArea = string;
+export type PosInventoryArea = 'bar' | 'kitchen';
 export type InventorySubmissionKind = 'replenishment' | 'count' | 'damage';
 export type InventorySubmissionStatus = 'draft' | 'sent' | 'partially_approved' | 'approved' | 'partially_received' | 'received' | 'rejected';
 export type InventoryStockAreaFilter = 'all' | InventoryArea;
 export type InventoryStockStatusFilter = 'all' | 'uncounted' | 'low' | 'depleted' | 'in_stock';
 export type InventoryStockOrder = 'operational_priority' | 'name_asc' | 'name_desc';
+
+export interface InventoryAreaDefinition {
+  id: string;
+  code: InventoryArea;
+  name: string;
+  active: boolean;
+  operational: boolean;
+  system_protected: boolean;
+}
 
 export interface InventoryItem {
   id: string;
@@ -133,6 +143,7 @@ export interface InventoryData {
   can_manage: boolean;
   can_configure: boolean;
   pending_review_count: number;
+  areas: InventoryAreaDefinition[];
   items: InventoryItem[];
   presentations: InventoryPresentation[];
   recipes: InventoryRecipe[];
@@ -140,6 +151,10 @@ export interface InventoryData {
   submissions: InventorySubmission[];
   receipts: InventoryReceipt[];
   movements: InventoryMovement[];
+}
+
+export function inventoryAreaName(areas: InventoryAreaDefinition[], code: InventoryArea) {
+  return areas.find((area) => area.code === code)?.name ?? code;
 }
 
 export interface InventoryCursorPage<T> {

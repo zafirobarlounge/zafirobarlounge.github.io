@@ -58,6 +58,7 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
       insert into public.inventory_receipt_lines(receipt_id,item_id,base_quantity,unit_cost,submission_line_id,line_total_cost,base_unit_cost) values('${historicalReceiptId}','${historicalItemId}',12,1000,'${historicalSubmissionLineId}',12000,1000);`);
     sql(readFileSync('supabase/migrations/202609280009_inventory_receipt_request_application.sql', 'utf8'));
     sql(readFileSync('supabase/migrations/202609290010_inventory_history_pagination.sql', 'utf8'));
+    sql(readFileSync('supabase/migrations/202609290011_dynamic_inventory_areas.sql', 'utf8'));
     sql(`insert into public.admin_users(email) values ('admin@test.invalid');
       insert into public.staff_profiles(email,full_name,is_active) values ('cashier@test.invalid','Caja',true),('bar@test.invalid','Bar',true),('kitchen@test.invalid','Cocina',true),('waiter@test.invalid','Mesero',true),('inactive@test.invalid','Inactivo',false);
       insert into public.staff_role_assignments(email,role) values ('cashier@test.invalid','cashier'),('bar@test.invalid','bar'),('kitchen@test.invalid','kitchen'),('waiter@test.invalid','waiter'),('inactive@test.invalid','cashier');
@@ -73,6 +74,40 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
       assert.equal(sql(`select count(*) from public.inventory_movements where item_id='${legacyItemId}';`), compatibilityBefore.movements);
       assert.equal(Number(sql(`select applied_submission_quantity from public.inventory_receipt_lines where receipt_id='${historicalReceiptId}';`)), 12);
       assert.equal(sql(`select count(*) from public.inventory_receipt_lines where item_id='${legacyItemId}' and applied_submission_quantity is not null;`), '0');
+    });
+    await t.test('áreas dinámicas conservan compatibilidad, permisos y límites POS', () => {
+      assert.equal(sql(`select string_agg(code||':'||active||':'||operational||':'||system_protected,',' order by code) from public.inventory_areas;`), 'bar:true:true:true,kitchen:true:true:true,operations:true:false:false');
+      assert.equal(sql(`select count(*) from public.inventory_submissions where area in ('bar','kitchen');`), '1');
+      const warehouse = command('admin@test.invalid', { action: 'save_area', code: 'warehouse', name: 'Bodega', active: true });
+      assert.equal(warehouse.code, 'warehouse');
+      const renamed = command('admin@test.invalid', { action: 'save_area', id: warehouse.id, code: 'ignored', name: 'Bodega principal', active: true });
+      assert.equal(renamed.code, 'warehouse');
+      assert.equal(renamed.name, 'Bodega principal');
+      assert.equal(command('admin@test.invalid', { action: 'save_area', id: warehouse.id, name: 'Bodega principal', active: false }).active, false);
+      fails(login('admin@test.invalid') + `select public.inventory_command('${randomUUID()}',${quote(JSON.stringify({ action: 'save_area', id: sql(`select id from public.inventory_areas where code='bar'`), name: 'Barra', active: false }))}::jsonb);`, 'protegidas del POS');
+      fails(login('cashier@test.invalid') + `select public.inventory_command('${randomUUID()}',${quote(JSON.stringify({ action: 'save_area', code: 'cleaning', name: 'Aseo' }))}::jsonb);`, 'Solo administracion');
+
+      const operationsOnly = command('admin@test.invalid', { action: 'save_item', name: 'Trapero', base_unit: 'unit', precision_scale: 0, areas: ['operations'] });
+      const shared = command('admin@test.invalid', { action: 'save_item', name: 'Bolsas compartidas', base_unit: 'unit', precision_scale: 0, areas: ['bar','operations'] });
+      const barState = JSON.parse(sql(login('bar@test.invalid') + 'select public.inventory_read();'));
+      assert.equal(barState.items.some((item) => item.id === operationsOnly.id), false);
+      assert.equal(barState.items.some((item) => item.id === shared.id), true);
+      const operationsReport = command('admin@test.invalid', { action: 'submit', kind: 'count', area: 'operations', status: 'sent', lines: [{ item_id: operationsOnly.id, observed_quantity: 0, notes: '' }] });
+      assert.equal(operationsReport.area, 'operations');
+      fails(login('bar@test.invalid') + `select public.inventory_command('${randomUUID()}',${quote(JSON.stringify({ action: 'submit', kind: 'count', area: 'operations', status: 'sent', lines: [{ item_id: operationsOnly.id, observed_quantity: 0 }] }))}::jsonb);`, 'Area no autorizada');
+      const filtered = JSON.parse(sql(login('admin@test.invalid') + `select public.inventory_submissions_page(null,null,null,null,'operations');`));
+      assert.ok(filtered.rows.length >= 1);
+      assert.ok(filtered.rows.every((row) => row.area === 'operations'));
+
+      sql(`insert into public.menu_items(source_key,legacy_id,slug,hoja_origen,tipo,name,orden) values ('menu-dynamic-area',9990,'dynamic-area','test','Comida','Prueba área dinámica',99);`);
+      fails(login('admin@test.invalid') + `select public.inventory_command('${randomUUID()}',${quote(JSON.stringify({ action: 'save_recipe', menu_item_source_key: 'menu-dynamic-area', control_mode: 'partial', components: [{ item_id: operationsOnly.id, quantity_base: 1 }] }))}::jsonb);`, 'Barra o Cocina');
+      command('admin@test.invalid', { action: 'save_recipe', menu_item_source_key: 'menu-dynamic-area', control_mode: 'partial', components: [{ item_id: shared.id, quantity_base: 1 }] });
+      fails(login('admin@test.invalid') + `select public.inventory_command('${randomUUID()}',${quote(JSON.stringify({ action: 'save_item', id: shared.id, name: 'Bolsas compartidas', base_unit: 'unit', active: true, minimum_quantity: null, target_quantity: null, areas: ['operations'] }))}::jsonb);`, 'receta activa');
+
+      const dynamicPreview = previewImport('admin@test.invalid', { articles: [{ code: 'OPS_JABON', name: 'Jabón', area: 'Operación general', base_unit: 'unit', initial_quantity: null, initial_unit_cost: null, minimum_quantity: null, target_quantity: null, notes: '' }], presentations: [], menu_consumption: [] });
+      assert.deepEqual(dynamicPreview.errors, []);
+      const unknownPreview = previewImport('admin@test.invalid', { articles: [{ code: 'OPS_X', name: 'X', area: 'Área inexistente', base_unit: 'unit', initial_quantity: null, initial_unit_cost: null, minimum_quantity: null, target_quantity: null, notes: '' }], presentations: [], menu_consumption: [] });
+      assert.ok(unknownPreview.errors.some((message) => message.includes('desconocida')));
     });
     await t.test('solo admin configura artículos y varias presentaciones compatibles', () => {
       bread = command('admin@test.invalid', { action: 'save_item', name: 'Pan', base_unit: 'unit', precision_scale: 0, minimum_quantity: 4, target_quantity: 18, areas: ['kitchen'] });
@@ -207,7 +242,7 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
       command('admin@test.invalid', { action: 'save_recipe', menu_item_source_key: 'menu-costed', control_mode: 'partial', components: [{ item_id: sauce.id, quantity_base: 15 }] });
       const sessionId = randomUUID(), orderId = randomUUID(), orderItemId = randomUUID();
       openSessionId = sessionId;
-      sql(login('waiter@test.invalid') + `insert into public.pos_sales_sessions(id,session_label,business_date,opened_by_email) values('${sessionId}','Costo QA','2026-09-27','waiter@test.invalid');
+      sql(login('waiter@test.invalid') + `insert into public.pos_sales_sessions(id,session_label,business_date,opened_by_email) values('${sessionId}','Costo QA',(now() at time zone 'America/Bogota')::date,'waiter@test.invalid');
         insert into public.pos_orders(id,sales_session_id,opened_by_email) values('${orderId}','${sessionId}','waiter@test.invalid');
         insert into public.pos_order_items(id,order_id,menu_item_source_key,product_name,product_slug,prep_area,quantity,unit_price,total_price,operational_status,ready_at,created_by_email) values('${orderItemId}','${orderId}','menu-costed','Producto costo','costed','kitchen',1,10000,10000,'ready',now(),'waiter@test.invalid');`);
       const deliver = login('waiter@test.invalid') + `select public.inventory_deliver_pos_item('${orderItemId}',false);`;
@@ -493,6 +528,7 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
       for (const email of ['waiter@test.invalid', 'inactive@test.invalid']) fails(login(email) + 'select public.inventory_read();', 'Acceso denegado');
       for (const email of ['waiter@test.invalid', 'inactive@test.invalid']) fails(login(email) + "select public.inventory_movements_page('2026-09-01',null,null);", 'Acceso denegado al historial');
       fails(login('cashier@test.invalid') + `update public.inventory_items set name='Alterado';`, 'permission denied');
+      fails(login('cashier@test.invalid') + `update public.inventory_areas set active=false;`, 'permission denied');
       fails(`update public.inventory_movements set reason='Alterado';`, 'inmutable');
     });
 

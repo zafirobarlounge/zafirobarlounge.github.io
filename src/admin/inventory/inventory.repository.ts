@@ -1,5 +1,5 @@
 import { getSupabaseClient } from '../../integrations/supabase/client';
-import type { InventoryArea, InventoryCursor, InventoryCursorPage, InventoryData, InventoryMenuAlert, InventoryMovement, InventoryReceipt, InventorySubmission, InventorySubmissionKind } from './inventory.domain';
+import type { InventoryArea, InventoryCursor, InventoryCursorPage, InventoryData, InventoryMenuAlert, InventoryMovement, InventoryReceipt, InventorySubmission, InventorySubmissionKind, PosInventoryArea } from './inventory.domain';
 import type { InventoryImportPayload } from './inventory-import';
 
 export async function loadInventory(): Promise<InventoryData> {
@@ -8,7 +8,7 @@ export async function loadInventory(): Promise<InventoryData> {
   return data as unknown as InventoryData;
 }
 
-export async function loadInventoryRecentSubmissions(area: InventoryArea): Promise<InventorySubmission[]> {
+export async function loadInventoryRecentSubmissions(area: PosInventoryArea): Promise<InventorySubmission[]> {
   const { data, error } = await getSupabaseClient().rpc('inventory_recent_submissions' as never, { requested_area: area } as never);
   if (error) throw new Error(`No se pudieron cargar los reportes recientes: ${error.message}`);
   return data as unknown as InventorySubmission[];
@@ -26,8 +26,8 @@ export async function loadInventoryReceiptsPage(cursor: InventoryCursor | null):
   return data as unknown as InventoryCursorPage<InventoryReceipt>;
 }
 
-export async function loadInventorySubmissionsPage(kind: InventorySubmissionKind | null, status: string | null, cursor: InventoryCursor | null): Promise<InventoryCursorPage<InventorySubmission>> {
-  const { data, error } = await getSupabaseClient().rpc('inventory_submissions_page' as never, { requested_kind: kind, requested_status: status, before_created_at: cursor?.timestamp ?? null, before_id: cursor?.id ?? null } as never);
+export async function loadInventorySubmissionsPage(kind: InventorySubmissionKind | null, status: string | null, area: InventoryArea | null, cursor: InventoryCursor | null): Promise<InventoryCursorPage<InventorySubmission>> {
+  const { data, error } = await getSupabaseClient().rpc('inventory_submissions_page' as never, { requested_kind: kind, requested_status: status, before_created_at: cursor?.timestamp ?? null, before_id: cursor?.id ?? null, requested_area: area } as never);
   if (error) throw new Error(`No se pudieron cargar las solicitudes: ${error.message}`);
   return data as unknown as InventoryCursorPage<InventorySubmission>;
 }

@@ -93,3 +93,20 @@ test('existencia cero explícita sí representa un conteo inicial', () => {
   assert.equal(parsed.payload.articles[0].initial_quantity, 0);
   assert.equal(parsed.errors.length, 0);
 });
+
+test('normaliza áreas históricas y conserva nombres o combinaciones dinámicas para validación del servidor', () => {
+  const article = (codigo, nombre, area) => ({ codigo,nombre,area,unidad_base:'unidad',existencia_inicial:'',costo_unitario_inicial:'',minimo:'',objetivo:'',observaciones:'' });
+  const buffer = workbookBuffer({
+    Articulos: [
+      article('BAR','Bar','barra'),
+      article('KIT','Cocina','cocina'),
+      article('BOTH','Ambas','ambas'),
+      article('OPS','Operación','Operación general'),
+      article('SHARED','Compartido','Barra + Operación general'),
+    ],
+    Presentaciones: [], ConsumoMenu: [],
+  });
+  const parsed = parseInventoryWorkbook(buffer);
+  assert.deepEqual(Array.from(parsed.errors), []);
+  assert.deepEqual(Array.from(parsed.payload.articles, (article) => article.area), ['bar','kitchen','both','Operación general','bar+Operación general']);
+});
