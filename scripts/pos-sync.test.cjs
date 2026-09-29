@@ -31,6 +31,13 @@ test('session closing alert uses the next Colombian 6am cutoff and disappears on
   assert.equal(check({ ...session, openedAt: 'invalid' }, Date.now()), false);
 });
 
+test('POS vende productos disponibles aunque no estén visibles en la web', () => {
+  const repository = readFileSync(path.join(root, repositoryPath), 'utf8');
+  const loader = repository.match(/export async function loadPosProductOptionsFromSupabase\(\)[\s\S]*?\r?\n}\r?\n/)[0];
+  assert.match(loader, /rpc\('pos_product_options'/);
+  assert.doesNotMatch(loader, /menu_items_public|visible/);
+});
+
 function evaluate(source, context) {
   const compiled = ts.transpileModule(source, {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, jsx: ts.JsxEmit.ReactJSX },

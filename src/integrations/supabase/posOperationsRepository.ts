@@ -219,19 +219,11 @@ export async function openSalesSessionInSupabase(_actor: PosActorContext, _notes
 
 export async function loadPosProductOptionsFromSupabase() {
   const supabase = getSupabaseClient();
-  const { data, error } = await supabase
-    .from('menu_items_public')
-    .select('*')
-    .eq('visible', true)
-    .eq('disponible', true)
-    .order('tipo', { ascending: true })
-    .order('subgrupo', { ascending: true })
-    .order('orden', { ascending: true })
-    .order('name', { ascending: true });
+  const { data, error } = await supabase.rpc('pos_product_options' as never);
 
   throwIfError(error, 'No fue posible cargar el catalogo operativo para POS');
 
-  return (data ?? []).map(mapMenuItemPublicRow);
+  return ((data ?? []) as unknown as MenuItemPublicRow[]).map(mapMenuItemPublicRow);
 }
 
 export async function updatePosOperationalFlowSettingsInSupabase(input: UpdatePosOperationalFlowSettingsInput, actor: PosActorContext) {

@@ -68,6 +68,7 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
     sql(readFileSync('supabase/migrations/202609290014_inventory_pending_submissions_filter.sql', 'utf8'));
     sql(readFileSync('supabase/migrations/202609290015_inventory_item_usage_type.sql', 'utf8'));
     sql(readFileSync('supabase/migrations/202609290016_inventory_safe_configuration_delete.sql', 'utf8'));
+    sql(readFileSync('supabase/migrations/202609290017_pos_available_products.sql', 'utf8'));
     sql(`insert into public.admin_users(email) values ('admin@test.invalid');
       insert into public.staff_profiles(email,full_name,is_active) values ('cashier@test.invalid','Caja',true),('bar@test.invalid','Bar',true),('kitchen@test.invalid','Cocina',true),('waiter@test.invalid','Mesero',true),('inactive@test.invalid','Inactivo',false);
       insert into public.staff_role_assignments(email,role) values ('cashier@test.invalid','cashier'),('bar@test.invalid','bar'),('kitchen@test.invalid','kitchen'),('waiter@test.invalid','waiter'),('inactive@test.invalid','cashier');
@@ -85,6 +86,12 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
       assert.equal(removeConfig('admin@test.invalid',{action:'delete_area',code:area.code}).code,area.code);
       fails(login('cashier@test.invalid')+`select public.inventory_delete_configuration('${randomUUID()}',${quote(JSON.stringify({action:'delete_area',code:'operations'}))}::jsonb);`,'Solo administración');
       fails(login('admin@test.invalid')+`select public.inventory_delete_configuration('${randomUUID()}',${quote(JSON.stringify({action:'delete_area',code:'bar'}))}::jsonb);`,'protegida por el POS');
+    });
+    await t.test('POS ve productos disponibles aunque estén ocultos de la web', () => {
+      sql(`insert into public.menu_items(source_key,legacy_id,slug,hoja_origen,tipo,name,orden,visible,disponible,destacado) values ('menu-private-pos',9010,'private-pos','test','Comida','Poke POS',10,false,true,false);`);
+      assert.equal(sql(login('cashier@test.invalid')+`select source_key from public.pos_product_options() where source_key='menu-private-pos';`),'menu-private-pos');
+      assert.equal(sql(`select count(*) from public.menu_items_public where source_key='menu-private-pos';`),'0');
+      fails(login('outside@test.invalid')+`select * from public.pos_product_options();`,'Acceso denegado al catálogo operativo');
     });
     await t.test('migración conserva historia y recupera el último costo real conocido', () => {
       assert.equal(Number(sql(`select last_unit_cost from public.inventory_item_valuations where item_id='${legacyItemId}';`)), 12.5);
