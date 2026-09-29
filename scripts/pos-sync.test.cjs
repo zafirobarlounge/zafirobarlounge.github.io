@@ -124,6 +124,10 @@ test('Bar y Cocina integran inventario operativo sin costos ni acciones administ
   for (const text of ['Inventario del área', 'Solicitar', 'Contar', 'Daño', 'Reportes recientes del área', 'Unidad base']) assert.match(panel, new RegExp(text));
   for (const forbidden of ['last_unit_cost', 'average_unit_cost', 'inventory_value', 'Registrar entrada', 'Conteo / corregir', "action: 'receive'", "action: 'correction'", "action: 'initial_count'"]) assert.doesNotMatch(panel, new RegExp(forbidden.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.match(panel, /loadInventory\(usageType, area\)/);
+  assert.doesNotMatch(panel, /role="tablist"/);
+  assert.match(panel, /Field label="Estado"[\s\S]*Field label="Tipo"/);
+  assert.match(panel, /aria-label={`Filtrar inventario de \$\{areaLabel\} por tipo`}/);
+  assert.match(panel, /<option value="consumable">Consumibles<\/option>[\s\S]*<option value="operational">Operativos<\/option>/);
   assert.match(panel, /loadInventoryRecentSubmissions\(area\)/);
   assert.match(panel, /saveInventoryCommand/);
   assert.doesNotMatch(panel, /submission\.area === area/);

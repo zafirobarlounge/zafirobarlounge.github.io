@@ -294,8 +294,7 @@ export function AreaInventoryPanel({ area }: { area: PosInventoryArea }) {
 
           {hasLoaded ? (
             <>
-              <div role="tablist" aria-label={`Tipo de inventario de ${areaLabel}`} className="mb-4 grid w-full max-w-sm grid-cols-2 gap-1 rounded-[1rem] border border-white/12 bg-black/25 p-1.5">{(['consumable','operational'] as InventoryUsageType[]).map((value)=><button type="button" key={value} role="tab" aria-selected={usageType===value} className={`rounded-[0.75rem] border px-3 py-2.5 text-[0.68rem] font-semibold uppercase tracking-[0.12em] transition ${usageType===value?'border-cyanGlow/40 bg-cyanGlow/15 text-cyanGlow':'border-transparent bg-white/[0.025] text-mist hover:bg-white/[0.06] hover:text-ivory'}`} onClick={()=>selectUsageType(value)}>{value==='consumable'?'Consumibles':'Operativos'}</button>)}</div>
-              <div className="mt-4 grid gap-3 rounded-[1.1rem] border border-white/10 bg-black/15 p-4 sm:grid-cols-2">
+              <div className="mt-4 grid gap-3 rounded-[1.1rem] border border-white/10 bg-black/15 p-4 sm:grid-cols-2 lg:grid-cols-3">
                 <Field label="Buscar artículo">
                   <input aria-label={`Buscar inventario de ${areaLabel}`} className={inputClass} value={search} onChange={(event) => setFilters((current)=>({...current,[usageType]:{...current[usageType],search:event.target.value}}))} placeholder="Nombre" />
                 </Field>
@@ -307,7 +306,13 @@ export function AreaInventoryPanel({ area }: { area: PosInventoryArea }) {
                     <option value="uncounted">Sin conteo inicial</option>
                   </select>
                 </Field>
-                <p className="text-xs text-mist sm:col-span-2">Orden: sin conteo, agotados, bajo mínimo, reposición pendiente y disponibles.</p>
+                <Field label="Tipo">
+                  <select aria-label={`Filtrar inventario de ${areaLabel} por tipo`} className={inputClass} value={usageType} onChange={(event) => selectUsageType(event.target.value as InventoryUsageType)}>
+                    <option value="consumable">Consumibles</option>
+                    <option value="operational">Operativos</option>
+                  </select>
+                </Field>
+                <p className="text-xs text-mist sm:col-span-2 lg:col-span-3">Orden: sin conteo, agotados, bajo mínimo, reposición pendiente y disponibles.</p>
               </div>
 
               <div className="mt-5 rounded-[1.1rem] border border-white/10 bg-white/[0.02] p-4">
