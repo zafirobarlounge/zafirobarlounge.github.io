@@ -56,6 +56,12 @@ export async function saveInventoryCommand(requestId: string, payload: Record<st
   return data;
 }
 
+export async function deleteInventoryConfiguration(requestId: string, payload: Record<string, unknown>) {
+  const { data, error } = await getSupabaseClient().rpc('inventory_delete_configuration' as never, { request_id: requestId, payload } as never);
+  if (error) throw new Error(error.message);
+  return data;
+}
+
 export interface InventoryImportServerPreview {
   new_articles: string[];
   existing_articles: string[];

@@ -29,6 +29,7 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
   });
   const fails = (input, message) => assert.throws(() => sql(input), (error) => String(error.stderr).includes(message));
   const command = (email, payload, requestId = randomUUID()) => JSON.parse(sql(login(email) + `select public.inventory_command('${requestId}',${quote(JSON.stringify(payload))}::jsonb);`));
+  const removeConfig = (email, payload, requestId = randomUUID()) => JSON.parse(sql(login(email) + `select public.inventory_delete_configuration('${requestId}',${quote(JSON.stringify(payload))}::jsonb);`));
   const previewImport = (email, payload) => JSON.parse(sql(login(email) + `select public.inventory_import_preview(${quote(JSON.stringify(payload))}::jsonb);`));
   const commitImport = (email, payload, fingerprint, requestId = randomUUID()) => JSON.parse(sql(login(email) + `select public.inventory_import_commit('${requestId}','${fingerprint}',${quote(JSON.stringify(payload))}::jsonb);`));
 
@@ -66,6 +67,7 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
     sql(readFileSync('supabase/migrations/202609290013_inventory_recipe_cost_quantity.sql', 'utf8'));
     sql(readFileSync('supabase/migrations/202609290014_inventory_pending_submissions_filter.sql', 'utf8'));
     sql(readFileSync('supabase/migrations/202609290015_inventory_item_usage_type.sql', 'utf8'));
+    sql(readFileSync('supabase/migrations/202609290016_inventory_safe_configuration_delete.sql', 'utf8'));
     sql(`insert into public.admin_users(email) values ('admin@test.invalid');
       insert into public.staff_profiles(email,full_name,is_active) values ('cashier@test.invalid','Caja',true),('bar@test.invalid','Bar',true),('kitchen@test.invalid','Cocina',true),('waiter@test.invalid','Mesero',true),('inactive@test.invalid','Inactivo',false);
       insert into public.staff_role_assignments(email,role) values ('cashier@test.invalid','cashier'),('bar@test.invalid','bar'),('kitchen@test.invalid','kitchen'),('waiter@test.invalid','waiter'),('inactive@test.invalid','cashier');
@@ -73,6 +75,17 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
 
     let bread;
     let openSessionId;
+    await t.test('solo elimina configuración nueva sin relaciones ni historial', () => {
+      const area = command('admin@test.invalid',{action:'save_area',code:'temporary',name:'Temporal',active:true});
+      const item = command('admin@test.invalid',{action:'save_item',name:'Artículo temporal',base_unit:'unit',precision_scale:0,usage_type:'operational',areas:['temporary']});
+      const presentation = command('admin@test.invalid',{action:'save_presentation',item_id:item.id,name:'Paquete temporal',content_per_package:2,content_unit:'unit'});
+      fails(login('admin@test.invalid')+`select public.inventory_delete_configuration('${randomUUID()}',${quote(JSON.stringify({action:'delete_item',id:item.id}))}::jsonb);`,'tiene configuración o historial');
+      assert.equal(removeConfig('admin@test.invalid',{action:'delete_presentation',id:presentation.id}).id,presentation.id);
+      assert.equal(removeConfig('admin@test.invalid',{action:'delete_item',id:item.id}).id,item.id);
+      assert.equal(removeConfig('admin@test.invalid',{action:'delete_area',code:area.code}).code,area.code);
+      fails(login('cashier@test.invalid')+`select public.inventory_delete_configuration('${randomUUID()}',${quote(JSON.stringify({action:'delete_area',code:'operations'}))}::jsonb);`,'Solo administración');
+      fails(login('admin@test.invalid')+`select public.inventory_delete_configuration('${randomUUID()}',${quote(JSON.stringify({action:'delete_area',code:'bar'}))}::jsonb);`,'protegida por el POS');
+    });
     await t.test('migración conserva historia y recupera el último costo real conocido', () => {
       assert.equal(Number(sql(`select last_unit_cost from public.inventory_item_valuations where item_id='${legacyItemId}';`)), 12.5);
       assert.equal(sql(`select row(current_quantity,average_unit_cost,inventory_value)::text from public.inventory_item_valuations where item_id='${legacyItemId}';`), compatibilityBefore.valuation);

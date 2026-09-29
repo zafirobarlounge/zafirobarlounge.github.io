@@ -127,6 +127,17 @@ test('tipos de uso separan cargas y limitan recetas desde UI y PostgreSQL', () =
   assert.match(migration, /i\.usage_type='consumable'/);
 });
 
+test('configuración permite eliminar únicamente registros sin uso mediante RPC protegido', () => {
+  const view = readFileSync('src/admin/inventory/AdminInventoryView.tsx', 'utf8');
+  const repository = readFileSync('src/admin/inventory/inventory.repository.ts', 'utf8');
+  const migration = readFileSync('supabase/migrations/202609290016_inventory_safe_configuration_delete.sql', 'utf8');
+  for (const label of ['Eliminar artículo','Eliminar presentación','Eliminar área']) assert.match(view,new RegExp(label));
+  assert.match(repository,/inventory_delete_configuration/);
+  assert.match(migration,/not public\.inventory_can_configure\(\)/);
+  assert.match(migration,/tiene configuración o historial/);
+  assert.match(migration,/presentación ya tiene historial/);
+});
+
 test('receta separa componentes medidos del descuento automatico y calcula su costo', () => {
   const complete = JSON.parse(JSON.stringify(domain.exports.summarizeInventoryRecipeCost([
     { active:true,quantity_base:1,tracked_component_cost:2000 },
