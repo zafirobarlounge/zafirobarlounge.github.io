@@ -11,8 +11,8 @@ vm.runInNewContext(compile('src/admin/inventory/inventory.domain.ts'), domain);
 test('cantidades distinguen ausencia de cero y respetan precisión', () => {
   assert.equal(domain.exports.formatInventoryQuantity(null, 'unit'), 'Sin conteo inicial');
   assert.equal(domain.exports.formatConfiguredInventoryQuantity(null, 'unit'), 'No configurado');
-  assert.match(domain.exports.formatInventoryQuantity(0, 'unit'), /^0 unidad/);
-  assert.match(domain.exports.formatConfiguredInventoryQuantity(0, 'unit'), /^0 unidad/);
+  assert.equal(domain.exports.formatInventoryQuantity(0, 'unit'), '0 unidades');
+  assert.equal(domain.exports.formatConfiguredInventoryQuantity(0, 'unit'), '0 unidades');
   assert.match(domain.exports.formatInventoryQuantity(12.5, 'gram', 3), /12,5 g/);
 });
 
