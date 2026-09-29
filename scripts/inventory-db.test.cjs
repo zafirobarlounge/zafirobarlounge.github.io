@@ -338,6 +338,69 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
       assert.equal(Number(sql(`select average_unit_cost from public.inventory_item_valuations where item_id='${sauce.id}';`)), 24.95);
     });
 
+    await t.test('entrega POS descuenta solo componentes controlados y congela sus costos', async () => {
+      const pan = command('admin@test.invalid', { action:'save_item',name:'Pan hamburguesa integración',base_unit:'unit',precision_scale:0,areas:['kitchen'] });
+      const carne = command('admin@test.invalid', { action:'save_item',name:'Carne hamburguesa integración',base_unit:'unit',precision_scale:0,areas:['kitchen'] });
+      const queso = command('admin@test.invalid', { action:'save_item',name:'Queso hamburguesa integración',base_unit:'gram',precision_scale:3,areas:['kitchen'] });
+      const tomate = command('admin@test.invalid', { action:'save_item',name:'Tomate hamburguesa integración',base_unit:'gram',precision_scale:3,areas:['kitchen'] });
+      for (const item of [pan,carne,queso,tomate]) command('cashier@test.invalid', { action:'initial_count',item_id:item.id,quantity:0,reason:'Inicio integración POS' });
+      command('cashier@test.invalid', { action:'receive',total_cost:90000,lines:[
+        { item_id:pan.id,base_quantity:10,line_total_cost:10000 },
+        { item_id:carne.id,base_quantity:10,line_total_cost:50000 },
+        { item_id:queso.id,base_quantity:1000,line_total_cost:20000 },
+        { item_id:tomate.id,base_quantity:1000,line_total_cost:10000 },
+      ] });
+      const balance = (itemId) => Number(sql(`select current_quantity from public.inventory_item_valuations where item_id='${itemId}';`));
+      const before = { pan:balance(pan.id),carne:balance(carne.id),queso:balance(queso.id),tomate:balance(tomate.id) };
+      assert.deepEqual(before,{pan:10,carne:10,queso:1000,tomate:1000});
+
+      sql(`insert into public.menu_items(source_key,legacy_id,slug,hoja_origen,tipo,name,orden,precio_venta) values ('menu-inventory-integration-burger',9100,'inventory-integration-burger','test','Comida','Hamburguesa integración',100,30000);`);
+      command('admin@test.invalid', { action:'save_recipe',menu_item_source_key:'menu-inventory-integration-burger',components:[
+        { item_id:pan.id,controls_inventory:true,quantity_base:1 },
+        { item_id:carne.id,controls_inventory:true,quantity_base:1 },
+        { item_id:queso.id,controls_inventory:true,quantity_base:20 },
+        { item_id:tomate.id,controls_inventory:false,quantity_base:30 },
+      ] });
+      let recipe = JSON.parse(sql(login('admin@test.invalid')+`select public.inventory_read();`)).recipes.filter((row)=>row.menu_item_source_key==='menu-inventory-integration-burger');
+      assert.equal(recipe.length,4);
+      assert.equal(recipe.find((row)=>row.item_id===tomate.id).controls_inventory,false);
+      assert.equal(Number(recipe.find((row)=>row.item_id===tomate.id).tracked_component_cost),300);
+      assert.equal(recipe.reduce((total,row)=>total+Number(row.tracked_component_cost),0),6700);
+
+      const orderId=randomUUID(), orderItemId=randomUUID();
+      sql(login('waiter@test.invalid')+`insert into public.pos_orders(id,sales_session_id,opened_by_email) values('${orderId}','${openSessionId}','waiter@test.invalid');
+        insert into public.pos_order_items(id,order_id,menu_item_source_key,product_name,product_slug,prep_area,quantity,unit_price,total_price,operational_status,ready_at,created_by_email) values('${orderItemId}','${orderId}','menu-inventory-integration-burger','Hamburguesa integración','inventory-integration-burger','kitchen',1,30000,30000,'ready',now(),'waiter@test.invalid');`);
+      const deliver=login('waiter@test.invalid')+`select public.inventory_deliver_pos_item('${orderItemId}',false);`;
+      await Promise.all([parallel(deliver),parallel(deliver)]);
+      sql(deliver);
+
+      assert.deepEqual({pan:balance(pan.id),carne:balance(carne.id),queso:balance(queso.id),tomate:balance(tomate.id)},{pan:9,carne:9,queso:980,tomate:1000});
+      assert.equal(sql(`select count(*) from public.inventory_pos_consumptions where pos_order_item_id='${orderItemId}';`),'1');
+      assert.equal(sql(`select count(*) from public.inventory_pos_consumption_lines cl join public.inventory_pos_consumptions c on c.id=cl.consumption_id where c.pos_order_item_id='${orderItemId}';`),'3');
+      assert.equal(sql(`select count(*) from public.inventory_movements where order_item_id='${orderItemId}' and movement_type='pos_consumption';`),'3');
+      assert.equal(sql(`select count(*) from public.inventory_movements where order_item_id='${orderItemId}' and item_id='${tomate.id}';`),'0');
+      assert.equal(Number(sql(`select quantity_delta from public.inventory_movements where order_item_id='${orderItemId}' and item_id='${pan.id}';`)),-1);
+      assert.equal(Number(sql(`select quantity_delta from public.inventory_movements where order_item_id='${orderItemId}' and item_id='${carne.id}';`)),-1);
+      assert.equal(Number(sql(`select quantity_delta from public.inventory_movements where order_item_id='${orderItemId}' and item_id='${queso.id}';`)),-20);
+      assert.equal(Number(sql(`select sum(cl.tracked_cost) from public.inventory_pos_consumption_lines cl join public.inventory_pos_consumptions c on c.id=cl.consumption_id where c.pos_order_item_id='${orderItemId}';`)),6400);
+      assert.equal(Number(sql(`select unit_cost_snapshot from public.inventory_movements where order_item_id='${orderItemId}' and item_id='${pan.id}';`)),1000);
+      assert.equal(Number(sql(`select unit_cost_snapshot from public.inventory_movements where order_item_id='${orderItemId}' and item_id='${carne.id}';`)),5000);
+      assert.equal(Number(sql(`select unit_cost_snapshot from public.inventory_movements where order_item_id='${orderItemId}' and item_id='${queso.id}';`)),20);
+
+      command('cashier@test.invalid', { action:'receive',total_cost:9500,lines:[
+        { item_id:pan.id,base_quantity:1,line_total_cost:1500 },
+        { item_id:carne.id,base_quantity:1,line_total_cost:5500 },
+        { item_id:queso.id,base_quantity:100,line_total_cost:2500 },
+      ] });
+      assert.equal(Number(sql(`select last_unit_cost from public.inventory_item_valuations where item_id='${pan.id}';`)),1500);
+      assert.equal(Number(sql(`select last_unit_cost from public.inventory_item_valuations where item_id='${carne.id}';`)),5500);
+      assert.equal(Number(sql(`select last_unit_cost from public.inventory_item_valuations where item_id='${queso.id}';`)),25);
+      assert.equal(Number(sql(`select sum(cl.tracked_cost) from public.inventory_pos_consumption_lines cl join public.inventory_pos_consumptions c on c.id=cl.consumption_id where c.pos_order_item_id='${orderItemId}';`)),6400);
+      assert.equal(Number(sql(`select unit_cost_snapshot from public.inventory_movements where order_item_id='${orderItemId}' and item_id='${pan.id}';`)),1000);
+      recipe = JSON.parse(sql(login('admin@test.invalid')+`select public.inventory_read();`)).recipes.filter((row)=>row.menu_item_source_key==='menu-inventory-integration-burger');
+      assert.equal(recipe.reduce((total,row)=>total+Number(row.tracked_component_cost),0),7800);
+    });
+
     await t.test('recetas costean componentes medidos y descuentan solo los controlados', async () => {
       const poker = command('admin@test.invalid', { action: 'save_item', name: 'Poker inventario', base_unit: 'unit', precision_scale: 0, areas: ['bar'] });
       const tomato = command('admin@test.invalid', { action: 'save_item', name: 'Tomate medido sin descuento', base_unit: 'gram', precision_scale: 3, areas: ['kitchen'] });
