@@ -195,7 +195,7 @@ export interface InventoryMenuAlert {
 }
 
 export const inventoryUnitLabels: Record<InventoryUnit, string> = {
-  unit: 'unidades',
+  unit: 'unidad(es)',
   gram: 'g',
   milliliter: 'ml',
 };
