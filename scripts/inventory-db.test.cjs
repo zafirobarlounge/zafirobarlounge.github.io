@@ -64,6 +64,7 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
       insert into public.inventory_menu_recipe_components(menu_item_source_key,item_id,quantity_base,created_by,updated_by) values('menu-legacy-recipe','${legacyItemId}',1,'legacy@test.invalid','legacy@test.invalid');`);
     sql(readFileSync('supabase/migrations/202609290012_inventory_recipe_component_control.sql', 'utf8'));
     sql(readFileSync('supabase/migrations/202609290013_inventory_recipe_cost_quantity.sql', 'utf8'));
+    sql(readFileSync('supabase/migrations/202609290014_inventory_pending_submissions_filter.sql', 'utf8'));
     sql(`insert into public.admin_users(email) values ('admin@test.invalid');
       insert into public.staff_profiles(email,full_name,is_active) values ('cashier@test.invalid','Caja',true),('bar@test.invalid','Bar',true),('kitchen@test.invalid','Cocina',true),('waiter@test.invalid','Mesero',true),('inactive@test.invalid','Inactivo',false);
       insert into public.staff_role_assignments(email,role) values ('cashier@test.invalid','cashier'),('bar@test.invalid','bar'),('kitchen@test.invalid','kitchen'),('waiter@test.invalid','waiter'),('inactive@test.invalid','cashier');
@@ -541,6 +542,8 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
       });
       const countSubmissionId = randomUUID();
       submissionSql.push(`insert into public.inventory_submissions(id,request_id,kind,area,status,created_at,created_by) values('${countSubmissionId}','${randomUUID()}','count','bar','rejected','2026-09-30T22:31:00Z','bar@test.invalid'); insert into public.inventory_submission_lines(id,submission_id,item_id,observed_quantity,notes) values('${randomUUID()}','${countSubmissionId}','${pageItem.id}',1,'fixture');`);
+      const pendingSubmissionId = randomUUID();
+      submissionSql.push(`insert into public.inventory_submissions(id,request_id,kind,area,status,created_at,created_by) values('${pendingSubmissionId}','${randomUUID()}','replenishment','bar','sent','2026-09-30T22:32:00Z','bar@test.invalid'); insert into public.inventory_submission_lines(id,submission_id,item_id,requested_quantity,notes) values('${randomUUID()}','${pendingSubmissionId}','${pageItem.id}',1,'fixture pending');`);
       sql(submissionSql.join('\n'));
       const firstSubmissions = JSON.parse(sql(login('cashier@test.invalid') + "select public.inventory_submissions_page('damage','rejected',null,null);"));
       assert.equal(firstSubmissions.rows.length, 20);
@@ -553,6 +556,10 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
       const countFiltered = JSON.parse(sql(login('cashier@test.invalid') + "select public.inventory_submissions_page('count','rejected',null,null);"));
       assert.ok(countFiltered.rows.some((row) => row.id === countSubmissionId));
       assert.ok(countFiltered.rows.every((row) => row.kind === 'count' && row.status === 'rejected'));
+      const pendingFiltered = JSON.parse(sql(login('cashier@test.invalid') + "select public.inventory_submissions_page(null,'pending',null,null);"));
+      assert.ok(pendingFiltered.rows.some((row) => row.id === pendingSubmissionId));
+      assert.ok(pendingFiltered.rows.every((row) => ['draft','sent','partially_approved','approved','partially_received'].includes(row.status)));
+      assert.ok(!pendingFiltered.rows.some((row) => rejectedDamageIds.includes(row.id) || row.id === countSubmissionId));
       const recentBar = JSON.parse(sql(login('bar@test.invalid') + "select public.inventory_recent_submissions('bar');"));
       assert.equal(recentBar.length, 8);
       assert.ok(recentBar.every((row) => row.area === 'bar'));

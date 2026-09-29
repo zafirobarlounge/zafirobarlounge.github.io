@@ -354,6 +354,19 @@ test('migracion 010 pagina historiales en PostgreSQL y la UI consume sus RPC', (
   assert.equal(domain.exports.inventoryMonthValue(new Date('2026-09-28T12:00:00Z')), '2026-09');
 });
 
+test('solicitudes abren en pendientes y filtran estados terminales desde PostgreSQL', () => {
+  const view = readFileSync('src/admin/inventory/AdminInventoryView.tsx', 'utf8');
+  const requests = view.slice(view.indexOf('function RequestsTab'), view.indexOf('function SubmissionLineDetails'));
+  const migration = readFileSync('supabase/migrations/202609290014_inventory_pending_submissions_filter.sql', 'utf8');
+  assert.match(requests, /useState<'pending'\|'all'>\('pending'\)/);
+  assert.match(requests, /<Field label="Vista">[\s\S]*?<option value="pending">Pendientes<\/option><option value="all">Todos<\/option>/);
+  assert.match(requests, /status==='all'\?\(scope==='pending'\?'pending':null\):status/);
+  assert.match(requests, /'draft','sent','partially_approved','approved','partially_received'/);
+  assert.match(requests, /scope==='all'\|\|pendingStatuses\.includes\(value\)/);
+  assert.match(migration, /requested_status='pending' and s\.status in \('draft','sent','partially_approved','approved','partially_received'\)/);
+  assert.match(migration, /order by s\.created_at desc,s\.id desc limit 21/);
+});
+
 test('estados de solicitudes reutilizan una pildora visual central con indicador de color', () => {
   const badge = readFileSync('src/admin/inventory/InventoryStatusBadge.tsx', 'utf8');
   const adminView = readFileSync('src/admin/inventory/AdminInventoryView.tsx', 'utf8');
