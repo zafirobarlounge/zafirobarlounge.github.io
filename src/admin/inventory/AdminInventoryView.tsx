@@ -265,13 +265,18 @@ function RecipeDialog({ data,busy,onClose,onSave }: DialogProps & {data:Inventor
       <div className="space-y-3">
         {components.map((component,index)=>{
           const selectedItem=recipeItems.find((item)=>item.id===component.item_id);
-          return <div key={index} className={`rounded-[1rem] border p-4 ${component.controls_inventory?'border-cyanGlow/25 bg-cyanGlow/[0.06]':'border-amberGlow/25 bg-amberGlow/[0.06]'}`}>
-            <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_12rem_auto] sm:items-end">
-              <Field label="Artículo"><SearchableInventoryItemSelect items={recipeItems} value={component.item_id} ariaLabel={`Buscar componente ${index+1}`} onChange={(itemId)=>setComponents((current)=>current.map((row,i)=>i===index?{...row,item_id:itemId}:row))}/></Field>
-              <Field label="Controlar inventario"><select className={inputClass} value={component.controls_inventory?'yes':'no'} onChange={(event)=>setComponents((current)=>current.map((row,i)=>i===index?{...row,controls_inventory:event.target.value==='yes',quantity_base:event.target.value==='yes'?row.quantity_base:''}:row))}><option value="yes">Sí</option><option value="no">No</option></select></Field>
-              <button type="button" className={dangerButton} onClick={()=>setComponents((current)=>current.filter((_,i)=>i!==index))}>Quitar</button>
+          return <div key={index} className={`rounded-[1rem] border p-3.5 ${component.controls_inventory?'border-cyanGlow/25 bg-cyanGlow/[0.06]':'border-amberGlow/25 bg-amberGlow/[0.06]'}`}>
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <p className="text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-mist">Componente {index+1}</p>
+              <button type="button" className={`${dangerButton} px-3 py-2`} onClick={()=>setComponents((current)=>current.filter((_,i)=>i!==index))}>Quitar</button>
             </div>
-            {component.controls_inventory?<div className="mt-3"><Field label="Cantidad por producto"><div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3"><input aria-label={`Cantidad del componente ${index+1}`} className={inputClass} type="number" min="0.001" step="0.001" required value={component.quantity_base} onChange={(event)=>setComponents((current)=>current.map((row,i)=>i===index?{...row,quantity_base:event.target.value}:row))}/><span className="text-sm text-mist">{selectedItem?inventoryUnitLabels[selectedItem.base_unit]:'Unidad base'}</span></div></Field></div>:<p className="mt-3 text-sm text-amber-100">Este componente forma parte de la receta, pero no se descontará automáticamente.</p>}
+            <div className="grid gap-3 md:grid-cols-[minmax(0,1.35fr)_minmax(12rem,0.65fr)]">
+              <Field label="Artículo"><SearchableInventoryItemSelect items={recipeItems} value={component.item_id} ariaLabel={`Buscar componente ${index+1}`} onChange={(itemId)=>setComponents((current)=>current.map((row,i)=>i===index?{...row,item_id:itemId}:row))}/></Field>
+              <div className="space-y-3">
+                <Field label="Controlar inventario"><select className={inputClass} value={component.controls_inventory?'yes':'no'} onChange={(event)=>setComponents((current)=>current.map((row,i)=>i===index?{...row,controls_inventory:event.target.value==='yes',quantity_base:event.target.value==='yes'?row.quantity_base:''}:row))}><option value="yes">Sí</option><option value="no">No</option></select></Field>
+                {component.controls_inventory?<Field label="Cantidad por producto"><div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2"><input aria-label={`Cantidad del componente ${index+1}`} className={inputClass} type="number" min="0.001" step="0.001" required value={component.quantity_base} onChange={(event)=>setComponents((current)=>current.map((row,i)=>i===index?{...row,quantity_base:event.target.value}:row))}/><span className="whitespace-nowrap text-xs text-mist">{selectedItem?inventoryUnitLabels[selectedItem.base_unit]:'Unidad base'}</span></div></Field>:<p className="rounded-[0.8rem] border border-amberGlow/15 bg-black/15 px-3 py-2 text-xs leading-5 text-amber-100">Este componente forma parte de la receta, pero no se descontará automáticamente.</p>}
+              </div>
+            </div>
           </div>;
         })}
       </div>
