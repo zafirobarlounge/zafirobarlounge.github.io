@@ -120,6 +120,23 @@ export interface InventoryRecipe {
   tracked_component_cost: number | null;
 }
 
+export type InventoryMenuRecipeStatus = 'missing' | 'configured' | 'partial';
+
+export interface InventoryMenuRecipeRow {
+  source_key: string;
+  name: string;
+  price: number | null;
+  status: InventoryMenuRecipeStatus;
+  components: Array<{
+    item_id: string;
+    name: string;
+    quantity_base: number | null;
+    unit: InventoryUnit;
+  }>;
+  calculated_cost: number | null;
+  estimated_margin: number | null;
+}
+
 export function summarizeInventoryRecipeCost(components: Array<Pick<InventoryRecipe, 'active' | 'quantity_base' | 'tracked_component_cost'>>) {
   const active = components.filter((component) => component.active);
   const measured = active.filter((component) => component.quantity_base != null && component.quantity_base > 0);
@@ -129,6 +146,38 @@ export function summarizeInventoryRecipeCost(components: Array<Pick<InventoryRec
     isPartial: active.some((component) => component.quantity_base == null || component.tracked_component_cost == null),
     cost: known.length ? known.reduce((total, component) => total + Number(component.tracked_component_cost), 0) : null,
   };
+}
+
+export function buildInventoryMenuRecipeRows(
+  menuItems: Array<{ source_key: string; name: string; price: number | null }>,
+  recipes: InventoryRecipe[],
+  items: InventoryItem[],
+): InventoryMenuRecipeRow[] {
+  return menuItems.map((menuItem) => {
+    const components = recipes.filter((component) => component.active && component.menu_item_source_key === menuItem.source_key);
+    const costSummary = summarizeInventoryRecipeCost(components);
+    const status: InventoryMenuRecipeStatus = !components.length ? 'missing' : costSummary.isPartial ? 'partial' : 'configured';
+    const price = menuItem.price;
+    return {
+      source_key: menuItem.source_key,
+      name: menuItem.name,
+      price,
+      status,
+      components: components.map((component) => {
+        const item = items.find((candidate) => candidate.id === component.item_id);
+        return {
+          item_id: component.item_id,
+          name: item?.name ?? component.item_id,
+          quantity_base: component.quantity_base,
+          unit: item?.base_unit ?? 'unit',
+        };
+      }),
+      calculated_cost: components.length ? costSummary.cost : null,
+      estimated_margin: status === 'configured' && costSummary.cost != null && price != null && price > 0
+        ? ((price - costSummary.cost) / price) * 100
+        : null,
+    };
+  });
 }
 
 export interface InventoryReceipt {
@@ -166,7 +215,7 @@ export interface InventoryData {
   items: InventoryItem[];
   presentations: InventoryPresentation[];
   recipes: InventoryRecipe[];
-  menu_items: Array<{ source_key: string; name: string }>;
+  menu_items: Array<{ source_key: string; name: string; price: number | null }>;
   submissions: InventorySubmission[];
   receipts: InventoryReceipt[];
   movements: InventoryMovement[];

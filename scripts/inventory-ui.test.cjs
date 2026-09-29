@@ -170,6 +170,40 @@ test('receta separa componentes medidos del descuento automatico y calcula su co
   assert.doesNotMatch(view, /<Field label="Cobertura">/);
 });
 
+test('consumo del menú resume recetas, costos y margen sin duplicar el formulario', () => {
+  const items = [
+    { id:'pan',name:'Pan hamburguesa',base_unit:'unit' },
+    { id:'carne',name:'Carne',base_unit:'gram' },
+    { id:'tomate',name:'Tomate',base_unit:'gram' },
+  ];
+  const recipes = [
+    { id:'r1',menu_item_source_key:'menu::completa',menu_name:'Completa',item_id:'pan',controls_inventory:true,quantity_base:1,active:true,control_mode:'partial',tracked_component_cost:1000 },
+    { id:'r2',menu_item_source_key:'menu::completa',menu_name:'Completa',item_id:'carne',controls_inventory:false,quantity_base:150,active:true,control_mode:'partial',tracked_component_cost:7000 },
+    { id:'r3',menu_item_source_key:'menu::parcial',menu_name:'Parcial',item_id:'tomate',controls_inventory:false,quantity_base:null,active:true,control_mode:'partial',tracked_component_cost:null },
+  ];
+  const rows = JSON.parse(JSON.stringify(domain.exports.buildInventoryMenuRecipeRows([
+    { source_key:'menu::completa',name:'Hamburguesa',price:30000 },
+    { source_key:'menu::parcial',name:'Ensalada',price:18000 },
+    { source_key:'menu::sin-receta',name:'Limonada',price:9000 },
+  ], recipes, items)));
+  assert.equal(rows[0].status, 'configured');
+  assert.equal(rows[0].calculated_cost, 8000);
+  assert.ok(Math.abs(rows[0].estimated_margin - 73.33333333333333) < 1e-10);
+  assert.equal(rows[1].status, 'partial');
+  assert.equal(rows[1].estimated_margin, null);
+  assert.equal(rows[2].status, 'missing');
+  assert.equal(rows[2].calculated_cost, null);
+  const view = readFileSync('src/admin/inventory/AdminInventoryView.tsx', 'utf8');
+  const migration = readFileSync('supabase/migrations/202609290018_inventory_menu_recipe_overview.sql', 'utf8');
+  assert.match(view, /recipes: 'Consumo del menú'/);
+  assert.match(view, /Producto<\/th><th[^>]*>Receta<\/th><th[^>]*>Ingredientes<\/th><th[^>]*>Costo calculado<\/th><th[^>]*>Precio venta<\/th><th[^>]*>Margen estimado<\/th><th[^>]*>Acción/);
+  assert.match(view, /initialMenuKey=\{selectedRecipeMenuKey\}/);
+  assert.equal((view.match(/function RecipeDialog/g) ?? []).length, 1);
+  assert.doesNotMatch(view, /action="Configurar receta"/);
+  assert.match(migration, /'price',mi\.precio_venta/);
+  assert.match(migration, /public\.inventory_can_configure\(\)/);
+});
+
 test('migracion 013 permite cantidades de costo sin descuento automatico', () => {
   const migration = readFileSync('supabase/migrations/202609290013_inventory_recipe_cost_quantity.sql', 'utf8');
   assert.match(migration, /not controls_inventory and \(quantity_base is null or quantity_base > 0\)/);

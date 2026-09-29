@@ -69,10 +69,11 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
     sql(readFileSync('supabase/migrations/202609290015_inventory_item_usage_type.sql', 'utf8'));
     sql(readFileSync('supabase/migrations/202609290016_inventory_safe_configuration_delete.sql', 'utf8'));
     sql(readFileSync('supabase/migrations/202609290017_pos_available_products.sql', 'utf8'));
+    sql(readFileSync('supabase/migrations/202609290018_inventory_menu_recipe_overview.sql', 'utf8'));
     sql(`insert into public.admin_users(email) values ('admin@test.invalid');
-      insert into public.staff_profiles(email,full_name,is_active) values ('cashier@test.invalid','Caja',true),('bar@test.invalid','Bar',true),('kitchen@test.invalid','Cocina',true),('waiter@test.invalid','Mesero',true),('inactive@test.invalid','Inactivo',false);
-      insert into public.staff_role_assignments(email,role) values ('cashier@test.invalid','cashier'),('bar@test.invalid','bar'),('kitchen@test.invalid','kitchen'),('waiter@test.invalid','waiter'),('inactive@test.invalid','cashier');
-      insert into public.menu_items(source_key,legacy_id,slug,hoja_origen,tipo,name,orden) values ('menu-burger',9001,'burger','test','Comida','Hamburguesa',1),('menu-soda',9002,'soda','test','Bebida','Soda',2);`);
+      insert into public.staff_profiles(email,full_name,is_active) values ('super@test.invalid','Superadmin',true),('cashier@test.invalid','Caja',true),('bar@test.invalid','Bar',true),('kitchen@test.invalid','Cocina',true),('waiter@test.invalid','Mesero',true),('inactive@test.invalid','Inactivo',false);
+      insert into public.staff_role_assignments(email,role) values ('super@test.invalid','superadmin'),('cashier@test.invalid','cashier'),('bar@test.invalid','bar'),('kitchen@test.invalid','kitchen'),('waiter@test.invalid','waiter'),('inactive@test.invalid','cashier');
+      insert into public.menu_items(source_key,legacy_id,slug,hoja_origen,tipo,name,orden,precio_venta) values ('menu-burger',9001,'burger','test','Comida','Hamburguesa',1,30000),('menu-soda',9002,'soda','test','Bebida','Soda',2,9000);`);
 
     let bread;
     let openSessionId;
@@ -92,6 +93,14 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
       assert.equal(sql(login('cashier@test.invalid')+`select source_key from public.pos_product_options() where source_key='menu-private-pos';`),'menu-private-pos');
       assert.equal(sql(`select count(*) from public.menu_items_public where source_key='menu-private-pos';`),'0');
       fails(login('outside@test.invalid')+`select * from public.pos_product_options();`,'Acceso denegado al catálogo operativo');
+    });
+    await t.test('administración de recetas lee precios sin ampliar permisos del catálogo', () => {
+      const catalogAdmin = JSON.parse(sql(login('admin@test.invalid')+`select public.inventory_read();`));
+      const superadmin = JSON.parse(sql(login('super@test.invalid')+`select public.inventory_read();`));
+      assert.equal(catalogAdmin.menu_items.find((item)=>item.source_key==='menu-burger').price, 30000);
+      assert.equal(superadmin.menu_items.find((item)=>item.source_key==='menu-burger').price, 30000);
+      assert.equal(sql(login('super@test.invalid')+`select count(*) from public.menu_items;`), '0');
+      assert.deepEqual(JSON.parse(sql(login('bar@test.invalid')+`select public.inventory_read();`)).menu_items, []);
     });
     await t.test('migración conserva historia y recupera el último costo real conocido', () => {
       assert.equal(Number(sql(`select last_unit_cost from public.inventory_item_valuations where item_id='${legacyItemId}';`)), 12.5);
