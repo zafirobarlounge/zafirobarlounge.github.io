@@ -114,7 +114,7 @@ function getSubmissionQuantity(submission: InventorySubmission) {
   return submission.kind === 'count' ? line.observed_quantity : line.requested_quantity;
 }
 
-export function AreaInventoryPanel({ area }: { area: PosInventoryArea }) {
+export function AreaInventoryPanel({ area, refreshVersion = 0 }: { area: PosInventoryArea; refreshVersion?: number }) {
   const [expanded, setExpanded] = useState(false);
   const [recentReportsExpanded, setRecentReportsExpanded] = useState(false);
   const [data, setData] = useState<InventoryData>(emptyData);
@@ -132,12 +132,13 @@ export function AreaInventoryPanel({ area }: { area: PosInventoryArea }) {
   const [saving, setSaving] = useState(false);
   const [recentSubmissions, setRecentSubmissions] = useState<InventorySubmission[]>([]);
   const loadingRef = useRef(false);
+  const pendingRefreshRef = useRef(false);
   const { search, status } = filters[usageType];
   const deferredSearch = useDeferredValue(search);
   const areaLabel = area === 'bar' ? 'Bar' : 'Cocina';
 
   const refresh = useCallback(async (force = false) => {
-    if (loadingRef.current) return;
+    if (loadingRef.current) { if(force)pendingRefreshRef.current=true; return; }
     const cached = inventoryCache.current[usageType];
     if (!force && cached) { setData(cached); setHasLoaded(true); return; }
     loadingRef.current = true;
@@ -155,8 +156,15 @@ export function AreaInventoryPanel({ area }: { area: PosInventoryArea }) {
       loadingRef.current = false;
       setLoading(false);
     }
+    if(pendingRefreshRef.current){pendingRefreshRef.current=false;void refresh(true);}
   }, [area, usageType]);
   useEffect(() => { if (expanded) void refresh(); }, [expanded, refresh]);
+  useEffect(() => {
+    if(!hasLoaded)return;
+    inventoryCache.current={};
+    if(expanded)void refresh(true);
+    else setHasLoaded(false);
+  },[refreshVersion]);
 
   const summary = useMemo(() => summarizeAreaInventory(data.items, area), [area, data.items]);
   const items = useMemo(

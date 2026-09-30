@@ -8,7 +8,7 @@ import {
   type InventoryArea, type InventoryAreaDefinition, type InventoryCursor, type InventoryData, type InventoryItem, type InventoryMenuRecipeStatus, type InventoryReceipt, type InventoryStockAreaFilter, type InventoryStockOrder, type InventoryStockStatusFilter, type InventorySubmission, type InventorySubmissionKind, type InventoryUnit, type InventoryUsageType, type PosInventoryArea,
 } from './inventory.domain';
 import { createInventoryTemplateWorkbook, inventoryImportFingerprint, parseInventoryWorkbook, type ParsedInventoryImport } from './inventory-import';
-import { commitInventoryImport, deleteInventoryConfiguration, downloadInventoryCsv, loadInventory, loadInventoryMovementExport, loadInventoryMovementsPage, loadInventoryPendingReplenishments, loadInventoryReceiptsPage, loadInventorySubmissionsPage, previewInventoryImport, saveInventoryCommand, type InventoryImportServerPreview } from './inventory.repository';
+import { commitInventoryImport, deleteInventoryConfiguration, downloadInventoryCsv, loadInventory, loadInventoryMovementExport, loadInventoryMovementsPage, loadInventoryPendingReplenishments, loadInventoryReceiptsPage, loadInventorySubmissionsPage, previewInventoryImport, saveInventoryCommand, subscribeToInventoryRealtime, type InventoryImportServerPreview, type InventoryRealtimeEventKind } from './inventory.repository';
 import { InventoryStatusBadge, inventoryStatusLabels } from './InventoryStatusBadge';
 
 type Tab = 'stock' | 'receipts' | 'requests' | 'history' | 'recipes' | 'configuration';
@@ -36,7 +36,8 @@ export function AdminInventoryView() {
   const [editingArea, setEditingArea] = useState<InventoryAreaDefinition | null>(null);
   const [selectedRecipeMenuKey, setSelectedRecipeMenuKey] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [refreshVersion, setRefreshVersion] = useState(0);
+  const [sectionRefreshVersions, setSectionRefreshVersions] = useState({ receipts: 0, requests: 0, history: 0 });
+  const refreshRequestIdRef = useRef(0);
   const operationalArea: PosInventoryArea | null = hasRole('kitchen') ? 'kitchen' : hasRole('bar') ? 'bar' : null;
   const mayOpen = isCatalogAdmin || staffRoles.some((role) => ['superadmin','cashier','bar','kitchen'].includes(role));
 
@@ -47,16 +48,36 @@ export function AdminInventoryView() {
     setStockUsageType(next);
   };
 
-  const refresh = useCallback(async (force = false) => {
+  const refresh = useCallback(async (force = false, background = false) => {
     const key: InventoryUsageType | 'all' = tab === 'stock' ? stockUsageType : 'all';
     const cached = inventoryCache.current[key];
     if (!force && cached) { setData(cached); setLoading(false); return; }
-    setLoading(true); setError(null);
-    try { const next = await loadInventory(key === 'all' ? null : key); inventoryCache.current[key] = next; setData(next); setRefreshVersion((current) => current + 1); }
+    const requestId = ++refreshRequestIdRef.current;
+    if (!background) setLoading(true);
+    setError(null);
+    try { const next = await loadInventory(key === 'all' ? null : key); if(requestId===refreshRequestIdRef.current){inventoryCache.current[key] = next; setData(next);} }
     catch (reason) { setError(reason instanceof Error ? reason.message : 'No se pudo cargar inventario.'); }
-    finally { setLoading(false); }
+    finally { if(!background)setLoading(false); }
   }, [stockUsageType, tab]);
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+  const refreshSections = useCallback((kinds?: InventoryRealtimeEventKind[]) => {
+    const refreshAll=!kinds;
+    setSectionRefreshVersions((current)=>({
+      receipts:current.receipts+(refreshAll||kinds.includes('receipt')?1:0),
+      requests:current.requests+(refreshAll||kinds.includes('submission')?1:0),
+      history:current.history+(refreshAll||kinds.includes('movement')?1:0),
+    }));
+  },[]);
   useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => {
+    if(!mayOpen)return undefined;
+    return subscribeToInventoryRealtime((kinds)=>{
+      inventoryCache.current={};
+      refreshSections(kinds);
+      void refreshRef.current(true,true);
+    });
+  },[mayOpen,refreshSections]);
   useEffect(() => {
     if (!notice && !error) return undefined;
     const timer = window.setTimeout(() => {
@@ -70,14 +91,14 @@ export function AdminInventoryView() {
     setBusy(true); setError(null); setNotice(null);
     try {
       await saveInventoryCommand(crypto.randomUUID(), payload);
-      inventoryCache.current = {}; setNotice(message); setModal(null); setSelectedItemId(null); await refresh(true);
+      inventoryCache.current = {}; setNotice(message); setModal(null); setSelectedItemId(null); refreshSections(); await refresh(true);
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'No se pudo guardar.'); }
     finally { setBusy(false); }
   };
   const remove = async (payload: Record<string, unknown>, label: string) => {
     if (!window.confirm(`¿Eliminar ${label}? Solo se permitirá si nunca se ha utilizado.`)) return;
     setBusy(true); setError(null); setNotice(null);
-    try { await deleteInventoryConfiguration(crypto.randomUUID(),payload); inventoryCache.current={}; setNotice(`${label} se eliminó.`); setModal(null); await refresh(true); }
+    try { await deleteInventoryConfiguration(crypto.randomUUID(),payload); inventoryCache.current={}; setNotice(`${label} se eliminó.`); setModal(null); refreshSections(); await refresh(true); }
     catch(reason){ setError(reason instanceof Error?reason.message:'No se pudo eliminar.'); }
     finally { setBusy(false); }
   };
@@ -105,9 +126,9 @@ export function AdminInventoryView() {
           </section>
           <nav className="mt-7 flex gap-2 overflow-x-auto pb-2">{tabs.map((value) => <button key={value} onClick={() => setTab(value)} className={`${tabButton} ${tab === value ? 'border-cyanGlow/45 bg-cyanGlow/14 text-cyanGlow' : 'border-white/10 bg-white/[0.03] text-mist'}`}>{tabLabels[value]}</button>)}</nav>
           {tab === 'stock' ? <StockTab data={data} loading={loading} usageType={stockUsageType} onUsageTypeChange={selectStockUsageType} onReceive={(itemId) => { setSelectedItemId(itemId); setModal('receive'); }} onAdjust={(itemId) => { setSelectedItemId(itemId); setModal('adjust'); }} /> : null}
-          {tab === 'receipts' ? <ReceiptsTab key={`receipts-${refreshVersion}`} data={data} onReceive={() => { setSelectedItemId(null); setModal('receive'); }} /> : null}
-          {tab === 'requests' ? <RequestsTab key={`requests-${refreshVersion}`} data={data} area={operationalArea} busy={busy} onCreate={() => setModal('submit')} onRun={run} /> : null}
-          {tab === 'history' ? <HistoryTab key={`history-${refreshVersion}`} data={data} /> : null}
+          {tab === 'receipts' ? <ReceiptsTab refreshVersion={sectionRefreshVersions.receipts} data={data} onReceive={() => { setSelectedItemId(null); setModal('receive'); }} /> : null}
+          {tab === 'requests' ? <RequestsTab refreshVersion={sectionRefreshVersions.requests} data={data} area={operationalArea} busy={busy} onCreate={() => setModal('submit')} onRun={run} /> : null}
+          {tab === 'history' ? <HistoryTab refreshVersion={sectionRefreshVersions.history} data={data} /> : null}
           {tab === 'recipes' && data.can_configure ? <MenuRecipesTab data={data} onConfigure={(menuKey) => { setSelectedRecipeMenuKey(menuKey); setModal('recipe'); }} /> : null}
           {tab === 'configuration' && data.can_configure ? <ConfigurationTab data={data} onAction={(next) => { setEditingItem(null); setEditingPresentation(null); setEditingArea(null); setModal(next); }} onEditItem={(item) => { setEditingItem(item); setModal('item'); }} onEditPresentation={(presentation) => { setEditingPresentation(presentation); setModal('presentation'); }} onEditArea={(area) => { setEditingArea(area); setModal('area'); }} /> : null}
         </>
@@ -153,10 +174,10 @@ function StockCard({ areaDefinitions, item, showCost, canManage, onAdjust, onRec
   </article>;
 }
 
-function ReceiptsTab({ data, onReceive }: { data: InventoryData; onReceive: () => void }) {
+function ReceiptsTab({ data, onReceive, refreshVersion }: { data: InventoryData; onReceive: () => void; refreshVersion: number }) {
   const [rows,setRows]=useState<InventoryReceipt[]>([]); const [hasMore,setHasMore]=useState(false); const [loading,setLoading]=useState(data.can_manage); const [pageError,setPageError]=useState<string|null>(null); const [cursors,setCursors]=useState<Array<InventoryCursor|null>>([null]); const [page,setPage]=useState(0);
   const itemName = (id: string) => data.items.find((item) => item.id === id)?.name ?? id;
-  useEffect(()=>{if(!data.can_manage)return undefined;let active=true;setLoading(true);setPageError(null);void loadInventoryReceiptsPage(cursors[page]).then((result)=>{if(active){setRows(result.rows);setHasMore(result.has_more);}}).catch((reason)=>{if(active)setPageError(reason instanceof Error?reason.message:'No se pudieron cargar las entradas.');}).finally(()=>{if(active)setLoading(false);});return()=>{active=false;};},[data.can_manage,page,cursors]);
+  useEffect(()=>{if(!data.can_manage)return undefined;let active=true;setLoading(true);setPageError(null);void loadInventoryReceiptsPage(cursors[page]).then((result)=>{if(active){setRows(result.rows);setHasMore(result.has_more);}}).catch((reason)=>{if(active)setPageError(reason instanceof Error?reason.message:'No se pudieron cargar las entradas.');}).finally(()=>{if(active)setLoading(false);});return()=>{active=false;};},[data.can_manage,page,cursors,refreshVersion]);
   const next=()=>{const last=rows[rows.length-1];if(!last)return;setCursors((current)=>[...current.slice(0,page+1),{timestamp:last.received_at,id:last.id}]);setPage((current)=>current+1);};
   if(!data.can_manage)return <section className="mt-5"><h2 className={sectionTitle}>Entradas de mercancía</h2><StateCard title="Consulta restringida">Las entradas y sus costos están disponibles únicamente para administración y caja.</StateCard></section>;
   return <section className="mt-5"><div className="flex flex-wrap items-end justify-between gap-3"><div><h2 className={sectionTitle}>Entradas de mercancía</h2><p className={sectionCopy}>20 entradas por página, ordenadas de la más reciente a la más antigua.</p></div><button className={primaryButton} onClick={onReceive}>Registrar entrada</button></div>
@@ -165,10 +186,10 @@ function ReceiptsTab({ data, onReceive }: { data: InventoryData; onReceive: () =
   </section>;
 }
 
-function RequestsTab({ data, area, busy, onCreate, onRun }: { data: InventoryData; area: InventoryArea | null; busy: boolean; onCreate: () => void; onRun: (payload: Record<string, unknown>, message: string) => Promise<void> }) {
+function RequestsTab({ data, area, busy, onCreate, onRun, refreshVersion }: { data: InventoryData; area: InventoryArea | null; busy: boolean; onCreate: () => void; onRun: (payload: Record<string, unknown>, message: string) => Promise<void>; refreshVersion: number }) {
   const pendingStatuses=['sent','partially_approved','approved','partially_received'];
   const [amounts,setAmounts]=useState<Record<string,string>>({}); const [rows,setRows]=useState<InventorySubmission[]>([]); const [hasMore,setHasMore]=useState(false); const [loading,setLoading]=useState(true); const [pageError,setPageError]=useState<string|null>(null); const [scope,setScope]=useState<'pending'|'all'>('pending'); const [kind,setKind]=useState<'all'|InventorySubmissionKind>('all'); const [status,setStatus]=useState('all'); const [areaFilter,setAreaFilter]=useState<'all'|InventoryArea>(area ?? 'all'); const [cursors,setCursors]=useState<Array<InventoryCursor|null>>([null]); const [page,setPage]=useState(0);
-  useEffect(()=>{let active=true;setLoading(true);setPageError(null);const requestedStatus=status==='all'?(scope==='pending'?'pending':null):status;void loadInventorySubmissionsPage(kind==='all'?null:kind,requestedStatus,areaFilter==='all'?null:areaFilter,cursors[page]).then((result)=>{if(active){setRows(result.rows);setHasMore(result.has_more);}}).catch((reason)=>{if(active)setPageError(reason instanceof Error?reason.message:'No se pudieron cargar las solicitudes.');}).finally(()=>{if(active)setLoading(false);});return()=>{active=false;};},[scope,kind,status,areaFilter,page,cursors]);
+  useEffect(()=>{let active=true;setLoading(true);setPageError(null);const requestedStatus=status==='all'?(scope==='pending'?'pending':null):status;void loadInventorySubmissionsPage(kind==='all'?null:kind,requestedStatus,areaFilter==='all'?null:areaFilter,cursors[page]).then((result)=>{if(active){setRows(result.rows);setHasMore(result.has_more);}}).catch((reason)=>{if(active)setPageError(reason instanceof Error?reason.message:'No se pudieron cargar las solicitudes.');}).finally(()=>{if(active)setLoading(false);});return()=>{active=false;};},[scope,kind,status,areaFilter,page,cursors,refreshVersion]);
   const resetFilter=(nextKind:'all'|InventorySubmissionKind,nextStatus:string,nextArea:'all'|InventoryArea=areaFilter)=>{setKind(nextKind);setStatus(nextStatus);setAreaFilter(nextArea);setCursors([null]);setPage(0);};
   const changeScope=(nextScope:'pending'|'all')=>{setScope(nextScope);if(nextScope==='pending'&&status!=='all'&&!pendingStatuses.includes(status))setStatus('all');setCursors([null]);setPage(0);};
   const review = (entry: InventorySubmission, reviewStatus: 'approved'|'partially_approved'|'rejected') => { const lines=entry.lines.map((line)=>({line_id:line.id,approved_quantity:reviewStatus==='rejected'?0:Number(amounts[line.id]??line.requested_quantity??line.observed_quantity??0)})); return onRun({action:'review_submission',submission_id:entry.id,status:reviewStatus,notes:reviewStatus==='rejected'?'Rechazada desde Inventario':'Revisada desde Inventario',lines},reviewStatus==='rejected'?'Solicitud rechazada.':'Solicitud revisada.'); };
@@ -191,9 +212,9 @@ function SubmissionLineDetails({ data, entry, line, amount, canEdit, onAmountCha
   </div>;
 }
 
-function HistoryTab({ data }: { data: InventoryData }) {
+function HistoryTab({ data, refreshVersion }: { data: InventoryData; refreshVersion: number }) {
   const [month,setMonth]=useState(inventoryMonthValue()); const [rows,setRows]=useState<InventoryData['movements']>([]); const [hasMore,setHasMore]=useState(false); const [loading,setLoading]=useState(true); const [exporting,setExporting]=useState(false); const [pageError,setPageError]=useState<string|null>(null); const [cursors,setCursors]=useState<Array<InventoryCursor|null>>([null]); const [page,setPage]=useState(0);
-  useEffect(()=>{let active=true;setLoading(true);setPageError(null);void loadInventoryMovementsPage(month,cursors[page]).then((result)=>{if(active){setRows(result.rows);setHasMore(result.has_more);}}).catch((reason)=>{if(active)setPageError(reason instanceof Error?reason.message:'No se pudo cargar el historial.');}).finally(()=>{if(active)setLoading(false);});return()=>{active=false;};},[month,page,cursors]);
+  useEffect(()=>{let active=true;setLoading(true);setPageError(null);void loadInventoryMovementsPage(month,cursors[page]).then((result)=>{if(active){setRows(result.rows);setHasMore(result.has_more);}}).catch((reason)=>{if(active)setPageError(reason instanceof Error?reason.message:'No se pudo cargar el historial.');}).finally(()=>{if(active)setLoading(false);});return()=>{active=false;};},[month,page,cursors,refreshVersion]);
   const changeMonth=(value:string)=>{setMonth(value);setCursors([null]);setPage(0);}; const next=()=>{const last=rows[rows.length-1];if(!last)return;setCursors((current)=>[...current.slice(0,page+1),{timestamp:last.occurred_at,id:last.id}]);setPage((current)=>current+1);};
   const exportCsv=async()=>{setExporting(true);setPageError(null);try{const allRows=await loadInventoryMovementExport(month);downloadInventoryCsv(`inventario-${month}.csv`,inventoryMovementCsv(allRows));}catch(reason){setPageError(reason instanceof Error?reason.message:'No se pudo exportar el historial.');}finally{setExporting(false);}};
   return <section className="mt-5"><div className="flex flex-wrap items-end justify-between gap-3"><div><h2 className={sectionTitle}>Historial inmutable</h2><p className={sectionCopy}>50 movimientos por página. El mes y la exportación completa se resuelven en PostgreSQL.</p></div><button className={ghostButton} disabled={exporting} onClick={()=>void exportCsv()}>{exporting?'Exportando…':'Exportar CSV del mes'}</button></div>

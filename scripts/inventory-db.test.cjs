@@ -71,6 +71,7 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
     sql(readFileSync('supabase/migrations/202609290017_pos_available_products.sql', 'utf8'));
     sql(readFileSync('supabase/migrations/202609290018_inventory_menu_recipe_overview.sql', 'utf8'));
     sql(readFileSync('supabase/migrations/202609290019_inventory_void_courtesy.sql', 'utf8'));
+    sql(readFileSync('supabase/migrations/202609290020_inventory_realtime_signal.sql', 'utf8'));
     sql(`insert into public.admin_users(email) values ('admin@test.invalid');
       insert into public.staff_profiles(email,full_name,is_active) values ('super@test.invalid','Superadmin',true),('cashier@test.invalid','Caja',true),('bar@test.invalid','Bar',true),('kitchen@test.invalid','Cocina',true),('waiter@test.invalid','Mesero',true),('inactive@test.invalid','Inactivo',false);
       insert into public.staff_role_assignments(email,role) values ('super@test.invalid','superadmin'),('cashier@test.invalid','cashier'),('bar@test.invalid','bar'),('kitchen@test.invalid','kitchen'),('waiter@test.invalid','waiter'),('inactive@test.invalid','cashier');
@@ -88,6 +89,16 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
       assert.equal(removeConfig('admin@test.invalid',{action:'delete_area',code:area.code}).code,area.code);
       fails(login('cashier@test.invalid')+`select public.inventory_delete_configuration('${randomUUID()}',${quote(JSON.stringify({action:'delete_area',code:'operations'}))}::jsonb);`,'Solo administración');
       fails(login('admin@test.invalid')+`select public.inventory_delete_configuration('${randomUUID()}',${quote(JSON.stringify({action:'delete_area',code:'bar'}))}::jsonb);`,'protegida por el POS');
+    });
+    await t.test('señal Realtime no expone costos y cubre configuración, movimientos y solicitudes', () => {
+      const item=command('admin@test.invalid',{action:'save_item',name:'Señal realtime',base_unit:'unit',precision_scale:0,areas:['bar']});
+      command('cashier@test.invalid',{action:'initial_count',item_id:item.id,quantity:4,reason:'Prueba realtime'});
+      command('bar@test.invalid',{action:'submit',kind:'replenishment',area:'bar',status:'sent',notes:'Prueba realtime',lines:[{item_id:item.id,requested_quantity:2,notes:''}]});
+      assert.equal(sql(`select string_agg(distinct event_kind,',' order by event_kind) from public.inventory_realtime_events;`),'configuration,movement,submission');
+      assert.equal(Number(sql(login('bar@test.invalid')+`select count(*) from public.inventory_realtime_events;`))>0,true);
+      assert.equal(sql(login('waiter@test.invalid')+`select count(*) from public.inventory_realtime_events;`),'0');
+      assert.equal(sql(`select count(*) from information_schema.columns where table_schema='public' and table_name='inventory_realtime_events' and column_name not in ('id','event_kind','occurred_at');`),'0');
+      assert.equal(sql(`select count(*) from pg_trigger where not tgisinternal and tgname in ('inventory_movements_realtime','inventory_submissions_realtime','inventory_receipts_realtime');`),'3');
     });
     await t.test('POS ve productos disponibles aunque estén ocultos de la web', () => {
       sql(`insert into public.menu_items(source_key,legacy_id,slug,hoja_origen,tipo,name,orden,visible,disponible,destacado) values ('menu-private-pos',9010,'private-pos','test','Comida','Poke POS',10,false,true,false);`);

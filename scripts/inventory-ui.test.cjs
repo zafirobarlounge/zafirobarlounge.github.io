@@ -446,3 +446,49 @@ test('estados de solicitudes reutilizan una pildora visual central con indicador
   assert.match(areaPanel, /<InventoryStatusBadge status=\{submission\.status\}/);
   assert.match(adminView, /Object\.entries\(inventoryStatusLabels\)/);
 });
+
+test('Realtime de inventario agrupa eventos, actualiza ambos clientes y limpia suscripciones', async () => {
+  const channels=[]; let removals=0;
+  const client={
+    channel(name){
+      const channel={name,handlers:[],on(_type,filter,handler){this.handlers.push({filter,handler});return this;},subscribe(){return this;}};
+      channels.push(channel);return channel;
+    },
+    removeChannel(){removals+=1;return Promise.resolve();},
+  };
+  const repositoryContext={exports:{},require:(name)=>name.includes('/client')?{getSupabaseClient:()=>client}:{},setTimeout,clearTimeout,URL,Blob};
+  vm.runInNewContext(compile('src/admin/inventory/inventory.repository.ts'),repositoryContext);
+  const batches={pos:[],inventory:[]};
+  const stopPos=repositoryContext.exports.subscribeToInventoryRealtime((kinds)=>batches.pos.push(Array.from(kinds)),5);
+  const stopInventory=repositoryContext.exports.subscribeToInventoryRealtime((kinds)=>batches.inventory.push(Array.from(kinds)),5);
+  for(const channel of channels){
+    const emit=channel.handlers[0].handler;
+    emit({new:{event_kind:'movement'}});emit({new:{event_kind:'movement'}});emit({new:{event_kind:'submission'}});
+  }
+  await new Promise((resolve)=>setTimeout(resolve,20));
+  assert.deepEqual(batches,{pos:[['movement','submission']],inventory:[['movement','submission']]});
+  stopPos();stopInventory();
+  for(const channel of channels)channel.handlers[0].handler({new:{event_kind:'receipt'}});
+  await new Promise((resolve)=>setTimeout(resolve,10));
+  assert.equal(removals,2);
+  assert.deepEqual(batches,{pos:[['movement','submission']],inventory:[['movement','submission']]});
+});
+
+test('POS e Inventario refrescan modelos ligeros y operaciones locales sin reemplazar realtime de pedidos', () => {
+  const pos=readFileSync('src/admin/AdminPosView.tsx','utf8');
+  const admin=readFileSync('src/admin/inventory/AdminInventoryView.tsx','utf8');
+  const area=readFileSync('src/admin/inventory/AreaInventoryPanel.tsx','utf8');
+  const migration=readFileSync('supabase/migrations/202609290020_inventory_realtime_signal.sql','utf8');
+  assert.match(pos,/subscribeToInventoryRealtime\(\(\)=>\{void refreshPosInventoryReadModels\(\);\}\)/);
+  assert.match(pos,/subscribeToPosRealtime\(/);
+  assert.ok((pos.match(/void refreshPosInventoryReadModels\(\)/g)??[]).length>=4);
+  assert.match(pos,/<AreaInventoryPanel area="bar" refreshVersion=\{inventoryRefreshVersion\}/);
+  assert.match(admin,/subscribeToInventoryRealtime\(\(kinds\)=>/);
+  assert.match(admin,/refreshRef\.current\(true,true\)/);
+  assert.match(admin,/refreshSections\(\); await refresh\(true\)/);
+  assert.match(admin,/refreshVersion=\{sectionRefreshVersions\.history\}/);
+  assert.match(area,/if\(expanded\)void refresh\(true\)/);
+  assert.match(migration,/create table public\.inventory_realtime_events/);
+  assert.match(migration,/alter publication supabase_realtime add table public\.inventory_realtime_events/);
+  assert.doesNotMatch(migration,/unit_cost|tracked_value|quantity_delta/);
+});

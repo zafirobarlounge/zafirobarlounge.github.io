@@ -1,6 +1,50 @@
 import { getSupabaseClient } from '../../integrations/supabase/client';
+import type { RealtimeChannel, RealtimePostgresChangesPayload } from '@supabase/supabase-js';
 import type { InventoryArea, InventoryCursor, InventoryCursorPage, InventoryData, InventoryMenuAlert, InventoryMovement, InventoryReceipt, InventorySubmission, InventorySubmissionKind, InventoryUsageType, PosInventoryArea } from './inventory.domain';
 import type { InventoryImportPayload } from './inventory-import';
+
+export type InventoryRealtimeEventKind = 'movement' | 'submission' | 'receipt' | 'configuration';
+let inventoryRealtimeChannelSequence = 0;
+
+export function subscribeToInventoryRealtime(
+  onChange: (eventKinds: InventoryRealtimeEventKind[]) => void,
+  debounceMs = 80,
+) {
+  const supabase = getSupabaseClient();
+  const channel: RealtimeChannel = supabase.channel(`zafiro-inventory-live-${++inventoryRealtimeChannelSequence}`);
+  const pendingKinds = new Set<InventoryRealtimeEventKind>();
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let active = true;
+
+  const flush = () => {
+    timer = null;
+    if (!active || pendingKinds.size === 0) return;
+    const kinds = Array.from(pendingKinds);
+    pendingKinds.clear();
+    onChange(kinds);
+  };
+
+  channel
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'inventory_realtime_events' },
+      (payload: RealtimePostgresChangesPayload<Record<string, unknown>>) => {
+        if (!active) return;
+        const kind = (payload.new as Record<string, unknown>)?.event_kind;
+        if (kind === 'movement' || kind === 'submission' || kind === 'receipt' || kind === 'configuration') {
+          pendingKinds.add(kind);
+        }
+        if (timer != null) clearTimeout(timer);
+        timer = setTimeout(flush, debounceMs);
+      })
+    .subscribe();
+
+  return () => {
+    if (!active) return;
+    active = false;
+    if (timer != null) clearTimeout(timer);
+    pendingKinds.clear();
+    void supabase.removeChannel(channel);
+  };
+}
 
 export async function loadInventory(usageType: InventoryUsageType | null = null, area: InventoryArea | null = null): Promise<InventoryData> {
   const { data, error } = await getSupabaseClient().rpc('inventory_read' as never, { requested_usage_type: usageType, requested_area: area } as never);

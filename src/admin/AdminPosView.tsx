@@ -1,11 +1,11 @@
 import { Link } from 'react-router-dom';
 import { AdminCashView } from './cash/AdminCashView';
 import type { ReactNode } from 'react';
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { Check, ChevronDown, Gift, LayoutGrid, List, PackageCheck, Trash2, Utensils } from 'lucide-react';
 import { AdminLayout } from './AdminLayout';
 import { useSupabaseAuth } from '../auth/SupabaseAuthProvider';
-import { loadInventoryMenuAlerts, loadPosConsumptionResolution, type PosConsumptionResolutionLine } from './inventory/inventory.repository';
+import { loadInventoryMenuAlerts, loadPosConsumptionResolution, subscribeToInventoryRealtime, type PosConsumptionResolutionLine } from './inventory/inventory.repository';
 import type { InventoryMenuAlert } from './inventory/inventory.domain';
 import { AreaInventoryPanel } from './inventory/AreaInventoryPanel';
 import type {
@@ -213,6 +213,9 @@ export function AdminPosView() {
     : null;
   const [products, setProducts] = useState<PosProductOption[]>([]);
   const [inventoryMenuAlerts, setInventoryMenuAlerts] = useState<InventoryMenuAlert[]>([]);
+  const [inventoryRefreshVersion, setInventoryRefreshVersion] = useState(0);
+  const inventoryRefreshRequestRef = useRef(0);
+  const inventoryRealtimeActiveRef = useRef(true);
   const [selectedTableId, setSelectedTableIdState] = useState<string | null>(null);
   const selectedTableIdRef = useRef<string | null>(null);
   const [isTableSheetOpen, setIsTableSheetOpen] = useState(false);
@@ -506,11 +509,23 @@ export function AdminPosView() {
     };
   }, [canOperateFloor, selectedProductSourceKey]);
 
+  const refreshPosInventoryReadModels = useCallback(async () => {
+    const requestId=++inventoryRefreshRequestRef.current;
+    setInventoryRefreshVersion((current)=>current+1);
+    try {
+      const alerts=await loadInventoryMenuAlerts();
+      if(inventoryRealtimeActiveRef.current&&requestId===inventoryRefreshRequestRef.current)setInventoryMenuAlerts(alerts);
+    } catch {
+      // Preserve the last valid snapshot when a background refresh fails.
+    }
+  },[]);
+
   useEffect(() => {
-    let active = true;
-    void loadInventoryMenuAlerts().then((alerts) => { if (active) setInventoryMenuAlerts(alerts); }).catch(() => { if (active) setInventoryMenuAlerts([]); });
-    return () => { active = false; };
-  }, [posState?.activeSalesSession?.id]);
+    inventoryRealtimeActiveRef.current=true;
+    void refreshPosInventoryReadModels();
+    const unsubscribe=subscribeToInventoryRealtime(()=>{void refreshPosInventoryReadModels();});
+    return () => { inventoryRealtimeActiveRef.current=false;unsubscribe(); };
+  }, [refreshPosInventoryReadModels]);
 
   useEffect(() => {
     let isMounted = true;
@@ -1836,6 +1851,7 @@ export function AdminPosView() {
     await executeAction(`${item.productName} entregado`, async () => markOrderItemDeliveredInSupabase(item.id, actor, item), {
       onSuccess: (updatedItem) => {
         setPosState((current) => (current ? mergeUpdatedItemsIntoPosState(current, [updatedItem]) : current));
+        void refreshPosInventoryReadModels();
       },
     });
   };
@@ -1844,6 +1860,7 @@ export function AdminPosView() {
     await executeAction(`${item.productName} entregado directo`, async () => markOrderItemDirectDeliveredInSupabase(item.id, actor, item), {
       onSuccess: (updatedItem) => {
         setPosState((current) => (current ? mergeUpdatedItemsIntoPosState(current, [updatedItem]) : current));
+        void refreshPosInventoryReadModels();
       },
     });
   };
@@ -1917,6 +1934,7 @@ export function AdminPosView() {
       onSuccess: (updatedItems) => {
         setInventoryVoidDialog(null);
         setPosState((current) => (current ? mergeUpdatedItemsIntoPosState(current, updatedItems) : current));
+        void refreshPosInventoryReadModels();
       },
     });
   };
@@ -3101,7 +3119,7 @@ export function AdminPosView() {
             operationalFlowSettings={operationalFlowSettings}
             title="Cola de cocina"
           />
-          <AreaInventoryPanel area="kitchen" />
+          <AreaInventoryPanel area="kitchen" refreshVersion={inventoryRefreshVersion} />
         </div>
       ) : null}
 
@@ -3116,7 +3134,7 @@ export function AdminPosView() {
             operationalFlowSettings={operationalFlowSettings}
             title="Cola de bebidas"
           />
-          <AreaInventoryPanel area="bar" />
+          <AreaInventoryPanel area="bar" refreshVersion={inventoryRefreshVersion} />
         </div>
       ) : null}
 
