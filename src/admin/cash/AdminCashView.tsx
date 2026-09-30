@@ -545,22 +545,24 @@ export function AdminCashView({ embedded = false, initialAction = null, onClose 
           </div>
         )}
         <div className="flex flex-wrap items-center gap-3">
+          {data ? <>
+            <button className={button} disabled={busy} onClick={() => openModal('session')}>{active ? 'Arqueo y cierre de jornada' : 'Abrir jornada y caja'}</button>
+            <button className={button} disabled={busy} onClick={() => openModal('movement')}>Registrar movimiento</button>
+            {allowed && selected && <Link to={sessionDetailUrl(selected.id)} className={button}>Ver detalle de la jornada</Link>}
+          </> : null}
           <button
-            className={`${button} inline-flex items-center gap-2`}
+            type="button"
+            className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-cyanGlow/40 text-cyanGlow transition hover:border-cyanGlow hover:bg-cyanGlow/10 disabled:opacity-40 sm:ml-auto"
             disabled={busy}
+            aria-label="Recargar caja y gastos"
+            title="Recargar caja y gastos"
             onClick={() => {
               setError("");
               void refresh().catch((e) => setError(e.message));
             }}
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={`h-4 w-4 ${busy ? 'animate-spin' : ''}`} aria-hidden="true"><path d="M20 11a8.1 8.1 0 1 0 2.2 5.5"/><path d="M20 4v7h-7"/></svg>
-            Recargar caja y gastos
           </button>
-          {data ? <>
-            <button className={button} disabled={busy} onClick={() => openModal('session')}>{active ? 'Arqueo y cierre de jornada' : 'Abrir jornada y caja'}</button>
-            <button className={button} disabled={busy} onClick={() => openModal('movement')}>Registrar movimiento</button>
-            {allowed && selected && <Link to={sessionDetailUrl(selected.id)} className={button}>Ver detalle de la jornada</Link>}
-          </> : null}
         </div>
         {!data ? (
           <p>Cargando módulo de caja…</p>
