@@ -30,7 +30,7 @@ import { sessionDetailUrl } from './sessionFinance';
 const input =
   "w-full rounded-xl border border-white/20 bg-obsidian p-3 text-ivory";
 const button =
-  "rounded-full border border-cyanGlow/40 px-4 py-2 text-cyanGlow disabled:opacity-40";
+  "rounded-full border border-cyanGlow/40 px-4 py-2 text-cyanGlow transition duration-200 hover:-translate-y-0.5 hover:border-cyanGlow hover:bg-cyanGlow/10 hover:shadow-[0_8px_24px_rgba(47,201,255,0.12)] active:translate-y-0 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyanGlow/60 disabled:pointer-events-none disabled:opacity-40";
 const panel =
   "space-y-4 rounded-2xl border border-white/10 bg-white/[0.03] p-4 sm:p-6";
 function Field({ label, children }: { label: string; children: ReactNode }) {
@@ -552,7 +552,7 @@ export function AdminCashView({ embedded = false, initialAction = null, onClose 
           </> : null}
           <button
             type="button"
-            className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-cyanGlow/40 text-cyanGlow transition hover:border-cyanGlow hover:bg-cyanGlow/10 disabled:opacity-40 sm:ml-auto"
+            className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-cyanGlow/40 text-cyanGlow transition duration-200 hover:-translate-y-0.5 hover:border-cyanGlow hover:bg-cyanGlow/10 hover:shadow-[0_8px_24px_rgba(47,201,255,0.12)] active:translate-y-0 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyanGlow/60 disabled:pointer-events-none disabled:opacity-40 sm:ml-auto"
             disabled={busy}
             aria-label="Recargar caja y gastos"
             title="Recargar caja y gastos"
