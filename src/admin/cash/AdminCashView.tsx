@@ -568,34 +568,36 @@ export function AdminCashView({ embedded = false, initialAction = null, onClose 
           <p>Cargando módulo de caja…</p>
         ) : (
           <>
-            <Field label="Mes de consulta">
-              <input type="month" className={input} value={month} disabled={busy} onChange={e => {
-                if (!e.target.value) return;
-                setMonth(e.target.value); setSessionId(''); setCounted('');
-                setFilters(f => ({ ...f, session: 'all', start: '', end: '' }));
-              }} />
-            </Field>
+            <div className="grid gap-4 md:grid-cols-2">
+              <Field label="Mes de consulta">
+                <input type="month" className={input} value={month} disabled={busy} onChange={e => {
+                  if (!e.target.value) return;
+                  setMonth(e.target.value); setSessionId(''); setCounted('');
+                  setFilters(f => ({ ...f, session: 'all', start: '', end: '' }));
+                }} />
+              </Field>
+              <Field label="Jornada">
+                <select
+                  className={input}
+                  value={sessionId}
+                  onChange={(e) => {
+                    setSessionId(e.target.value);
+                    setFilters(f => ({ ...f, session: e.target.value ? 'selected' : 'all' }));
+                    setCounted("");
+                  }}
+                  disabled={busy}
+                >
+                  <option value="">Selecciona una jornada</option>
+                  {(modal ? data.sessions.filter(s => s.id === sessionId) : monthSessions).map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.session_label} ·{" "}
+                      {s.status === "open" ? "Abierta" : "Cerrada"}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            </div>
             {!monthSessions.length && <p className="text-mist">No hay jornadas en este mes. Puedes consultar los gastos sin jornada.</p>}
-            <Field label="Jornada">
-              <select
-                className={input}
-                value={sessionId}
-                onChange={(e) => {
-                  setSessionId(e.target.value);
-                  setFilters(f => ({ ...f, session: e.target.value ? 'selected' : 'all' }));
-                  setCounted("");
-                }}
-                disabled={busy}
-              >
-                <option value="">Selecciona una jornada</option>
-                {(modal ? data.sessions.filter(s => s.id === sessionId) : monthSessions).map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.session_label} ·{" "}
-                    {s.status === "open" ? "Abierta" : "Cerrada"}
-                  </option>
-                ))}
-              </select>
-            </Field>
             {selected && (
               <section className={panel}>
                 <h2 className="text-xl">Arqueo · {selected.business_date}</h2>
