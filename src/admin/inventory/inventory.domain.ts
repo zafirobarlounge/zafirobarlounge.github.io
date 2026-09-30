@@ -251,7 +251,7 @@ export const inventoryUnitLabels: Record<InventoryUnit, string> = {
 
 export const movementLabels: Record<string, string> = {
   initial_count: 'Conteo inicial', purchase_receipt: 'Recepción de compra', pos_consumption: 'Consumo POS',
-  recoverable_return: 'Devolución recuperable', waste: 'Merma', internal_consumption: 'Consumo interno/cortesía',
+  recoverable_return: 'Devolución recuperable', waste: 'Merma', courtesy_consumption: 'Cortesía', internal_consumption: 'Consumo interno',
   count_adjustment: 'Ajuste por conteo', correction: 'Corrección compensatoria',
 };
 

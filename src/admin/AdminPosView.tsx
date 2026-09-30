@@ -1902,18 +1902,17 @@ export function AdminPosView() {
 
   const handleConfirmDeliveredVoid = async () => {
     if (!inventoryVoidDialog) return;
-    if (inventoryVoidDialog.lines.length && !inventoryVoidDialog.advanced && !inventoryVoidDialog.destination) {
-      setErrorMessage('Selecciona qué ocurrió con el producto entregado.');
-      return;
-    }
-    if (inventoryVoidDialog.advanced && inventoryVoidDialog.lines.some((line) => !line.destination)) {
-      setErrorMessage('Selecciona un destino para cada ingrediente.');
-      return;
-    }
     const dialog = inventoryVoidDialog;
+    let resolutions: ReturnType<typeof buildInventoryVoidResolution>[];
+    try {
+      resolutions=buildInventoryVoidResolutions(dialog);
+    } catch(error) {
+      setErrorMessage(error instanceof Error?error.message:'Selecciona el destino de la anulación.');
+      return;
+    }
     await executeAction(`Unidad anulada por excepción: ${dialog.item.productName}`, async () => voidProcessedOrderItemInSupabase(
       dialog.item.id, dialog.reason, actor, dialog.item, 1,
-      dialog.lines.map((line) => buildInventoryVoidResolution(line,dialog.advanced?line.destination:dialog.destination)),
+      resolutions,
     ), {
       onSuccess: (updatedItems) => {
         setInventoryVoidDialog(null);
@@ -5656,7 +5655,8 @@ function buildInventoryVoidResolution(line: InventoryVoidAllocation,destination:
     consumption_line_id:line.consumption_line_id,
     returned_quantity:destination==='returned'?quantity:0,
     waste_quantity:destination==='waste'?quantity:0,
-    internal_quantity:destination==='courtesy'||destination==='internal'?quantity:0,
+    courtesy_quantity:destination==='courtesy'?quantity:0,
+    internal_quantity:destination==='internal'?quantity:0,
     client_consumed_quantity:0,
     classification:destination,
   };
@@ -5668,6 +5668,13 @@ function canAdjustInventoryVoidByIngredient(lines: InventoryVoidAllocation[]) {
 
 function canConfirmInventoryVoid(value: InventoryVoidDialogState) {
   return value.advanced?value.lines.every((line)=>line.destination!==null):value.destination!==null;
+}
+
+function buildInventoryVoidResolutions(value: InventoryVoidDialogState) {
+  if(!canConfirmInventoryVoid(value)) {
+    throw new Error(value.advanced?'Selecciona un destino para cada ingrediente.':'Selecciona qué ocurrió con el producto entregado.');
+  }
+  return value.lines.map((line)=>buildInventoryVoidResolution(line,value.advanced?line.destination:value.destination));
 }
 
 function InventoryAvailabilityNotice({ alert }: { alert: InventoryMenuAlert }) {

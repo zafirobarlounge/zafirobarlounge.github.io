@@ -70,6 +70,7 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
     sql(readFileSync('supabase/migrations/202609290016_inventory_safe_configuration_delete.sql', 'utf8'));
     sql(readFileSync('supabase/migrations/202609290017_pos_available_products.sql', 'utf8'));
     sql(readFileSync('supabase/migrations/202609290018_inventory_menu_recipe_overview.sql', 'utf8'));
+    sql(readFileSync('supabase/migrations/202609290019_inventory_void_courtesy.sql', 'utf8'));
     sql(`insert into public.admin_users(email) values ('admin@test.invalid');
       insert into public.staff_profiles(email,full_name,is_active) values ('super@test.invalid','Superadmin',true),('cashier@test.invalid','Caja',true),('bar@test.invalid','Bar',true),('kitchen@test.invalid','Cocina',true),('waiter@test.invalid','Mesero',true),('inactive@test.invalid','Inactivo',false);
       insert into public.staff_role_assignments(email,role) values ('super@test.invalid','superadmin'),('cashier@test.invalid','cashier'),('bar@test.invalid','bar'),('kitchen@test.invalid','kitchen'),('waiter@test.invalid','waiter'),('inactive@test.invalid','cashier');
@@ -113,6 +114,7 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
       assert.equal(sql(`select controls_inventory||':'||(quantity_base=1) from public.inventory_menu_recipe_components where menu_item_source_key='menu-legacy-recipe';`), 'true:true');
       assert.equal(sql(`select control_mode from public.inventory_menu_tracking where menu_item_source_key='menu-legacy-recipe';`), 'complete');
       assert.equal(sql(`select usage_type from public.inventory_items where id='${legacyItemId}';`), 'consumable');
+      assert.equal(sql(`select courtesy_quantity from public.inventory_pos_consumption_lines limit 1;`) || '0', '0');
     });
     await t.test('consumibles y operativos se separan y las recetas rechazan operativos', () => {
       const operational = command('admin@test.invalid', { action:'save_item',name:'Cuchara de prueba',base_unit:'unit',precision_scale:0,usage_type:'operational',areas:['kitchen'] });
@@ -343,6 +345,7 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
       const carne = command('admin@test.invalid', { action:'save_item',name:'Carne hamburguesa integración',base_unit:'unit',precision_scale:0,areas:['kitchen'] });
       const queso = command('admin@test.invalid', { action:'save_item',name:'Queso hamburguesa integración',base_unit:'gram',precision_scale:3,areas:['kitchen'] });
       const tomate = command('admin@test.invalid', { action:'save_item',name:'Tomate hamburguesa integración',base_unit:'gram',precision_scale:3,areas:['kitchen'] });
+      const descriptivo = command('admin@test.invalid', { action:'save_item',name:'Vegetal descriptivo integración',base_unit:'gram',precision_scale:3,areas:['kitchen'] });
       for (const item of [pan,carne,queso,tomate]) command('cashier@test.invalid', { action:'initial_count',item_id:item.id,quantity:0,reason:'Inicio integración POS' });
       command('cashier@test.invalid', { action:'receive',total_cost:90000,lines:[
         { item_id:pan.id,base_quantity:10,line_total_cost:10000 },
@@ -360,9 +363,10 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
         { item_id:carne.id,controls_inventory:true,quantity_base:1 },
         { item_id:queso.id,controls_inventory:true,quantity_base:20 },
         { item_id:tomate.id,controls_inventory:false,quantity_base:30 },
+        { item_id:descriptivo.id,controls_inventory:false,quantity_base:null },
       ] });
       let recipe = JSON.parse(sql(login('admin@test.invalid')+`select public.inventory_read();`)).recipes.filter((row)=>row.menu_item_source_key==='menu-inventory-integration-burger');
-      assert.equal(recipe.length,4);
+      assert.equal(recipe.length,5);
       assert.equal(recipe.find((row)=>row.item_id===tomate.id).controls_inventory,false);
       assert.equal(Number(recipe.find((row)=>row.item_id===tomate.id).tracked_component_cost),300);
       assert.equal(recipe.reduce((total,row)=>total+Number(row.tracked_component_cost),0),6700);
@@ -373,6 +377,11 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
       const deliver=login('waiter@test.invalid')+`select public.inventory_deliver_pos_item('${orderItemId}',false);`;
       await Promise.all([parallel(deliver),parallel(deliver)]);
       sql(deliver);
+
+      const resolutionView=JSON.parse(sql(login('cashier@test.invalid')+`select public.inventory_get_pos_consumption('${orderItemId}',1);`));
+      assert.equal(resolutionView.lines.length,3);
+      assert.equal(resolutionView.lines.some((line)=>line.item_id===descriptivo.id),false);
+      assert.equal(resolutionView.lines.some((line)=>line.item_id===tomate.id),false);
 
       assert.deepEqual({pan:balance(pan.id),carne:balance(carne.id),queso:balance(queso.id),tomate:balance(tomate.id)},{pan:9,carne:9,queso:980,tomate:1000});
       assert.equal(sql(`select count(*) from public.inventory_pos_consumptions where pos_order_item_id='${orderItemId}';`),'1');
@@ -399,6 +408,25 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
       assert.equal(Number(sql(`select unit_cost_snapshot from public.inventory_movements where order_item_id='${orderItemId}' and item_id='${pan.id}';`)),1000);
       recipe = JSON.parse(sql(login('admin@test.invalid')+`select public.inventory_read();`)).recipes.filter((row)=>row.menu_item_source_key==='menu-inventory-integration-burger');
       assert.equal(recipe.reduce((total,row)=>total+Number(row.tracked_component_cost),0),7800);
+
+      const beforeClassified={pan:balance(pan.id),carne:balance(carne.id),queso:balance(queso.id)};
+      const resolveByItem=new Map(resolutionView.lines.map((line)=>[line.item_id,line]));
+      const voidRequest=randomUUID();
+      const voidPayload={item_id:orderItemId,reason:'Clasificación por ingrediente',void_quantity:1,resolutions:[
+        {consumption_line_id:resolveByItem.get(pan.id).consumption_line_id,returned_quantity:0,waste_quantity:0,courtesy_quantity:1,internal_quantity:0,client_consumed_quantity:0,classification:'courtesy'},
+        {consumption_line_id:resolveByItem.get(carne.id).consumption_line_id,returned_quantity:0,waste_quantity:0,courtesy_quantity:0,internal_quantity:1,client_consumed_quantity:0,classification:'internal'},
+        {consumption_line_id:resolveByItem.get(queso.id).consumption_line_id,returned_quantity:0,waste_quantity:20,courtesy_quantity:0,internal_quantity:0,client_consumed_quantity:0,classification:'waste'},
+      ]};
+      const voidStatement=login('cashier@test.invalid')+`select public.inventory_void_processed_item('${voidRequest}',${quote(JSON.stringify(voidPayload))}::jsonb);`;
+      sql(voidStatement); sql(voidStatement);
+      assert.deepEqual({pan:balance(pan.id),carne:balance(carne.id),queso:balance(queso.id)},beforeClassified);
+      assert.equal(Number(sql(`select courtesy_quantity from public.inventory_pos_consumption_lines where id='${resolveByItem.get(pan.id).consumption_line_id}';`)),1);
+      assert.equal(Number(sql(`select internal_quantity from public.inventory_pos_consumption_lines where id='${resolveByItem.get(carne.id).consumption_line_id}';`)),1);
+      assert.equal(sql(`select count(*) from public.inventory_movements where order_item_id='${orderItemId}' and movement_type='courtesy_consumption';`),'1');
+      assert.equal(sql(`select count(*) from public.inventory_movements where order_item_id='${orderItemId}' and movement_type='internal_consumption';`),'1');
+      assert.equal(sql(`select string_agg(distinct movement_type,',' order by movement_type) from public.inventory_movements where order_item_id='${orderItemId}' and movement_type in ('courtesy_consumption','internal_consumption');`),'courtesy_consumption,internal_consumption');
+      assert.equal(sql(`select payload#>>'{resolutions,0,classification}' from public.inventory_command_audit where request_id='${voidRequest}';`),'courtesy');
+      assert.equal(Number(sql(`select sum(cl.tracked_cost) from public.inventory_pos_consumption_lines cl join public.inventory_pos_consumptions c on c.id=cl.consumption_id where c.pos_order_item_id='${orderItemId}';`)),6400);
     });
 
     await t.test('recetas costean componentes medidos y descuentan solo los controlados', async () => {

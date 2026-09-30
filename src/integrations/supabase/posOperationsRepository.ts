@@ -1138,6 +1138,7 @@ export async function voidProcessedOrderItemInSupabase(
     consumption_line_id: string;
     returned_quantity: number;
     waste_quantity: number;
+    courtesy_quantity: number;
     internal_quantity: number;
     client_consumed_quantity: number;
     classification?: 'returned' | 'waste' | 'courtesy' | 'internal' | null;

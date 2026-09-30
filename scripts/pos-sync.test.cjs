@@ -4,6 +4,8 @@ const path = require('node:path');
 const { test } = require('node:test');
 const vm = require('node:vm');
 const ts = require('typescript');
+const React = require('react');
+const { renderToStaticMarkup } = require('react-dom/server');
 
 const root = path.resolve(__dirname, '..');
 const repositoryPath = 'src/integrations/supabase/posOperationsRepository.ts';
@@ -41,10 +43,10 @@ test('POS vende productos disponibles aunque no estén visibles en la web', () =
 test('anulación entregada exige destinos simples o por ingrediente y nunca clasifica consumo del cliente', () => {
   const line = { consumption_line_id:'line-1',item_id:'item-1',item_name:'Pan',base_unit:'unit',quantity:1,already_resolved:0,destination:null };
   const resolve = loadNamedHelpers(posPath, ['buildInventoryVoidResolution']);
-  assert.deepEqual(plain(resolve(line,'returned')), { consumption_line_id:'line-1',returned_quantity:1,waste_quantity:0,internal_quantity:0,client_consumed_quantity:0,classification:'returned' });
-  assert.deepEqual(plain(resolve(line,'waste')), { consumption_line_id:'line-1',returned_quantity:0,waste_quantity:1,internal_quantity:0,client_consumed_quantity:0,classification:'waste' });
-  assert.deepEqual(plain(resolve(line,'courtesy')), { consumption_line_id:'line-1',returned_quantity:0,waste_quantity:0,internal_quantity:1,client_consumed_quantity:0,classification:'courtesy' });
-  assert.deepEqual(plain(resolve(line,'internal')), { consumption_line_id:'line-1',returned_quantity:0,waste_quantity:0,internal_quantity:1,client_consumed_quantity:0,classification:'internal' });
+  assert.deepEqual(plain(resolve(line,'returned')), { consumption_line_id:'line-1',returned_quantity:1,waste_quantity:0,courtesy_quantity:0,internal_quantity:0,client_consumed_quantity:0,classification:'returned' });
+  assert.deepEqual(plain(resolve(line,'waste')), { consumption_line_id:'line-1',returned_quantity:0,waste_quantity:1,courtesy_quantity:0,internal_quantity:0,client_consumed_quantity:0,classification:'waste' });
+  assert.deepEqual(plain(resolve(line,'courtesy')), { consumption_line_id:'line-1',returned_quantity:0,waste_quantity:0,courtesy_quantity:1,internal_quantity:0,client_consumed_quantity:0,classification:'courtesy' });
+  assert.deepEqual(plain(resolve(line,'internal')), { consumption_line_id:'line-1',returned_quantity:0,waste_quantity:0,courtesy_quantity:0,internal_quantity:1,client_consumed_quantity:0,classification:'internal' });
 
   const canAdjust = loadNamedHelpers(posPath, ['canAdjustInventoryVoidByIngredient']);
   assert.equal(canAdjust([line]),false);
@@ -56,6 +58,24 @@ test('anulación entregada exige destinos simples o por ingrediente y nunca clas
   assert.equal(canConfirm({...dialog,destination:'waste'}),true);
   assert.equal(canConfirm({...dialog,advanced:true,lines:[{...line,destination:'returned'},line]}),false);
   assert.equal(canConfirm({...dialog,advanced:true,lines:[{...line,destination:'returned'},{...line,consumption_line_id:'line-2',destination:'courtesy'}]}),true);
+
+  const build = loadNamedHelpers(posPath, ['canConfirmInventoryVoid','buildInventoryVoidResolution','buildInventoryVoidResolutions']);
+  assert.throws(()=>build(dialog),/Selecciona qué ocurrió/);
+  assert.throws(()=>build({...dialog,advanced:true,lines:[{...line,destination:'returned'},line]}),/cada ingrediente/);
+  assert.deepEqual(plain(build({...dialog,advanced:true,lines:[{...line,destination:'returned'},{...line,consumption_line_id:'line-2',destination:'internal'}]})).map((row)=>row.classification),['returned','internal']);
+
+  const Dialog = loadInventoryVoidDialog();
+  const render = (value) => renderToStaticMarkup(React.createElement(Dialog,{value,busy:false,onChange:()=>{},onClose:()=>{},onConfirm:()=>{throw new Error('No debe ejecutarse');}}));
+  const initialMarkup=render({...dialog,lines:[line]});
+  assert.match(initialMarkup,/disabled=""[^>]*>Confirmar anulación<\/button>/);
+  assert.doesNotMatch(initialMarkup,/checked=""/);
+  assert.doesNotMatch(initialMarkup,/Ajustar por ingrediente/);
+  const selectedMarkup=render({...dialog,lines:[line],destination:'waste'});
+  assert.equal((selectedMarkup.match(/checked=""/g)||[]).length,1);
+  assert.doesNotMatch(selectedMarkup,/disabled=""[^>]*>Confirmar anulación<\/button>/);
+  assert.match(render(dialog),/Ajustar por ingrediente/);
+  assert.match(render({...dialog,advanced:true,lines:[{...line,destination:'returned'},line]}),/disabled=""[^>]*>Confirmar anulación<\/button>/);
+  assert.doesNotMatch(render({...dialog,advanced:true,lines:[{...line,destination:'returned'},{...line,consumption_line_id:'line-2',destination:'courtesy'}]}),/disabled=""[^>]*>Confirmar anulación<\/button>/);
 
   const source = readFileSync(path.join(root,posPath),'utf8');
   assert.doesNotMatch(source,/Consumido por cliente/);
@@ -76,6 +96,20 @@ function loadNamedHelpers(filePath, names, context = {}) {
   assert.equal(helpers.length, names.length, `Missing POS helper: ${names.filter((name) => !helpers.some((node) => node.name?.text === name)).join(', ')}`);
   const target = names[names.length - 1];
   return evaluate(`${helpers.map((node) => node.getText(source)).join('\n')}; ${target}`, { exports: {}, ...context });
+}
+
+function loadInventoryVoidDialog() {
+  const source = parse(posPath);
+  const functionNames = ['InventoryVoidResolutionDialog','InventoryVoidDestinationIcon','InventoryVoidDestinationChoices','canAdjustInventoryVoidByIngredient','canConfirmInventoryVoid'];
+  const functions = source.statements.filter((node)=>ts.isFunctionDeclaration(node)&&functionNames.includes(node.name?.text));
+  const options = source.statements.find((node)=>ts.isVariableStatement(node)&&node.declarationList.declarations.some((declaration)=>ts.isIdentifier(declaration.name)&&declaration.name.text==='inventoryVoidDestinationOptions'));
+  assert.equal(functions.length,functionNames.length);
+  assert.ok(options);
+  const compiled = ts.transpileModule(`${options.getText(source)}\n${functions.map((node)=>node.getText(source)).join('\n')}; InventoryVoidResolutionDialog`,{
+    compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020,jsx:ts.JsxEmit.ReactJSX},
+  }).outputText;
+  const Icon = () => null;
+  return vm.runInNewContext(compiled,{exports:{},require:(name)=>require(name),Check:Icon,Gift:Icon,PackageCheck:Icon,Trash2:Icon,Utensils:Icon,ghostButtonClassName:'ghost',dangerButtonClassName:'danger'});
 }
 
 test('inventario operativo filtra por área, búsqueda y estados mutuamente excluyentes', () => {
