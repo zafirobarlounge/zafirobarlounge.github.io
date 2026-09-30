@@ -79,14 +79,22 @@ test('anulación entregada exige destinos simples o por ingrediente y nunca clas
   const render = (value) => renderToStaticMarkup(React.createElement(Dialog,{value,busy:false,onChange:()=>{},onClose:()=>{},onConfirm:()=>{throw new Error('No debe ejecutarse');}}));
   const initialMarkup=render({...dialog,lines:[line]});
   assert.match(initialMarkup,/disabled=""[^>]*>Confirmar anulación<\/button>/);
+  assert.match(initialMarkup,/class="disabled-neutral cursor-not-allowed opacity-55"/);
+  assert.doesNotMatch(initialMarkup,/class="danger"[^>]*disabled=""/);
   assert.doesNotMatch(initialMarkup,/checked=""/);
   assert.doesNotMatch(initialMarkup,/Ajustar por ingrediente/);
   const selectedMarkup=render({...dialog,lines:[line],destination:'waste'});
   assert.equal((selectedMarkup.match(/checked=""/g)||[]).length,1);
   assert.doesNotMatch(selectedMarkup,/disabled=""[^>]*>Confirmar anulación<\/button>/);
+  assert.match(selectedMarkup,/class="danger"[^>]*>Confirmar anulación<\/button>/);
+  assert.doesNotMatch(selectedMarkup,/disabled-neutral/);
   assert.match(render(dialog),/Ajustar por ingrediente/);
-  assert.match(render({...dialog,advanced:true,lines:[{...line,destination:'returned'},line]}),/disabled=""[^>]*>Confirmar anulación<\/button>/);
-  assert.doesNotMatch(render({...dialog,advanced:true,lines:[{...line,destination:'returned'},{...line,consumption_line_id:'line-2',destination:'courtesy'}]}),/disabled=""[^>]*>Confirmar anulación<\/button>/);
+  const incompleteAdvancedMarkup=render({...dialog,advanced:true,lines:[{...line,destination:'returned'},line]});
+  assert.match(incompleteAdvancedMarkup,/disabled=""[^>]*>Confirmar anulación<\/button>/);
+  assert.match(incompleteAdvancedMarkup,/class="disabled-neutral cursor-not-allowed opacity-55"/);
+  const completeAdvancedMarkup=render({...dialog,advanced:true,lines:[{...line,destination:'returned'},{...line,consumption_line_id:'line-2',destination:'courtesy'}]});
+  assert.doesNotMatch(completeAdvancedMarkup,/disabled=""[^>]*>Confirmar anulación<\/button>/);
+  assert.match(completeAdvancedMarkup,/class="danger"[^>]*>Confirmar anulación<\/button>/);
 
   const source = readFileSync(path.join(root,posPath),'utf8');
   assert.doesNotMatch(source,/Consumido por cliente/);
@@ -120,7 +128,7 @@ function loadInventoryVoidDialog() {
     compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020,jsx:ts.JsxEmit.ReactJSX},
   }).outputText;
   const Icon = () => null;
-  return vm.runInNewContext(compiled,{exports:{},require:(name)=>require(name),Check:Icon,Gift:Icon,PackageCheck:Icon,Trash2:Icon,Utensils:Icon,ghostButtonClassName:'ghost',dangerButtonClassName:'danger'});
+  return vm.runInNewContext(compiled,{exports:{},require:(name)=>require(name),Check:Icon,Gift:Icon,PackageCheck:Icon,Trash2:Icon,Utensils:Icon,ghostButtonClassName:'ghost',dangerButtonClassName:'danger',disabledDangerButtonClassName:'disabled-neutral cursor-not-allowed opacity-55'});
 }
 
 test('inventario operativo filtra por área, búsqueda y estados mutuamente excluyentes', () => {
