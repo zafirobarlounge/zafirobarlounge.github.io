@@ -5707,10 +5707,10 @@ function InventoryAvailabilityNotice({ alert }: { alert: InventoryMenuAlert }) {
   const message = alert.has_uncounted
     ? 'Inventario configurado con componentes sin conteo inicial.'
     : alert.cannot_make_one
-      ? 'Posible agotado según los componentes controlados. La venta no se bloquea.'
-      : `Componentes controlados para aproximadamente ${alert.controlled_units_available ?? 0} unidad(es).`;
+      ? 'Posible agotado. Venta permitida.'
+      : `Aprox. ${alert.controlled_units_available ?? 0} unidad(es) disponibles.`;
   return <p className={`rounded-[0.8rem] border px-3 py-2 text-xs ${alert.cannot_make_one || alert.has_uncounted ? 'border-amberGlow/30 bg-amberGlow/10 text-amber-100' : 'border-emerald-300/20 bg-emerald-300/[0.07] text-emerald-100'}`}>
-    {message} {alert.control_mode === 'partial' ? 'Control parcial: no garantiza disponibilidad completa.' : ''}
+    {message} {alert.control_mode === 'partial' ? 'Estimación parcial.' : ''}
   </p>;
 }
 
