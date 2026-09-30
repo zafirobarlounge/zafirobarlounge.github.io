@@ -39,6 +39,7 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
   try {
     for (const file of ['tests/cash-local-bootstrap.sql', 'supabase/schema.sql', 'supabase/pos-schema.sql', 'supabase/migrations/202609270001_cash_management.sql', 'supabase/migrations/202609270002_sales_business_date.sql', 'supabase/migrations/202609270003_session_financial_report.sql', 'supabase/migrations/202609270004_session_adjustments.sql', 'supabase/migrations/202609270005_inventory.sql', 'supabase/migrations/202609280006_inventory_cost_valuation.sql', 'supabase/migrations/202609280007_inventory_initial_import.sql']) sql(readFileSync(file, 'utf8'));
     const legacyItemId = randomUUID(), legacyReceiptA = randomUUID(), legacyReceiptB = randomUUID();
+    const legacyLinkedExpenseId = randomUUID(), legacyLinkedReceiptId = randomUUID(), legacyLinkedRequestId = randomUUID();
     const historicalItemId = randomUUID(), historicalSubmissionId = randomUUID(), historicalSubmissionLineId = randomUUID(), historicalReceiptId = randomUUID();
     sql(`insert into public.inventory_items(id,name,base_unit,precision_scale,tracking_started_at,created_by,updated_by) values('${legacyItemId}','Compatibilidad costo','unit',0,now(),'legacy@test.invalid','legacy@test.invalid');
       insert into public.inventory_item_valuations(item_id,current_quantity,average_unit_cost,inventory_value) values('${legacyItemId}',7,11,77);
@@ -73,7 +74,12 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
     sql(readFileSync('supabase/migrations/202609290018_inventory_menu_recipe_overview.sql', 'utf8'));
     sql(readFileSync('supabase/migrations/202609290019_inventory_void_courtesy.sql', 'utf8'));
     sql(readFileSync('supabase/migrations/202609290020_inventory_realtime_signal.sql', 'utf8'));
+    sql(`insert into public.pos_cash_movements(id,kind,concept,category,amount,expense_date,method,origin,created_by)
+      values('${legacyLinkedExpenseId}','expense','Compra histórica vinculada','supplies',5000,'2026-09-22','bank_transfer','business','legacy@test.invalid');
+      insert into public.inventory_receipts(id,request_id,expense_movement_id,total_cost,received_at,received_by,notes)
+      values('${legacyLinkedReceiptId}','${legacyLinkedRequestId}','${legacyLinkedExpenseId}',5000,'2026-09-22T18:00:00Z','legacy@test.invalid','Recepción histórica vinculada');`);
     sql(readFileSync('supabase/migrations/202609290021_inventory_linked_purchases.sql', 'utf8'));
+    sql(`truncate public.inventory_realtime_events;`);
     sql(`insert into public.admin_users(email) values ('admin@test.invalid');
       insert into public.staff_profiles(email,full_name,is_active) values ('super@test.invalid','Superadmin',true),('cashier@test.invalid','Caja',true),('bar@test.invalid','Bar',true),('kitchen@test.invalid','Cocina',true),('waiter@test.invalid','Mesero',true),('inactive@test.invalid','Inactivo',false);
       insert into public.staff_role_assignments(email,role) values ('super@test.invalid','superadmin'),('cashier@test.invalid','cashier'),('bar@test.invalid','bar'),('kitchen@test.invalid','kitchen'),('waiter@test.invalid','waiter'),('inactive@test.invalid','cashier');
@@ -128,6 +134,9 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
       assert.equal(sql(`select control_mode from public.inventory_menu_tracking where menu_item_source_key='menu-legacy-recipe';`), 'complete');
       assert.equal(sql(`select usage_type from public.inventory_items where id='${legacyItemId}';`), 'consumable');
       assert.equal(sql(`select courtesy_quantity from public.inventory_pos_consumption_lines limit 1;`) || '0', '0');
+      assert.equal(sql(`select payment_status||':'||payment_origin from public.inventory_purchases where receipt_id='${legacyLinkedReceiptId}';`), 'paid:business');
+      assert.equal(sql(`select payment_status||':'||coalesce(payment_origin,'null') from public.inventory_purchases where receipt_id='${legacyReceiptA}';`), 'legacy_unlinked:null');
+      assert.equal(sql(`select count(*) from public.inventory_purchases where request_payload->>'legacy'='true' and payment_status='pending';`), '0');
     });
     await t.test('consumibles y operativos se separan y las recetas rechazan operativos', () => {
       const operational = command('admin@test.invalid', { action:'save_item',name:'Cuchara de prueba',base_unit:'unit',precision_scale:0,usage_type:'operational',areas:['kitchen'] });
@@ -373,11 +382,14 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
 
       purchase('cashier@test.invalid',makePayload('business',24000));
       purchase('cashier@test.invalid',makePayload('owner',24000));
-      purchase('cashier@test.invalid',{...makePayload('unpaid',24000),payment_origin:'unpaid',method:null,session:null});
+      const unpaidPurchase=purchase('cashier@test.invalid',{...makePayload('unpaid',24000),payment_origin:'unpaid',method:null,session:null});
+      assert.equal(unpaidPurchase.payment_status,'pending');
+      assert.equal(unpaidPurchase.payment_origin,null);
       assert.equal(Number(sql(`select current_quantity from public.inventory_item_valuations where item_id='${item.id}';`)),192);
       assert.equal(Number(sql(`select public.pos_cash_components('${openSessionId}')->>'expenses';`)),120000);
       assert.equal(sql(`select string_agg(payment_origin,',' order by payment_origin) from public.inventory_purchases where receipt_id in (select receipt_id from public.inventory_receipt_lines where item_id='${item.id}');`),'business,owner,register');
       assert.equal(sql(`select count(*) from public.inventory_purchases where payment_status='pending' and receipt_id in (select receipt_id from public.inventory_receipt_lines where item_id='${item.id}');`),'1');
+      assert.equal(sql(`select count(*) from public.inventory_purchases where payment_status='pending' and request_payload->>'legacy'='true';`),'0');
 
       const bad=randomUUID(), beforeMovements=sql(`select count(*) from public.pos_cash_movements;`), beforeReceipts=sql(`select count(*) from public.inventory_receipts;`);
       fails(login('cashier@test.invalid')+`select public.inventory_purchase_command('${bad}',${quote(JSON.stringify({...makePayload('business'),total_cost:1}))}::jsonb);`,'no coincide');

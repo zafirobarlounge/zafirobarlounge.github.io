@@ -290,6 +290,10 @@ test('compras vinculadas reutilizan líneas, exigen totales y muestran pago y tr
   assert.match(migration,/receipt_id uuid not null unique/);
   assert.match(migration,/expense_movement_id uuid unique/);
   assert.match(migration,/public\.inventory_can_manage\(\)/);
+  assert.match(migration,/payment_status in \('paid','pending','legacy_unlinked'\)/);
+  assert.match(migration,/r\.expense_movement_id is null then 'legacy_unlinked'/);
+  assert.match(view,/Histórico · pago no registrado/);
+  assert.match(view,/Sin vínculo financiero histórico/);
 });
 
 test('CSV de inventario protege fórmulas y conserva referencias', () => {

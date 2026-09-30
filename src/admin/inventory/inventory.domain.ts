@@ -191,7 +191,7 @@ export interface InventoryReceipt {
   notes: string;
   purchase?: {
     id: string;
-    payment_status: 'paid' | 'pending';
+    payment_status: 'paid' | 'pending' | 'legacy_unlinked';
     payment_origin: 'register' | 'business' | 'owner' | null;
     total_amount: number | null;
     purchase_date: string;

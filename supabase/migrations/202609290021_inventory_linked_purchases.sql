@@ -7,7 +7,7 @@ create table public.inventory_purchases (
   request_id uuid not null unique,
   receipt_id uuid not null unique references public.inventory_receipts(id) on delete restrict,
   expense_movement_id uuid unique references public.pos_cash_movements(id) on delete restrict,
-  payment_status text not null check (payment_status in ('paid','pending')),
+  payment_status text not null check (payment_status in ('paid','pending','legacy_unlinked')),
   payment_origin text check (payment_origin in ('register','business','owner')),
   total_amount numeric(14,2) check (total_amount is null or (total_amount > 0 and total_amount < 1000000000000)),
   purchase_date date not null,
@@ -17,7 +17,7 @@ create table public.inventory_purchases (
   request_payload jsonb not null,
   result jsonb not null,
   check (
-    (payment_status='pending' and payment_origin is null and expense_movement_id is null)
+    (payment_status in ('pending','legacy_unlinked') and payment_origin is null and expense_movement_id is null)
     or (payment_status='paid' and payment_origin is not null and expense_movement_id is not null and total_amount is not null)
   )
 );
@@ -36,10 +36,10 @@ for select to authenticated using (public.inventory_can_read_purchases());
 -- Existing receipts become traceable purchases without changing their receipt, stock or cost history.
 insert into public.inventory_purchases(id,request_id,receipt_id,expense_movement_id,payment_status,payment_origin,total_amount,purchase_date,created_at,created_by,notes,request_payload,result)
 select r.request_id,r.request_id,r.id,r.expense_movement_id,
-  case when r.expense_movement_id is null then 'pending' else 'paid' end,
+  case when r.expense_movement_id is null then 'legacy_unlinked' else 'paid' end,
   m.origin,r.total_cost,(r.received_at at time zone 'America/Bogota')::date,r.received_at,r.received_by,r.notes,
   jsonb_build_object('legacy',true),
-  jsonb_build_object('purchase_id',r.request_id,'receipt_id',r.id,'expense_movement_id',r.expense_movement_id,'payment_status',case when r.expense_movement_id is null then 'pending' else 'paid' end)
+  jsonb_build_object('purchase_id',r.request_id,'receipt_id',r.id,'expense_movement_id',r.expense_movement_id,'payment_status',case when r.expense_movement_id is null then 'legacy_unlinked' else 'paid' end)
 from public.inventory_receipts r
 left join public.pos_cash_movements m on m.id=r.expense_movement_id
 on conflict do nothing;
