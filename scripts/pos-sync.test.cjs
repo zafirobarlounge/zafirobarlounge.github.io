@@ -54,6 +54,15 @@ test('anulación entregada respeta la unidad base y mantiene completa la distrib
   const calculate = loadNamedHelpers(posPath, ['inventoryVoidQuantityPrecision', 'roundInventoryVoidQuantity', 'calculateInventoryVoidAllocation']);
   assert.deepEqual(plain(calculate(update(unitLine, 'returned', '1'))), { assigned: 1, remaining: 0, valid: true });
   assert.deepEqual(plain(calculate({ ...unitLine, returned: '1', client: '1' })), { assigned: 2, remaining: -1, valid: false });
+
+  const applyDestination = loadNamedHelpers(posPath, ['applyInventoryVoidDestination']);
+  const recipeLines = [unitLine, gramLine];
+  for (const [destination,field] of [['returned','returned'],['waste','waste'],['internal','internal'],['client','client']]) {
+    const resolved = plain(applyDestination(recipeLines,destination));
+    assert.equal(resolved[0][field], '1');
+    assert.equal(resolved[1][field], '110');
+    assert.ok(resolved.every((line)=>plain(calculate(line)).valid));
+  }
 });
 
 function evaluate(source, context) {
