@@ -189,6 +189,13 @@ export interface InventoryReceipt {
   received_at: string;
   received_by: string;
   notes: string;
+  purchase?: {
+    id: string;
+    payment_status: 'paid' | 'pending';
+    payment_origin: 'register' | 'business' | 'owner' | null;
+    total_amount: number | null;
+    purchase_date: string;
+  } | null;
   lines: InventoryReceiptLine[];
 }
 

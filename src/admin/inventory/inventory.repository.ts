@@ -100,6 +100,12 @@ export async function saveInventoryCommand(requestId: string, payload: Record<st
   return data;
 }
 
+export async function saveInventoryPurchase(requestId: string, payload: Record<string, unknown>) {
+  const { data, error } = await getSupabaseClient().rpc('inventory_purchase_command' as never, { request_id: requestId, payload } as never);
+  if (error) throw Object.assign(new Error(error.message), { confirmedRejection: Boolean(error.code) });
+  return data as unknown as { purchase_id: string; receipt_id: string; expense_movement_id: string | null; payment_status: 'paid' | 'pending' };
+}
+
 export async function deleteInventoryConfiguration(requestId: string, payload: Record<string, unknown>) {
   const { data, error } = await getSupabaseClient().rpc('inventory_delete_configuration' as never, { request_id: requestId, payload } as never);
   if (error) throw new Error(error.message);

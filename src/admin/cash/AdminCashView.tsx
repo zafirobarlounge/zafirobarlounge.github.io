@@ -24,6 +24,9 @@ import {
   type Movement,
 } from "./cash.domain";
 import { loadCash, saveCash } from "./cash.repository";
+import { loadInventory, saveInventoryPurchase, subscribeToInventoryRealtime } from "../inventory/inventory.repository";
+import type { InventoryData } from "../inventory/inventory.domain";
+import { InventoryPurchaseLinesEditor, buildInventoryPurchaseLines, createInventoryPurchaseLine, inventoryPurchaseLinesValid, inventoryPurchaseTotal, type InventoryPurchaseDraftLine } from "../inventory/InventoryPurchaseLinesEditor";
 import { salesDayOptions } from "../../shared/operations/salesBusinessDate";
 import { sessionDetailUrl } from './sessionFinance';
 
@@ -105,6 +108,11 @@ export function AdminCashView({ embedded = false, initialAction = null, onClose 
   const [notice, setNotice] = useState("");
   const [kind, setKind] = useState<Movement["kind"]>("expense");
   const [origin, setOrigin] = useState<Movement["origin"]>("register");
+  const [category, setCategory] = useState<keyof typeof categories>("personal");
+  const [includeInventory, setIncludeInventory] = useState(false);
+  const [inventoryData, setInventoryData] = useState<InventoryData | null>(null);
+  const [purchaseLines, setPurchaseLines] = useState<InventoryPurchaseDraftLine[]>([]);
+  const [movementAmount, setMovementAmount] = useState("");
   const [counted, setCounted] = useState("");
   const dayOptions = salesDayOptions();
   const [voiding, setVoiding] = useState<Movement | null>(null);
@@ -152,6 +160,11 @@ export function AdminCashView({ embedded = false, initialAction = null, onClose 
   useEffect(() => {
     if (allowed) void refresh().catch((e) => setError(e.message));
   }, [allowed]);
+  useEffect(() => allowed ? subscribeToInventoryRealtime((kinds) => { if(kinds.includes('receipt')) void refresh().catch((e)=>setError(e.message)); }) : undefined, [allowed]);
+  useEffect(() => {
+    if(!includeInventory||inventoryData)return;
+    void loadInventory().then((next)=>{setInventoryData(next);setPurchaseLines((current)=>current.length?current:[createInventoryPurchaseLine(next)]);}).catch((reason)=>setError(reason instanceof Error?reason.message:'No se pudo cargar inventario.'));
+  },[includeInventory,inventoryData]);
   useEffect(() => {
     if (!modal || typeof document === 'undefined') return;
     const previous = document.activeElement as HTMLElement | null;
@@ -217,14 +230,16 @@ export function AdminCashView({ embedded = false, initialAction = null, onClose 
       request ??= { id: crypto.randomUUID(), payload };
       localStorage.setItem(pendingKey, JSON.stringify(request));
       setPending(request);
-      const result = await saveCash(request.id, request.payload);
+      const result = request.payload.action === 'purchase'
+        ? await saveInventoryPurchase(request.id, request.payload)
+        : await saveCash(request.id, request.payload);
       localStorage.removeItem(pendingKey);
       setPending(null);
       form?.reset();
       setCounted("");
       setVoiding(null);
       if (payload.action === "open")
-        setSessionId(String(result.sales_session_id));
+        setSessionId(String((result as Record<string, unknown>).sales_session_id));
       setNotice("Operación guardada.");
       if (continueToClose) setBaseSavedForClose(true);
       else setModal(null);
@@ -281,6 +296,15 @@ export function AdminCashView({ embedded = false, initialAction = null, onClose 
       }
       if (values.relation === "none") payload.session = null;
       delete payload.relation;
+      if(kind==='expense'&&category==='supplies'&&includeInventory){
+        if(!inventoryData||!inventoryPurchaseLinesValid(inventoryData,purchaseLines)){setError('Completa los productos recibidos y sus cantidades.');return;}
+        const productsTotal=inventoryPurchaseTotal(inventoryData,purchaseLines);
+        if(productsTotal==null){setError('Registra el costo real de cada producto.');return;}
+        if(Number(payload.amount)!==productsTotal){setError(`El total de productos (${money(productsTotal)}) debe coincidir exactamente con el gasto (${money(Number(payload.amount))}).`);return;}
+        payload.action='purchase'; payload.source='cash'; payload.payment_origin=payload.origin;
+        payload.total_cost=productsTotal; payload.lines=buildInventoryPurchaseLines(inventoryData,purchaseLines);
+        payload.supplier=values.supplier||null; payload.document_reference=values.document_reference||null;
+      }
     }
     if (action === "void") {
       payload.movement = voiding?.id;
@@ -380,12 +404,12 @@ export function AdminCashView({ embedded = false, initialAction = null, onClose 
                   />
                 </Field>
                 <Field label="Valor (COP)">
-                  <Amount />
+                  <Amount onChange={setMovementAmount} />
                 </Field>
                 {kind === "expense" && (
                   <>
                     <Field label="Categoría">
-                      <select className={input} name="category">
+                      <select className={input} name="category" value={category} onChange={(event)=>{const next=event.target.value as keyof typeof categories;setCategory(next);if(next!=='supplies')setIncludeInventory(false);}}>
                         <Options items={categories} />
                       </select>
                     </Field>
@@ -430,6 +454,14 @@ export function AdminCashView({ embedded = false, initialAction = null, onClose 
                         </Field>
                       </>
                     )}
+                    {category === 'supplies' && <section className="space-y-4 rounded-xl border border-cyanGlow/20 bg-cyanGlow/[0.05] p-4">
+                      <label className="flex cursor-pointer items-center justify-between gap-4"><span><strong className="block text-ivory">Registrar productos recibidos en inventario</strong><span className="mt-1 block text-sm text-mist">Crea una sola compra vinculada al gasto y actualiza las existencias.</span></span><input aria-label="Registrar productos recibidos en inventario" type="checkbox" checked={includeInventory} onChange={(event)=>setIncludeInventory(event.target.checked)} /></label>
+                      {includeInventory ? inventoryData ? <>
+                        <InventoryPurchaseLinesEditor data={inventoryData} lines={purchaseLines} setLines={setPurchaseLines}/>
+                        <div className="rounded-xl border border-white/10 bg-black/15 p-3 text-sm"><p>Total productos: <strong>{inventoryPurchaseTotal(inventoryData,purchaseLines)==null?'Completa los costos':money(inventoryPurchaseTotal(inventoryData,purchaseLines)!)}</strong></p><p>Total gasto: <strong>{movementAmount?money(Number(movementAmount)):money(0)}</strong></p>{inventoryPurchaseTotal(inventoryData,purchaseLines)!=null&&movementAmount&&inventoryPurchaseTotal(inventoryData,purchaseLines)!==Number(movementAmount)?<p role="alert" className="mt-2 text-amber-200">Diferencia: {money(Math.abs(inventoryPurchaseTotal(inventoryData,purchaseLines)!-Number(movementAmount)))}. Corrige los valores antes de guardar.</p>:null}</div>
+                        <div className="grid gap-3 sm:grid-cols-2"><Field label="Proveedor (opcional)"><input className={input} name="supplier" maxLength={300}/></Field><Field label="Documento (opcional)"><input className={input} name="document_reference" maxLength={300}/></Field></div>
+                      </> : <p className="text-sm text-cyanGlow">Cargando artículos y presentaciones…</p> : null}
+                    </section>}
                   </>
                 )}
                 {(kind !== "expense" || origin === "register") && (
@@ -447,10 +479,11 @@ export function AdminCashView({ embedded = false, initialAction = null, onClose 
                   disabled={
                     busy ||
                     ((kind !== "expense" || origin === "register") &&
-                      (!isActive || !register))
+                      (!isActive || !register)) ||
+                    (kind==='expense'&&category==='supplies'&&includeInventory&&(!inventoryData||!inventoryPurchaseLinesValid(inventoryData,purchaseLines)||inventoryPurchaseTotal(inventoryData,purchaseLines)==null||!movementAmount||inventoryPurchaseTotal(inventoryData,purchaseLines)!==Number(movementAmount)))
                   }
                 >
-                  Guardar movimiento
+                  {kind==='expense'&&category==='supplies'&&includeInventory?'Guardar compra y entrada':'Guardar movimiento'}
                 </button>
               </form>}
               {modal === "session" && isActive && register && (
@@ -775,6 +808,7 @@ export function AdminCashView({ embedded = false, initialAction = null, onClose 
                       {dateTime(m.created_at)} · {m.created_by}
                     </p>
                     <p className="text-sm">{m.notes}</p>
+                    {m.purchase_id && <p className="rounded-lg border border-cyanGlow/15 bg-cyanGlow/[0.05] px-3 py-2 text-sm text-cyanGlow">Compra #{m.purchase_id.slice(0,8)} · Inventario recibido ✓</p>}
                     {m.voided_at ? (
                       <p className="text-rose-200">
                         Anulado: {m.void_reason} · {m.voided_by} ·{" "}

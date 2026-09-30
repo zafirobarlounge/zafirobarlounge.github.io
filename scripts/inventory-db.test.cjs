@@ -29,6 +29,7 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
   });
   const fails = (input, message) => assert.throws(() => sql(input), (error) => String(error.stderr).includes(message));
   const command = (email, payload, requestId = randomUUID()) => JSON.parse(sql(login(email) + `select public.inventory_command('${requestId}',${quote(JSON.stringify(payload))}::jsonb);`));
+  const purchase = (email, payload, requestId = randomUUID()) => JSON.parse(sql(login(email) + `select public.inventory_purchase_command('${requestId}',${quote(JSON.stringify(payload))}::jsonb);`));
   const removeConfig = (email, payload, requestId = randomUUID()) => JSON.parse(sql(login(email) + `select public.inventory_delete_configuration('${requestId}',${quote(JSON.stringify(payload))}::jsonb);`));
   const previewImport = (email, payload) => JSON.parse(sql(login(email) + `select public.inventory_import_preview(${quote(JSON.stringify(payload))}::jsonb);`));
   const commitImport = (email, payload, fingerprint, requestId = randomUUID()) => JSON.parse(sql(login(email) + `select public.inventory_import_commit('${requestId}','${fingerprint}',${quote(JSON.stringify(payload))}::jsonb);`));
@@ -72,6 +73,7 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
     sql(readFileSync('supabase/migrations/202609290018_inventory_menu_recipe_overview.sql', 'utf8'));
     sql(readFileSync('supabase/migrations/202609290019_inventory_void_courtesy.sql', 'utf8'));
     sql(readFileSync('supabase/migrations/202609290020_inventory_realtime_signal.sql', 'utf8'));
+    sql(readFileSync('supabase/migrations/202609290021_inventory_linked_purchases.sql', 'utf8'));
     sql(`insert into public.admin_users(email) values ('admin@test.invalid');
       insert into public.staff_profiles(email,full_name,is_active) values ('super@test.invalid','Superadmin',true),('cashier@test.invalid','Caja',true),('bar@test.invalid','Bar',true),('kitchen@test.invalid','Cocina',true),('waiter@test.invalid','Mesero',true),('inactive@test.invalid','Inactivo',false);
       insert into public.staff_role_assignments(email,role) values ('super@test.invalid','superadmin'),('cashier@test.invalid','cashier'),('bar@test.invalid','bar'),('kitchen@test.invalid','kitchen'),('waiter@test.invalid','waiter'),('inactive@test.invalid','cashier');
@@ -349,6 +351,40 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
       assert.equal(Number(sql(`select unit_cost_snapshot from public.inventory_movements where operation_key='void:return:${voidRequest}:${consumption.id}';`)), 24.95);
       assert.equal(Number(sql(`select tracked_value_delta from public.inventory_movements where operation_key='void:return:${voidRequest}:${consumption.id}';`)), 374.25);
       assert.equal(Number(sql(`select average_unit_cost from public.inventory_item_valuations where item_id='${sauce.id}';`)), 24.95);
+    });
+
+    await t.test('compra vinculada es atomica, idempotente y conserva cada origen financiero', async () => {
+      const item=command('admin@test.invalid',{action:'save_item',name:'Cerveza compra vinculada',base_unit:'unit',precision_scale:0,areas:['bar']});
+      const p24=command('admin@test.invalid',{action:'save_presentation',item_id:item.id,name:'Canasta x24',content_per_package:24,content_unit:'unit'});
+      command('cashier@test.invalid',{action:'initial_count',item_id:item.id,quantity:0,reason:'Inicio compra vinculada'});
+      const receiptEventsBefore=Number(sql(`select count(*) from public.inventory_realtime_events where event_kind='receipt';`));
+      sql(`insert into public.pos_cash_registers(sales_session_id,opening_amount,opened_by,opening_notes) values('${openSessionId}',200000,'cashier@test.invalid','Caja QA') on conflict do nothing;`);
+      const makePayload=(origin,cost=120000)=>({action:'purchase',source:'inventory',payment_origin:origin,session:origin==='register'?openSessionId:null,method:origin==='register'?'cash':'bank_transfer',concept:'Compra cerveza',date:'2026-09-29',supplier:'Proveedor QA',document_reference:'FC-1',notes:'Compra integrada',total_cost:cost,lines:[{item_id:item.id,presentation_id:p24.id,package_quantity:2,actual_package_cost:cost/2}]});
+      const registerId=randomUUID(), registerPayload=makePayload('register');
+      const calls=await Promise.all([parallel(login('cashier@test.invalid')+`select public.inventory_purchase_command('${registerId}',${quote(JSON.stringify(registerPayload))}::jsonb);`),parallel(login('cashier@test.invalid')+`select public.inventory_purchase_command('${registerId}',${quote(JSON.stringify(registerPayload))}::jsonb);`)]);
+      assert.equal(calls[0],calls[1]);
+      assert.equal(sql(`select count(*) from public.inventory_purchases where id='${registerId}';`),'1');
+      assert.equal(sql(`select count(*) from public.inventory_receipts r join public.inventory_purchases p on p.receipt_id=r.id where p.id='${registerId}';`),'1');
+      assert.equal(sql(`select count(*) from public.pos_cash_movements where id='${registerId}';`),'1');
+      assert.equal(Number(sql(`select current_quantity from public.inventory_item_valuations where item_id='${item.id}';`)),48);
+      assert.equal(Number(sql(`select last_unit_cost from public.inventory_item_valuations where item_id='${item.id}';`)),2500);
+      assert.equal(Number(sql(`select public.pos_cash_components('${openSessionId}')->>'expenses';`)),120000);
+      assert.equal(Number(sql(`select count(*) from public.inventory_realtime_events where event_kind='receipt';`)),receiptEventsBefore+1);
+
+      purchase('cashier@test.invalid',makePayload('business',24000));
+      purchase('cashier@test.invalid',makePayload('owner',24000));
+      purchase('cashier@test.invalid',{...makePayload('unpaid',24000),payment_origin:'unpaid',method:null,session:null});
+      assert.equal(Number(sql(`select current_quantity from public.inventory_item_valuations where item_id='${item.id}';`)),192);
+      assert.equal(Number(sql(`select public.pos_cash_components('${openSessionId}')->>'expenses';`)),120000);
+      assert.equal(sql(`select string_agg(payment_origin,',' order by payment_origin) from public.inventory_purchases where receipt_id in (select receipt_id from public.inventory_receipt_lines where item_id='${item.id}');`),'business,owner,register');
+      assert.equal(sql(`select count(*) from public.inventory_purchases where payment_status='pending' and receipt_id in (select receipt_id from public.inventory_receipt_lines where item_id='${item.id}');`),'1');
+
+      const bad=randomUUID(), beforeMovements=sql(`select count(*) from public.pos_cash_movements;`), beforeReceipts=sql(`select count(*) from public.inventory_receipts;`);
+      fails(login('cashier@test.invalid')+`select public.inventory_purchase_command('${bad}',${quote(JSON.stringify({...makePayload('business'),total_cost:1}))}::jsonb);`,'no coincide');
+      assert.equal(sql(`select count(*) from public.pos_cash_movements;`),beforeMovements);
+      assert.equal(sql(`select count(*) from public.inventory_receipts;`),beforeReceipts);
+      fails(login('bar@test.invalid')+`select public.inventory_purchase_command('${randomUUID()}',${quote(JSON.stringify(makePayload('business')))}::jsonb);`,'no autorizada');
+      assert.equal(sql(login('bar@test.invalid')+`select count(*) from public.inventory_purchases;`),'0');
     });
 
     await t.test('entrega POS descuenta solo componentes controlados y congela sus costos', async () => {

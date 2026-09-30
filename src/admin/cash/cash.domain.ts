@@ -69,6 +69,8 @@ export interface Movement {
   voided_at: string | null;
   voided_by: string | null;
   void_reason: string | null;
+  purchase_id?: string | null;
+  inventory_receipt_id?: string | null;
 }
 export interface CashData {
   sessions: CashSession[];

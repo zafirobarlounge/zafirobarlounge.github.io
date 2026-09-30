@@ -77,8 +77,8 @@ test('todos los selectores filtrados excluyen el articulo anterior y seleccionan
   const view = readFileSync('src/admin/inventory/AdminInventoryView.tsx', 'utf8');
   assert.doesNotMatch(view, /selected&&!matching|item&&!matchingTracked/);
   assert.ok((view.match(/getInventoryItemSearchSelection/g) ?? []).length >= 8);
-  assert.ok((view.match(/Sin artículos coincidentes/g) ?? []).length >= 4);
-  assert.match(view, /setPresentationId\('base'\)[\s\S]*\},\[itemId\]\)/);
+  assert.ok((view.match(/Sin artículos coincidentes/g) ?? []).length >= 3);
+  assert.match(readFileSync('src/admin/inventory/InventoryPurchaseLinesEditor.tsx','utf8'), /presentationId: 'base'/);
 });
 
 test('nuevo reporte limita artículos al área elegida incluso para administración', () => {
@@ -268,6 +268,30 @@ test('vista previa separa recibido, aplicado, excedente y pendiente de solicitud
   assert.match(view, /line\.applied_submission_quantity/);
 });
 
+test('compras vinculadas reutilizan líneas, exigen totales y muestran pago y trazabilidad', () => {
+  const view = readFileSync('src/admin/inventory/AdminInventoryView.tsx', 'utf8');
+  const cash = readFileSync('src/admin/cash/AdminCashView.tsx', 'utf8');
+  const editor = readFileSync('src/admin/inventory/InventoryPurchaseLinesEditor.tsx', 'utf8');
+  const repository = readFileSync('src/admin/inventory/inventory.repository.ts', 'utf8');
+  const migration = readFileSync('supabase/migrations/202609290021_inventory_linked_purchases.sql', 'utf8');
+  assert.match(editor, /\+ Agregar producto/);
+  assert.match(editor, /Cantidad base recibida/);
+  assert.match(editor, /content_per_package/);
+  assert.match(view, /¿Cómo se pagó esta compra\?/);
+  for (const label of ['Caja del local','Fondos del negocio fuera de caja','Dinero de un propietario','Solo registrar inventario / pago pendiente']) assert.match(view,new RegExp(label));
+  assert.match(cash,/Registrar productos recibidos en inventario/);
+  assert.match(cash,/El total de productos/);
+  assert.match(repository,/inventory_purchase_command/);
+  assert.match(view,/zafiro-inventory-purchase-pending/);
+  assert.match(view,/Reintentar compra/);
+  assert.match(migration,/public\.pos_cash_command\(request_id,cash_payload\)/);
+  assert.match(migration,/public\.inventory_command\(request_id,receipt_payload\)/);
+  assert.match(migration,/request_id uuid not null unique/);
+  assert.match(migration,/receipt_id uuid not null unique/);
+  assert.match(migration,/expense_movement_id uuid unique/);
+  assert.match(migration,/public\.inventory_can_manage\(\)/);
+});
+
 test('CSV de inventario protege fórmulas y conserva referencias', () => {
   const csv = domain.exports.inventoryMovementCsv([{
     id: 'movement', item_id: 'item', item_name: '=IMPORTXML("x")', movement_type: 'correction', quantity_delta: -2,
@@ -293,13 +317,14 @@ test('rutas y navegación exponen inventario solo a roles previstos', () => {
   assert.match(view, /Tu rol no tiene acceso al inventario/);
 });
 
-test('interfaz muestra conversión congelada y separa recepción de gasto', () => {
+test('interfaz muestra conversión congelada y permite compra pagada o pendiente', () => {
   const view = readFileSync('src/admin/inventory/AdminInventoryView.tsx', 'utf8');
+  const editor = readFileSync('src/admin/inventory/InventoryPurchaseLinesEditor.tsx','utf8');
   assert.match(view, /Cantidad realmente recibida/);
-  assert.match(view, /presentación real, su conversión y los costos de toda la entrada quedarán congelados/);
-  assert.match(view, /La recepción no crea gastos automáticamente/);
-  assert.match(view, /Recepción directa en unidad base/);
-  assert.match(view, /Costo real por paquete o envase/);
+  assert.match(editor, /presentación real, su conversión y los costos de toda la entrada quedarán congelados/);
+  assert.match(view, /Solo registrar inventario \/ pago pendiente/);
+  assert.match(editor, /Unidad base directa/);
+  assert.match(editor, /Costo real por presentación/);
   assert.match(view, /Último costo real/);
   assert.match(view, /item\.last_unit_cost/);
   assert.doesNotMatch(view, /Costo promedio rastreado/);
@@ -321,7 +346,8 @@ test('acciones por tarjeta bloquean el artículo y reutilizan los flujos existen
   assert.match(view, /Primero registra el conteo inicial de este artículo/);
   assert.match(view, /lockedValueClass/);
   assert.doesNotMatch(view, /Conteo inicial o corrección/);
-  for (const label of ['Buscar existencias','Buscar artículos configurados','Buscar artículo para presentación','Buscar componente','Buscar artículo para reporte','Buscar artículo para entrada']) assert.match(view, new RegExp(label));
+  for (const label of ['Buscar existencias','Buscar artículos configurados','Buscar artículo para presentación','Buscar componente','Buscar artículo para reporte']) assert.match(view, new RegExp(label));
+  assert.match(readFileSync('src/admin/inventory/InventoryPurchaseLinesEditor.tsx','utf8'), /Buscar artículo para entrada/);
   assert.match(view, /function SearchableInventoryItemSelect[\s\S]*getInventoryItemSearchSelection/);
 });
 

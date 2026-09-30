@@ -185,6 +185,10 @@ function harness({
       if (name.includes("cash.domain")) return domain.exports;
       if (name.includes("cash.repository"))
         return { loadCash: async () => structuredClone(data), saveCash: save };
+      if (name.includes("inventory.repository"))
+        return { loadInventory: async () => ({ items:[],presentations:[] }), saveInventoryPurchase: save, subscribeToInventoryRealtime: () => () => {} };
+      if (name.includes("InventoryPurchaseLinesEditor"))
+        return { InventoryPurchaseLinesEditor: 'purchase-lines', buildInventoryPurchaseLines:()=>[], createInventoryPurchaseLine:()=>({}), inventoryPurchaseLinesValid:()=>true, inventoryPurchaseTotal:()=>0 };
       throw new Error(name);
     },
   };
