@@ -561,7 +561,7 @@ export function AdminCashView({ embedded = false, initialAction = null, onClose 
               void refresh().catch((e) => setError(e.message));
             }}
           >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={`h-4 w-4 ${busy ? 'animate-spin' : ''}`} aria-hidden="true"><path d="M20 11a8.1 8.1 0 1 0 2.2 5.5"/><path d="M20 4v7h-7"/></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={`block h-4 w-4 shrink-0 ${busy ? 'animate-spin' : ''}`} aria-hidden="true"><path d="M21 12a9 9 0 0 0-15.2-6.5L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 15.2 6.5L21 16"/><path d="M16 16h5v5"/></svg>
           </button>
         </div>
         {!data ? (
