@@ -59,6 +59,17 @@ test('anulación entregada exige destinos simples o por ingrediente y nunca clas
   assert.equal(canConfirm({...dialog,advanced:true,lines:[{...line,destination:'returned'},line]}),false);
   assert.equal(canConfirm({...dialog,advanced:true,lines:[{...line,destination:'returned'},{...line,consumption_line_id:'line-2',destination:'courtesy'}]}),true);
 
+  const openIngredientMode = loadNamedHelpers(posPath, ['openInventoryVoidIngredientMode']);
+  const returnToSingleMode = loadNamedHelpers(posPath, ['returnToInventoryVoidSingleMode']);
+  const ingredientMode = plain(openIngredientMode({...dialog,destination:'waste'}));
+  assert.equal(ingredientMode.advanced,true);
+  assert.deepEqual(ingredientMode.lines.map((row)=>row.destination),['waste','waste']);
+  const singleMode = plain(returnToSingleMode({...ingredientMode,lines:[{...ingredientMode.lines[0],destination:'returned'},{...ingredientMode.lines[1],destination:'courtesy'}]}));
+  assert.equal(singleMode.advanced,false);
+  assert.equal(singleMode.destination,null);
+  assert.deepEqual(singleMode.lines.map((row)=>row.destination),[null,null]);
+  assert.equal(canConfirm(singleMode),false);
+
   const build = loadNamedHelpers(posPath, ['canConfirmInventoryVoid','buildInventoryVoidResolution','buildInventoryVoidResolutions']);
   assert.throws(()=>build(dialog),/Selecciona qué ocurrió/);
   assert.throws(()=>build({...dialog,advanced:true,lines:[{...line,destination:'returned'},line]}),/cada ingrediente/);
