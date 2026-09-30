@@ -544,25 +544,28 @@ export function AdminCashView({ embedded = false, initialAction = null, onClose 
             </button>
           </div>
         )}
-        <button
-          className={button}
-          disabled={busy}
-          onClick={() => {
-            setError("");
-            void refresh().catch((e) => setError(e.message));
-          }}
-        >
-          Recargar caja y gastos
-        </button>
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            className={`${button} inline-flex items-center gap-2`}
+            disabled={busy}
+            onClick={() => {
+              setError("");
+              void refresh().catch((e) => setError(e.message));
+            }}
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={`h-4 w-4 ${busy ? 'animate-spin' : ''}`} aria-hidden="true"><path d="M20 11a8.1 8.1 0 1 0 2.2 5.5"/><path d="M20 4v7h-7"/></svg>
+            Recargar caja y gastos
+          </button>
+          {data ? <>
+            <button className={button} disabled={busy} onClick={() => openModal('session')}>{active ? 'Arqueo y cierre de jornada' : 'Abrir jornada y caja'}</button>
+            <button className={button} disabled={busy} onClick={() => openModal('movement')}>Registrar movimiento</button>
+            {allowed && selected && <Link to={sessionDetailUrl(selected.id)} className={button}>Ver detalle de la jornada</Link>}
+          </> : null}
+        </div>
         {!data ? (
           <p>Cargando módulo de caja…</p>
         ) : (
           <>
-            <div className="flex flex-col items-start gap-3">
-              <button className={button} disabled={busy} onClick={() => openModal('session')}>{active ? 'Arqueo y cierre de jornada' : 'Abrir jornada y caja'}</button>
-              <button className={button} disabled={busy} onClick={() => openModal('movement')}>Registrar movimiento</button>
-              {allowed && selected && <Link to={sessionDetailUrl(selected.id)} className={button}>Ver detalle de la jornada</Link>}
-            </div>
             <Field label="Mes de consulta">
               <input type="month" className={input} value={month} disabled={busy} onChange={e => {
                 if (!e.target.value) return;
