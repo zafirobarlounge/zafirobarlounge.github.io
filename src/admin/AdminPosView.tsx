@@ -2,7 +2,7 @@ import { Link } from 'react-router-dom';
 import { AdminCashView } from './cash/AdminCashView';
 import type { ReactNode } from 'react';
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, LayoutGrid, List } from 'lucide-react';
+import { Check, ChevronDown, Gift, LayoutGrid, List, PackageCheck, Trash2, Utensils } from 'lucide-react';
 import { AdminLayout } from './AdminLayout';
 import { useSupabaseAuth } from '../auth/SupabaseAuthProvider';
 import { loadInventoryMenuAlerts, loadPosConsumptionResolution, type PosConsumptionResolutionLine } from './inventory/inventory.repository';
@@ -78,12 +78,9 @@ type WorkspaceTab = 'floor' | 'kitchen' | 'bar' | 'cashier';
 type CashierRightPanel = 'summary' | 'previous_sessions' | 'validations' | 'movements';
 type AddItemMode = 'menu' | 'extra';
 type InventoryVoidAllocation = PosConsumptionResolutionLine & {
-  returned: string;
-  waste: string;
-  internal: string;
-  client: string;
+  destination: InventoryVoidDestination|null;
 };
-type InventoryVoidDestination = 'returned'|'waste'|'internal'|'client';
+type InventoryVoidDestination = 'returned'|'waste'|'courtesy'|'internal';
 type InventoryVoidDialogState = {
   item: PosOrderItem;
   reason: string;
@@ -1879,7 +1876,7 @@ export function AdminPosView() {
         setInventoryVoidDialog({
           item,
           reason: reason.trim(),
-          lines: consumption.lines.map((line) => ({ ...line, returned: '', waste: '', internal: '', client: String(line.quantity) })),
+          lines: consumption.lines.map((line) => ({ ...line, destination: null })),
           destination: null,
           advanced: false,
         });
@@ -1909,24 +1906,14 @@ export function AdminPosView() {
       setErrorMessage('Selecciona qué ocurrió con el producto entregado.');
       return;
     }
-    const invalid = inventoryVoidDialog.lines.some((line) => {
-      const total = Number(line.returned || 0) + Number(line.waste || 0) + Number(line.internal || 0) + Number(line.client || 0);
-      return [line.returned,line.waste,line.internal,line.client].some((value) => Number(value || 0) < 0) || Math.abs(total - Number(line.quantity)) > 0.0001;
-    });
-    if (invalid) {
-      setErrorMessage('Distribuye exactamente la cantidad de cada componente entre devolución, merma, consumo interno y consumo del cliente.');
+    if (inventoryVoidDialog.advanced && inventoryVoidDialog.lines.some((line) => !line.destination)) {
+      setErrorMessage('Selecciona un destino para cada ingrediente.');
       return;
     }
     const dialog = inventoryVoidDialog;
     await executeAction(`Unidad anulada por excepción: ${dialog.item.productName}`, async () => voidProcessedOrderItemInSupabase(
       dialog.item.id, dialog.reason, actor, dialog.item, 1,
-      dialog.lines.map((line) => ({
-        consumption_line_id: line.consumption_line_id,
-        returned_quantity: Number(line.returned || 0),
-        waste_quantity: Number(line.waste || 0),
-        internal_quantity: Number(line.internal || 0),
-        client_consumed_quantity: Number(line.client || 0),
-      })),
+      dialog.lines.map((line) => buildInventoryVoidResolution(line,dialog.advanced?line.destination:dialog.destination)),
     ), {
       onSuccess: (updatedItems) => {
         setInventoryVoidDialog(null);
@@ -5630,84 +5617,57 @@ function InventoryVoidResolutionDialog({ value, busy, onChange, onClose, onConfi
   onClose: () => void;
   onConfirm: () => void;
 }) {
-  const update = (index: number, field: InventoryVoidQuantityField, next: string) => {
-    const line = value.lines[index];
-    if (!line || !isInventoryVoidQuantityInput(next, line.base_unit)) return;
-    onChange({
-      ...value,
-      lines: value.lines.map((current, lineIndex) => lineIndex === index ? updateInventoryVoidAllocation(current, field, next) : current),
-    });
-  };
-  const chooseDestination = (destination: InventoryVoidDestination) => onChange({
-    ...value,
-    destination,
-    lines: applyInventoryVoidDestination(value.lines,destination),
-  });
-  const canConfirm = !value.lines.length || (value.advanced
-    ? value.lines.every((line) => calculateInventoryVoidAllocation(line).valid)
-    : value.destination !== null);
+  const canAdjustByIngredient=canAdjustInventoryVoidByIngredient(value.lines);
+  const canConfirm=canConfirmInventoryVoid(value);
+  const showAdvanced=canAdjustByIngredient&&value.advanced;
   return <div className="fixed inset-0 z-[100] flex items-end justify-center bg-black/75 p-3 sm:items-center" role="dialog" aria-modal="true">
-    <div className="max-h-[92vh] w-full max-w-4xl overflow-y-auto rounded-[1.4rem] border border-white/12 bg-[#0d0d13] p-5 shadow-2xl sm:p-7">
+    <div className="max-h-[92vh] w-full max-w-4xl overflow-y-auto rounded-[1.4rem] border border-white/12 bg-[#0d0d13] p-5 shadow-2xl sm:p-6">
       <div className="flex items-start justify-between gap-3"><div><p className="text-xs uppercase tracking-[0.2em] text-amberGlow">Anulación después de entregar</p><h2 className="mt-2 font-display text-3xl text-ivory">Anular producto entregado</h2></div><button type="button" className={ghostButtonClassName} onClick={onClose}>Cerrar</button></div>
-      <div className="mt-6 rounded-[1rem] border border-white/10 bg-white/[0.035] p-4"><p className="text-xs uppercase tracking-[0.16em] text-mist">Producto</p><p className="mt-2 text-lg font-semibold text-ivory">{value.item.productName}</p></div>
-      {value.lines.length ? value.advanced ? <div className="mt-6"><div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="font-semibold text-ivory">Ajustar componentes</h3><p className="mt-1 text-sm text-mist">Usa este modo solo si los componentes tuvieron destinos diferentes.</p></div><button type="button" className={ghostButtonClassName} onClick={()=>onChange({...value,advanced:false})}>Volver a destino único</button></div><div className="mt-4 space-y-4">{value.lines.map((line,index) => { const allocation=calculateInventoryVoidAllocation(line); const step=line.base_unit==='unit'?'1':'0.001'; return <article key={line.consumption_line_id} className="rounded-[1rem] border border-white/10 bg-white/[0.035] p-4"><div className="flex flex-wrap justify-between gap-2"><strong className="text-ivory">{line.item_name}</strong><span className="text-sm text-cyanGlow">Total consumido: {formatInventoryVoidQuantity(Number(line.quantity),line.base_unit)}</span></div><div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4"><Field label="Regresa disponible"><input className={inputClassName} type="number" inputMode={line.base_unit==='unit'?'numeric':'decimal'} min="0" max={line.quantity} step={step} value={line.returned} onChange={(e)=>update(index,'returned',e.target.value)} /></Field><Field label="Merma"><input className={inputClassName} type="number" inputMode={line.base_unit==='unit'?'numeric':'decimal'} min="0" max={line.quantity} step={step} value={line.waste} onChange={(e)=>update(index,'waste',e.target.value)} /></Field><Field label="Interno / cortesía"><input className={inputClassName} type="number" inputMode={line.base_unit==='unit'?'numeric':'decimal'} min="0" max={line.quantity} step={step} value={line.internal} onChange={(e)=>update(index,'internal',e.target.value)} /></Field><Field label="Consumido por cliente"><input className={inputClassName} type="number" inputMode={line.base_unit==='unit'?'numeric':'decimal'} min="0" max={line.quantity} step={step} value={line.client} onChange={(e)=>update(index,'client',e.target.value)} /></Field></div><p className={`mt-3 text-sm ${allocation.valid?'text-emerald-200':'text-rose-200'}`}>{allocation.valid?`Distribución completa: ${formatInventoryVoidQuantity(allocation.assigned,line.base_unit)}.`:allocation.remaining>0?`Falta asignar ${formatInventoryVoidQuantity(allocation.remaining,line.base_unit)}.`:`La distribución excede el total por ${formatInventoryVoidQuantity(Math.abs(allocation.remaining),line.base_unit)}.`}</p></article>; })}</div></div> : <fieldset className="mt-6"><legend className="text-lg font-semibold text-ivory">¿Qué ocurrió con este producto?</legend><div className="mt-4 grid gap-3 sm:grid-cols-2">{inventoryVoidDestinationOptions.map((option)=><label key={option.value} className={`flex cursor-pointer items-center gap-3 rounded-[1rem] border px-4 py-4 transition ${value.destination===option.value?'border-cyanGlow/70 bg-cyanGlow/10 text-ivory':'border-white/10 bg-white/[0.035] text-mist hover:border-white/25'}`}><input type="radio" name="inventory-void-destination" value={option.value} checked={value.destination===option.value} onChange={()=>chooseDestination(option.value)} className="h-4 w-4 accent-cyanGlow"/><span className="font-semibold">{option.label}</span></label>)}</div><button type="button" className={`${ghostButtonClassName} mt-4`} onClick={()=>onChange({...value,advanced:true})}>Ajustar componentes</button></fieldset> : <p className="mt-6 rounded-[1rem] border border-white/10 bg-white/[0.03] p-4 text-sm text-mist">Este producto no tenía componentes de inventario configurados al entregarse. La anulación financiera no moverá existencias.</p>}
-      <div className="mt-5 rounded-[0.9rem] border border-white/10 bg-black/20 px-4 py-3 text-sm text-mist"><span className="font-semibold text-ivory">Motivo de anulación:</span> {value.reason}</div><div className="mt-6 flex flex-wrap justify-end gap-2"><button type="button" className={ghostButtonClassName} onClick={onClose}>Cancelar</button><button type="button" disabled={busy||!canConfirm} className={dangerButtonClassName} onClick={onConfirm}>{busy ? 'Guardando…' : 'Confirmar anulación'}</button></div>
+      <div className="mt-5 rounded-[1rem] border border-cyanGlow/20 bg-cyanGlow/[0.06] px-5 py-4"><p className="font-display text-2xl text-ivory">{value.item.productName}</p><p className="mt-1 text-xs uppercase tracking-[0.16em] text-cyan-100/75">Producto entregado</p></div>
+      {showAdvanced?<div className="mt-5"><div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="text-lg font-semibold text-ivory">Destino por ingrediente</h3><p className="mt-1 text-sm text-mist">Selecciona qué ocurrió con cada ingrediente.</p></div><button type="button" className={ghostButtonClassName} onClick={()=>onChange({...value,advanced:false})}>Volver a destino único</button></div><div className="mt-4 space-y-3">{value.lines.map((line,index)=><article key={line.consumption_line_id} className="rounded-[1rem] border border-white/10 bg-white/[0.03] p-4"><h4 className="font-semibold text-ivory">{line.item_name}</h4><InventoryVoidDestinationChoices compact name={`inventory-void-${line.consumption_line_id}`} value={line.destination} onChange={(destination)=>onChange({...value,lines:value.lines.map((current,lineIndex)=>lineIndex===index?{...current,destination}:current)})}/></article>)}</div></div>:<fieldset className="mt-5"><legend className="text-lg font-semibold text-ivory">¿Qué ocurrió con este producto?</legend><InventoryVoidDestinationChoices name="inventory-void-destination" value={value.destination} onChange={(destination)=>onChange({...value,destination})}/>{canAdjustByIngredient?<button type="button" className={`${ghostButtonClassName} mt-4`} onClick={()=>onChange({...value,advanced:true,lines:value.lines.map((line)=>({...line,destination:line.destination??value.destination}))})}>Ajustar por ingrediente</button>:null}</fieldset>}
+      {!value.lines.length?<p className="mt-4 rounded-[0.9rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-mist">Este producto no tenía inventario asociado al entregarse; la anulación no moverá existencias.</p>:null}
+      <div className="mt-5 rounded-[0.9rem] border border-white/10 bg-black/20 px-4 py-3 text-sm text-mist"><span className="font-semibold text-ivory">Motivo de anulación:</span> {value.reason}</div><div className="mt-5 flex flex-wrap justify-end gap-2"><button type="button" className={ghostButtonClassName} onClick={onClose}>Cancelar</button><button type="button" disabled={busy||!canConfirm} className={dangerButtonClassName} onClick={onConfirm}>{busy ? 'Guardando…' : 'Confirmar anulación'}</button></div>
     </div>
   </div>;
 }
 
-const inventoryUnitLabelsForPos = { unit: 'unidad(es)', gram: 'g', milliliter: 'ml' } as const;
-const inventoryVoidDestinationOptions: Array<{value:InventoryVoidDestination;label:string}> = [
-  { value:'returned',label:'Regresó al inventario' },
-  { value:'waste',label:'Merma' },
-  { value:'internal',label:'Interno / cortesía' },
-  { value:'client',label:'Consumido por cliente' },
+const inventoryVoidDestinationOptions: Array<{value:InventoryVoidDestination;label:string;description:string}> = [
+  { value:'returned',label:'Regresó al inventario',description:'Puede volver a venderse o utilizarse.' },
+  { value:'waste',label:'Merma',description:'Se perdió, dañó o descartó.' },
+  { value:'courtesy',label:'Cortesía',description:'Se entregó sin cobro al cliente.' },
+  { value:'internal',label:'Consumo interno',description:'Fue utilizado por el equipo.' },
 ];
 
-type InventoryVoidQuantityField = 'returned'|'waste'|'internal'|'client';
-
-function inventoryVoidQuantityPrecision(baseUnit: PosConsumptionResolutionLine['base_unit']) {
-  return baseUnit === 'unit' ? 0 : 3;
+function InventoryVoidDestinationIcon({ destination }: { destination:InventoryVoidDestination }) {
+  const iconClassName="h-5 w-5";
+  if(destination==='returned')return <PackageCheck className={iconClassName}/>;
+  if(destination==='waste')return <Trash2 className={iconClassName}/>;
+  if(destination==='courtesy')return <Gift className={iconClassName}/>;
+  return <Utensils className={iconClassName}/>;
 }
 
-function isInventoryVoidQuantityInput(value: string, baseUnit: PosConsumptionResolutionLine['base_unit']) {
-  if (value === '') return true;
-  const precision = inventoryVoidQuantityPrecision(baseUnit);
-  return precision === 0 ? /^\d+$/.test(value) : new RegExp(`^\\d*(?:\\.\\d{0,${precision}})?$`).test(value);
+function InventoryVoidDestinationChoices({ name,value,onChange,compact=false }: { name:string;value:InventoryVoidDestination|null;onChange:(destination:InventoryVoidDestination)=>void;compact?:boolean }) {
+  return <div className={`mt-3 grid gap-2 ${compact?'sm:grid-cols-2 lg:grid-cols-4':'sm:grid-cols-2'}`}>{inventoryVoidDestinationOptions.map((option)=>{const selected=value===option.value;return <label key={option.value} className={`relative flex cursor-pointer items-center gap-3 rounded-[0.9rem] border px-3 py-3 transition ${selected?'border-cyanGlow bg-cyanGlow/15 text-ivory shadow-[0_0_0_1px_rgba(71,211,255,0.15)]':'border-white/12 bg-white/[0.04] text-mist hover:border-cyanGlow/45 hover:bg-white/[0.07]'}`}><input className="sr-only" type="radio" name={name} value={option.value} checked={selected} onChange={()=>onChange(option.value)}/><span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${selected?'bg-cyanGlow text-[#071015]':'bg-white/[0.07] text-cyan-100'}`}><InventoryVoidDestinationIcon destination={option.value}/></span><span className="min-w-0"><span className="block text-sm font-semibold">{option.label}</span>{!compact?<span className="mt-0.5 block text-xs leading-4 text-mist">{option.description}</span>:null}</span>{selected?<Check className="ml-auto h-5 w-5 shrink-0 text-cyanGlow" aria-hidden="true"/>:null}</label>;})}</div>;
 }
 
-function roundInventoryVoidQuantity(value: number, baseUnit: PosConsumptionResolutionLine['base_unit']) {
-  const factor = 10 ** inventoryVoidQuantityPrecision(baseUnit);
-  return Math.round((value + Number.EPSILON) * factor) / factor;
+function buildInventoryVoidResolution(line: InventoryVoidAllocation,destination:InventoryVoidDestination|null) {
+  const quantity=Number(line.quantity);
+  return {
+    consumption_line_id:line.consumption_line_id,
+    returned_quantity:destination==='returned'?quantity:0,
+    waste_quantity:destination==='waste'?quantity:0,
+    internal_quantity:destination==='courtesy'||destination==='internal'?quantity:0,
+    client_consumed_quantity:0,
+    classification:destination,
+  };
 }
 
-function formatInventoryVoidQuantity(value: number, baseUnit: PosConsumptionResolutionLine['base_unit']) {
-  return `${new Intl.NumberFormat('es-CO', { maximumFractionDigits: inventoryVoidQuantityPrecision(baseUnit) }).format(value)} ${inventoryUnitLabelsForPos[baseUnit]}`;
+function canAdjustInventoryVoidByIngredient(lines: InventoryVoidAllocation[]) {
+  return lines.length>1;
 }
 
-function applyInventoryVoidDestination(lines: InventoryVoidAllocation[], destination: InventoryVoidDestination) {
-  return lines.map((line) => ({
-    ...line,
-    returned: destination==='returned'?String(line.quantity):'',
-    waste: destination==='waste'?String(line.quantity):'',
-    internal: destination==='internal'?String(line.quantity):'',
-    client: destination==='client'?String(line.quantity):'',
-  }));
-}
-
-function calculateInventoryVoidAllocation(line: InventoryVoidAllocation) {
-  const assigned = roundInventoryVoidQuantity(Number(line.returned||0)+Number(line.waste||0)+Number(line.internal||0)+Number(line.client||0),line.base_unit);
-  const remaining = roundInventoryVoidQuantity(Number(line.quantity)-assigned,line.base_unit);
-  const values=[line.returned,line.waste,line.internal,line.client].map((entry)=>Number(entry||0));
-  return { assigned, remaining, valid: values.every((entry)=>Number.isFinite(entry)&&entry>=0)&&remaining===0 };
-}
-
-function updateInventoryVoidAllocation(line: InventoryVoidAllocation, field: InventoryVoidQuantityField, next: string) {
-  const updated={...line,[field]:next};
-  if(field==='client') return updated;
-  const assignedElsewhere=Number(updated.returned||0)+Number(updated.waste||0)+Number(updated.internal||0);
-  updated.client=String(roundInventoryVoidQuantity(Math.max(Number(line.quantity)-assignedElsewhere,0),line.base_unit));
-  return updated;
+function canConfirmInventoryVoid(value: InventoryVoidDialogState) {
+  return value.advanced?value.lines.every((line)=>line.destination!==null):value.destination!==null;
 }
 
 function InventoryAvailabilityNotice({ alert }: { alert: InventoryMenuAlert }) {

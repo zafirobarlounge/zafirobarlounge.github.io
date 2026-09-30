@@ -38,31 +38,29 @@ test('POS vende productos disponibles aunque no estén visibles en la web', () =
   assert.doesNotMatch(loader, /menu_items_public|visible/);
 });
 
-test('anulación entregada respeta la unidad base y mantiene completa la distribución', () => {
-  const accepts = loadNamedHelpers(posPath, ['inventoryVoidQuantityPrecision', 'isInventoryVoidQuantityInput']);
-  assert.equal(accepts('1', 'unit'), true);
-  assert.equal(accepts('0.005', 'unit'), false);
-  assert.equal(accepts('0.005', 'gram'), true);
-  assert.equal(accepts('0.0005', 'gram'), false);
+test('anulación entregada exige destinos simples o por ingrediente y nunca clasifica consumo del cliente', () => {
+  const line = { consumption_line_id:'line-1',item_id:'item-1',item_name:'Pan',base_unit:'unit',quantity:1,already_resolved:0,destination:null };
+  const resolve = loadNamedHelpers(posPath, ['buildInventoryVoidResolution']);
+  assert.deepEqual(plain(resolve(line,'returned')), { consumption_line_id:'line-1',returned_quantity:1,waste_quantity:0,internal_quantity:0,client_consumed_quantity:0,classification:'returned' });
+  assert.deepEqual(plain(resolve(line,'waste')), { consumption_line_id:'line-1',returned_quantity:0,waste_quantity:1,internal_quantity:0,client_consumed_quantity:0,classification:'waste' });
+  assert.deepEqual(plain(resolve(line,'courtesy')), { consumption_line_id:'line-1',returned_quantity:0,waste_quantity:0,internal_quantity:1,client_consumed_quantity:0,classification:'courtesy' });
+  assert.deepEqual(plain(resolve(line,'internal')), { consumption_line_id:'line-1',returned_quantity:0,waste_quantity:0,internal_quantity:1,client_consumed_quantity:0,classification:'internal' });
 
-  const update = loadNamedHelpers(posPath, ['inventoryVoidQuantityPrecision', 'roundInventoryVoidQuantity', 'updateInventoryVoidAllocation']);
-  const unitLine = { quantity: 1, base_unit: 'unit', returned: '', waste: '', internal: '', client: '1' };
-  assert.deepEqual(plain(update(unitLine, 'returned', '1')), { ...unitLine, returned: '1', client: '0' });
-  const gramLine = { quantity: 110, base_unit: 'gram', returned: '', waste: '', internal: '', client: '110' };
-  assert.deepEqual(plain(update(gramLine, 'waste', '5.125')), { ...gramLine, waste: '5.125', client: '104.875' });
+  const canAdjust = loadNamedHelpers(posPath, ['canAdjustInventoryVoidByIngredient']);
+  assert.equal(canAdjust([line]),false);
+  assert.equal(canAdjust([line,{...line,consumption_line_id:'line-2'}]),true);
 
-  const calculate = loadNamedHelpers(posPath, ['inventoryVoidQuantityPrecision', 'roundInventoryVoidQuantity', 'calculateInventoryVoidAllocation']);
-  assert.deepEqual(plain(calculate(update(unitLine, 'returned', '1'))), { assigned: 1, remaining: 0, valid: true });
-  assert.deepEqual(plain(calculate({ ...unitLine, returned: '1', client: '1' })), { assigned: 2, remaining: -1, valid: false });
+  const canConfirm = loadNamedHelpers(posPath, ['canConfirmInventoryVoid']);
+  const dialog = { item:{},reason:'Error',lines:[line,{...line,consumption_line_id:'line-2'}],destination:null,advanced:false };
+  assert.equal(canConfirm(dialog),false);
+  assert.equal(canConfirm({...dialog,destination:'waste'}),true);
+  assert.equal(canConfirm({...dialog,advanced:true,lines:[{...line,destination:'returned'},line]}),false);
+  assert.equal(canConfirm({...dialog,advanced:true,lines:[{...line,destination:'returned'},{...line,consumption_line_id:'line-2',destination:'courtesy'}]}),true);
 
-  const applyDestination = loadNamedHelpers(posPath, ['applyInventoryVoidDestination']);
-  const recipeLines = [unitLine, gramLine];
-  for (const [destination,field] of [['returned','returned'],['waste','waste'],['internal','internal'],['client','client']]) {
-    const resolved = plain(applyDestination(recipeLines,destination));
-    assert.equal(resolved[0][field], '1');
-    assert.equal(resolved[1][field], '110');
-    assert.ok(resolved.every((line)=>plain(calculate(line)).valid));
-  }
+  const source = readFileSync(path.join(root,posPath),'utf8');
+  assert.doesNotMatch(source,/Consumido por cliente/);
+  assert.match(source,/Ajustar por ingrediente/);
+  assert.match(source,/Volver a destino único/);
 });
 
 function evaluate(source, context) {

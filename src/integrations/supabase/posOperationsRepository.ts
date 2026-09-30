@@ -1140,6 +1140,7 @@ export async function voidProcessedOrderItemInSupabase(
     waste_quantity: number;
     internal_quantity: number;
     client_consumed_quantity: number;
+    classification?: 'returned' | 'waste' | 'courtesy' | 'internal' | null;
   }> = [],
 ) {
   ensureCanVoidProcessedItem(actor.roles);
