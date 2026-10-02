@@ -186,7 +186,7 @@ function harness({
       if (name.includes("cash.repository"))
         return { loadCash: async () => structuredClone(data), saveCash: save };
       if (name.includes("inventory.repository"))
-        return { loadInventory: async () => ({ items:[],presentations:[] }), saveInventoryPurchase: save, subscribeToInventoryRealtime: () => () => {} };
+        return { loadInventory: async () => ({ items:[],presentations:[] }), loadInventoryPendingReplenishments: async () => [], saveInventoryPurchase: save, subscribeToInventoryRealtime: () => () => {} };
       if (name.includes("InventoryPurchaseLinesEditor"))
         return { InventoryPurchaseLinesEditor: 'purchase-lines', buildInventoryPurchaseLines:()=>[], createInventoryPurchaseLine:()=>({}), inventoryPurchaseLinesValid:()=>true, inventoryPurchaseTotal:()=>0 };
       throw new Error(name);
@@ -372,6 +372,7 @@ test("interfaz bloquea roles operativos y no inventa arqueos históricos", async
   for (const role of ["waiter", "kitchen", "bar"])
     assert.equal(harness({ role }).render().type, "redirect");
   const data = fixture();
+  data.sessions[0].business_date = businessDates.exports.salesDayOptions().suggested;
   data.sessions[0].status = "closed";
   data.sessions[0].components.opening = null;
   data.registers = [];

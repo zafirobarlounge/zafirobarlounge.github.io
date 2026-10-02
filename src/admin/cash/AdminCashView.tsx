@@ -24,8 +24,8 @@ import {
   type Movement,
 } from "./cash.domain";
 import { loadCash, saveCash } from "./cash.repository";
-import { loadInventory, saveInventoryPurchase, subscribeToInventoryRealtime } from "../inventory/inventory.repository";
-import type { InventoryData } from "../inventory/inventory.domain";
+import { loadInventory, loadInventoryPendingReplenishments, saveInventoryPurchase, subscribeToInventoryRealtime } from "../inventory/inventory.repository";
+import type { InventoryData, InventorySubmission } from "../inventory/inventory.domain";
 import { InventoryPurchaseLinesEditor, buildInventoryPurchaseLines, createInventoryPurchaseLine, inventoryPurchaseLinesValid, inventoryPurchaseTotal, type InventoryPurchaseDraftLine } from "../inventory/InventoryPurchaseLinesEditor";
 import { salesDayOptions } from "../../shared/operations/salesBusinessDate";
 import { sessionDetailUrl } from './sessionFinance';
@@ -112,6 +112,11 @@ export function AdminCashView({ embedded = false, initialAction = null, onClose 
   const [includeInventory, setIncludeInventory] = useState(false);
   const [inventoryData, setInventoryData] = useState<InventoryData | null>(null);
   const [purchaseLines, setPurchaseLines] = useState<InventoryPurchaseDraftLine[]>([]);
+  const [pendingSubmissions,setPendingSubmissions]=useState<InventorySubmission[]|null>(null);
+  const [pendingSubmissionsLoading,setPendingSubmissionsLoading]=useState(false);
+  const [pendingSubmissionsError,setPendingSubmissionsError]=useState<string|null>(null);
+  const [submissionNotice,setSubmissionNotice]=useState<string|null>(null);
+  const [purchaseSourcesVersion,setPurchaseSourcesVersion]=useState(0);
   const [movementAmount, setMovementAmount] = useState("");
   const [counted, setCounted] = useState("");
   const dayOptions = salesDayOptions();
@@ -160,11 +165,20 @@ export function AdminCashView({ embedded = false, initialAction = null, onClose 
   useEffect(() => {
     if (allowed) void refresh().catch((e) => setError(e.message));
   }, [allowed]);
-  useEffect(() => allowed ? subscribeToInventoryRealtime((kinds) => { if(kinds.includes('receipt')) void refresh().catch((e)=>setError(e.message)); }) : undefined, [allowed]);
+  useEffect(() => allowed ? subscribeToInventoryRealtime((kinds) => {
+    if(kinds.includes('receipt')) void refresh().catch((e)=>setError(e.message));
+    if(includeInventory&&kinds.some((kind)=>['receipt','submission','configuration'].includes(kind))) setPurchaseSourcesVersion((current)=>current+1);
+  }) : undefined, [allowed,includeInventory]);
   useEffect(() => {
-    if(!includeInventory||inventoryData)return;
-    void loadInventory().then((next)=>{setInventoryData(next);setPurchaseLines((current)=>current.length?current:[createInventoryPurchaseLine(next)]);}).catch((reason)=>setError(reason instanceof Error?reason.message:'No se pudo cargar inventario.'));
-  },[includeInventory,inventoryData]);
+    if(!includeInventory)return;
+    let active=true;setPendingSubmissionsLoading(true);setPendingSubmissionsError(null);
+    void Promise.allSettled([loadInventory(),loadInventoryPendingReplenishments()]).then(([inventory,pending])=>{
+      if(!active)return;
+      if(inventory.status==='fulfilled'){setInventoryData(inventory.value);setPurchaseLines((current)=>current.length?current:[createInventoryPurchaseLine(inventory.value)]);}else setError(inventory.reason instanceof Error?inventory.reason.message:'No se pudo cargar inventario.');
+      if(pending.status==='fulfilled')setPendingSubmissions(pending.value);else setPendingSubmissionsError(pending.reason instanceof Error?pending.reason.message:'No se pudieron cargar las solicitudes aprobadas.');
+    }).finally(()=>{if(active)setPendingSubmissionsLoading(false);});
+    return()=>{active=false;};
+  },[includeInventory,purchaseSourcesVersion]);
   useEffect(() => {
     if (!modal || typeof document === 'undefined') return;
     const previous = document.activeElement as HTMLElement | null;
@@ -457,7 +471,9 @@ export function AdminCashView({ embedded = false, initialAction = null, onClose 
                     {category === 'supplies' && <section className="space-y-4 rounded-xl border border-cyanGlow/20 bg-cyanGlow/[0.05] p-4">
                       <label className="flex cursor-pointer items-center justify-between gap-4"><span><strong className="block text-ivory">Registrar productos recibidos en inventario</strong><span className="mt-1 block text-sm text-mist">Crea una sola compra vinculada al gasto y actualiza las existencias.</span></span><input aria-label="Registrar productos recibidos en inventario" type="checkbox" checked={includeInventory} onChange={(event)=>setIncludeInventory(event.target.checked)} /></label>
                       {includeInventory ? inventoryData ? <>
-                        <InventoryPurchaseLinesEditor data={inventoryData} lines={purchaseLines} setLines={setPurchaseLines}/>
+                        {pendingSubmissionsLoading?<p className="text-sm text-cyanGlow">Actualizando solicitudes pendientes…</p>:null}
+                        {submissionNotice?<p role="status" className="rounded-xl border border-amberGlow/25 bg-amberGlow/[0.07] p-3 text-sm text-amber-100">{submissionNotice}</p>:null}
+                        <InventoryPurchaseLinesEditor data={inventoryData} lines={purchaseLines} setLines={setPurchaseLines} pendingSubmissions={pendingSubmissions} pendingError={pendingSubmissionsError} onSubmissionNotice={setSubmissionNotice}/>
                         <div className="rounded-xl border border-white/10 bg-black/15 p-3 text-sm"><p>Total productos: <strong>{inventoryPurchaseTotal(inventoryData,purchaseLines)==null?'Completa los costos':money(inventoryPurchaseTotal(inventoryData,purchaseLines)!)}</strong></p><p>Total gasto: <strong>{movementAmount?money(Number(movementAmount)):money(0)}</strong></p>{inventoryPurchaseTotal(inventoryData,purchaseLines)!=null&&movementAmount&&inventoryPurchaseTotal(inventoryData,purchaseLines)!==Number(movementAmount)?<p role="alert" className="mt-2 text-amber-200">Diferencia: {money(Math.abs(inventoryPurchaseTotal(inventoryData,purchaseLines)!-Number(movementAmount)))}. Corrige los valores antes de guardar.</p>:null}</div>
                         <div className="grid gap-3 sm:grid-cols-2"><Field label="Proveedor (opcional)"><input className={input} name="supplier" maxLength={300}/></Field><Field label="Documento (opcional)"><input className={input} name="document_reference" maxLength={300}/></Field></div>
                       </> : <p className="text-sm text-cyanGlow">Cargando artículos y presentaciones…</p> : null}

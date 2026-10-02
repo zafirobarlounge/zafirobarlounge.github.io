@@ -4,9 +4,23 @@ const { readFileSync } = require('node:fs');
 const vm = require('node:vm');
 const ts = require('typescript');
 
-const compile = (file) => ts.transpileModule(readFileSync(file, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText;
+const compile = (file) => ts.transpileModule(readFileSync(file, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, jsx: ts.JsxEmit.ReactJSX } }).outputText;
 const domain = { exports: {}, Intl, Date };
 vm.runInNewContext(compile('src/admin/inventory/inventory.domain.ts'), domain);
+const purchaseEditorModule = { exports: {} };
+vm.runInNewContext(compile('src/admin/inventory/InventoryPurchaseLinesEditor.tsx'), {
+  module: purchaseEditorModule,
+  exports: purchaseEditorModule.exports,
+  Intl,
+  Date,
+  require(name) {
+    if (name === 'react') return { useEffect() {}, useState() {} };
+    if (name === 'react/jsx-runtime') return { jsx() {}, jsxs() {}, Fragment: 'fragment' };
+    if (name.includes('inventory.domain')) return domain.exports;
+    throw new Error(name);
+  },
+});
+const purchaseEditor = purchaseEditorModule.exports;
 
 test('cantidades distinguen ausencia de cero y respetan precisión', () => {
   assert.equal(domain.exports.formatInventoryQuantity(null, 'unit'), 'Sin conteo inicial');
@@ -264,10 +278,42 @@ test('vista previa separa recibido, aplicado, excedente y pendiente de solicitud
   assert.deepEqual(JSON.parse(JSON.stringify(domain.exports.receiptRequestApplicationPreview(12, 0, 24))), { pending:12,received:24,applied:12,excess:12,pendingAfter:0 });
   assert.deepEqual(JSON.parse(JSON.stringify(domain.exports.receiptRequestApplicationPreview(12, 8, 8))), { pending:4,received:8,applied:4,excess:4,pendingAfter:0 });
   const view = readFileSync('src/admin/inventory/AdminInventoryView.tsx', 'utf8');
-  for (const label of ['Pendiente de solicitud','Cantidad realmente recibida','Aplicado a solicitud','Excedente de esta entrada','Pendiente después de guardar']) assert.match(view, new RegExp(label));
+  const editor = readFileSync('src/admin/inventory/InventoryPurchaseLinesEditor.tsx', 'utf8');
+  for (const label of ['Pendiente de solicitud','Cantidad realmente recibida','Aplicado a solicitud','Excedente','Pendiente después de guardar']) assert.match(editor, new RegExp(label));
   assert.match(view, /line\.applied_submission_quantity/);
-  assert.match(view, /Recepción directa, sin solicitud/);
-  assert.doesNotMatch(view, /Recepci\?n directa/);
+  assert.match(editor, /Recepción directa, sin solicitud/);
+  assert.doesNotMatch(editor, /Recepci\?n directa/);
+});
+
+test('cada producto vincula solo solicitudes compatibles y revalida cambios en tiempo real', () => {
+  const submission = (id,item,status='approved',approved=12,received=0,area='kitchen') => ({
+    id:`submission-${id}`,kind:'replenishment',area,status,created_at:'2026-10-01T12:00:00Z',
+    lines:[{id,item_id:item,item_name:item,approved_quantity:approved,received_quantity:received}],
+  });
+  const candidates = [
+    submission('tomato','tomato'),
+    submission('bread','bread'),
+    submission('complete','tomato','received',12,12),
+    submission('partial-review','tomato','partially_approved',12,0),
+  ];
+  assert.deepEqual(Array.from(purchaseEditor.inventoryPendingSubmissionLines(candidates,'tomato'), row => row.id), ['tomato']);
+  assert.deepEqual(Array.from(purchaseEditor.inventoryPendingSubmissionLines(candidates,'bread'), row => row.id), ['bread']);
+  const baseLine = {key:'one',itemId:'tomato',presentationId:'base',quantity:'5',costDisplay:'',costValue:null,submissionLineId:null};
+  const automatic = purchaseEditor.reconcileInventoryPurchaseSubmissionLinks([baseLine], candidates);
+  assert.equal(automatic.lines[0].submissionLineId,'tomato');
+  assert.equal(automatic.invalidated,false);
+  assert.equal(purchaseEditor.reconcileInventoryPurchaseSubmissionLinks([{...baseLine,submissionSelectionResolved:true}],candidates).lines[0].submissionLineId,null);
+  const multiple = [...candidates,submission('tomato-2','tomato','partially_received',30,5)];
+  assert.equal(purchaseEditor.reconcileInventoryPurchaseSubmissionLinks([baseLine],multiple).lines[0].submissionLineId,null);
+  const invalidated = purchaseEditor.reconcileInventoryPurchaseSubmissionLinks([{...baseLine,submissionLineId:'tomato'}],[submission('tomato-2','tomato')]);
+  assert.equal(invalidated.lines[0].submissionLineId,null);
+  assert.equal(invalidated.invalidated,true);
+  const mixed = purchaseEditor.reconcileInventoryPurchaseSubmissionLinks([
+    {...baseLine,key:'tomato',submissionLineId:'tomato'},
+    {...baseLine,key:'bread',itemId:'bread',submissionLineId:'bread'},
+    {...baseLine,key:'direct',itemId:'other'},
+  ],candidates);
+  assert.deepEqual(Array.from(mixed.lines,row=>row.submissionLineId),['tomato','bread',null]);
 });
 
 test('compras vinculadas reutilizan líneas, exigen totales y muestran pago y trazabilidad', () => {
@@ -279,6 +325,13 @@ test('compras vinculadas reutilizan líneas, exigen totales y muestran pago y tr
   assert.match(editor, /\+ Agregar producto/);
   assert.match(editor, /Cantidad base recibida/);
   assert.match(editor, /content_per_package/);
+  assert.match(editor, /Aplicar a solicitud pendiente \(opcional\)/);
+  assert.match(editor, /pendingSubmissions/);
+  assert.match(editor, /onSubmissionNotice/);
+  assert.match(view, /pendingSubmissions=\{pendingSubmissions\}/);
+  assert.match(cash, /loadInventoryPendingReplenishments/);
+  assert.match(cash, /pendingSubmissions=\{pendingSubmissions\}/);
+  assert.doesNotMatch(view, /<Field label="Solicitud aprobada \(opcional\)">/);
   assert.match(view, /¿Cómo se pagó esta compra\?/);
   for (const label of ['Caja del local','Fondos del negocio fuera de caja','Dinero de un propietario','Solo registrar inventario / pago pendiente']) assert.match(view,new RegExp(label));
   assert.match(cash,/Registrar productos recibidos en inventario/);
@@ -326,7 +379,7 @@ test('rutas y navegación exponen inventario solo a roles previstos', () => {
 test('interfaz muestra conversión congelada y permite compra pagada o pendiente', () => {
   const view = readFileSync('src/admin/inventory/AdminInventoryView.tsx', 'utf8');
   const editor = readFileSync('src/admin/inventory/InventoryPurchaseLinesEditor.tsx','utf8');
-  assert.match(view, /Cantidad realmente recibida/);
+  assert.match(editor, /Cantidad realmente recibida/);
   assert.match(editor, /presentación real, su conversión y los costos de toda la entrada quedarán congelados/);
   assert.match(view, /Solo registrar inventario \/ pago pendiente/);
   assert.match(editor, /Unidad base directa/);

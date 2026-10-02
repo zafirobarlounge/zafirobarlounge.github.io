@@ -392,6 +392,44 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
       assert.equal(sql(`select count(*) from public.inventory_purchases where payment_status='pending' and receipt_id in (select receipt_id from public.inventory_receipt_lines where item_id='${item.id}');`),'1');
       assert.equal(sql(`select count(*) from public.inventory_purchases where payment_status='pending' and request_payload->>'legacy'='true';`),'0');
 
+      const secondItem=command('admin@test.invalid',{action:'save_item',name:'Pan compra vinculada',base_unit:'unit',precision_scale:0,areas:['kitchen']});
+      const directItem=command('admin@test.invalid',{action:'save_item',name:'Servilletas compra directa',base_unit:'unit',precision_scale:0,areas:['kitchen']});
+      command('cashier@test.invalid',{action:'initial_count',item_id:secondItem.id,quantity:0,reason:'Inicio compra mixta'});
+      command('cashier@test.invalid',{action:'initial_count',item_id:directItem.id,quantity:0,reason:'Inicio compra mixta'});
+      const approveRequest=(requestedItem,name,area)=>{
+        const submission=command(`${area}@test.invalid`,{action:'submit',kind:'replenishment',area,status:'sent',notes:name,lines:[{item_id:requestedItem.id,requested_quantity:12}]});
+        const lineId=sql(`select id from public.inventory_submission_lines where submission_id='${submission.id}';`);
+        command('cashier@test.invalid',{action:'review_submission',submission_id:submission.id,status:'approved',lines:[{line_id:lineId,approved_quantity:12}]});
+        return {submissionId:submission.id,lineId};
+      };
+      const firstRequest=approveRequest(item,'Solicitud cerveza','bar');
+      const secondRequest=approveRequest(secondItem,'Solicitud pan','kitchen');
+      const mixedId=randomUUID();
+      const mixedPayload={action:'purchase',source:'inventory',payment_origin:'unpaid',method:null,session:null,concept:'Compra mixta',date:'2026-09-29',supplier:'Proveedor mixto',total_cost:35000,lines:[
+        {item_id:item.id,base_quantity:8,line_total_cost:8000,submission_line_id:firstRequest.lineId},
+        {item_id:secondItem.id,base_quantity:24,line_total_cost:24000,submission_line_id:secondRequest.lineId},
+        {item_id:directItem.id,base_quantity:3,line_total_cost:3000,submission_line_id:null},
+      ]};
+      const mixedPurchase=purchase('cashier@test.invalid',mixedPayload,mixedId);
+      const mixedRetry=purchase('cashier@test.invalid',mixedPayload,mixedId);
+      assert.deepEqual(mixedRetry,mixedPurchase);
+      assert.equal(sql(`select count(*) from public.inventory_purchases where id='${mixedId}';`),'1');
+      assert.equal(sql(`select count(*) from public.inventory_receipt_lines where receipt_id='${mixedPurchase.receipt_id}';`),'3');
+      assert.equal(sql(`select count(distinct submission_line_id) from public.inventory_receipt_lines where receipt_id='${mixedPurchase.receipt_id}' and submission_line_id is not null;`),'2');
+      assert.equal(sql(`select count(*) from public.inventory_receipt_lines where receipt_id='${mixedPurchase.receipt_id}' and submission_line_id is null;`),'1');
+      assert.equal(Number(sql(`select received_quantity from public.inventory_submission_lines where id='${firstRequest.lineId}';`)),8);
+      assert.equal(sql(`select status from public.inventory_submissions where id='${firstRequest.submissionId}';`),'partially_received');
+      assert.equal(Number(sql(`select received_quantity from public.inventory_submission_lines where id='${secondRequest.lineId}';`)),12);
+      assert.equal(sql(`select status from public.inventory_submissions where id='${secondRequest.submissionId}';`),'received');
+      assert.equal(sql(`select count(*) from public.inventory_movements where receipt_id='${mixedPurchase.receipt_id}';`),'3');
+      const mixedPurchaseCount=sql(`select count(*) from public.inventory_purchases;`), mixedReceiptCount=sql(`select count(*) from public.inventory_receipts;`);
+      const mismatchPayload={...mixedPayload,total_cost:1000,lines:[{item_id:secondItem.id,base_quantity:1,line_total_cost:1000,submission_line_id:firstRequest.lineId}]};
+      fails(login('cashier@test.invalid')+`select public.inventory_purchase_command('${randomUUID()}',${quote(JSON.stringify(mismatchPayload))}::jsonb);`,'no corresponde a una solicitud aprobada');
+      const completedPayload={...mixedPayload,total_cost:1000,lines:[{item_id:secondItem.id,base_quantity:1,line_total_cost:1000,submission_line_id:secondRequest.lineId}]};
+      fails(login('cashier@test.invalid')+`select public.inventory_purchase_command('${randomUUID()}',${quote(JSON.stringify(completedPayload))}::jsonb);`,'no corresponde a una solicitud aprobada');
+      assert.equal(sql(`select count(*) from public.inventory_purchases;`),mixedPurchaseCount);
+      assert.equal(sql(`select count(*) from public.inventory_receipts;`),mixedReceiptCount);
+
       const bad=randomUUID(), beforeMovements=sql(`select count(*) from public.pos_cash_movements;`), beforeReceipts=sql(`select count(*) from public.inventory_receipts;`);
       fails(login('cashier@test.invalid')+`select public.inventory_purchase_command('${bad}',${quote(JSON.stringify({...makePayload('business'),total_cost:1}))}::jsonb);`,'no coincide');
       assert.equal(sql(`select count(*) from public.pos_cash_movements;`),beforeMovements);
