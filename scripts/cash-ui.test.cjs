@@ -410,3 +410,14 @@ test('selected UUID includes next-month dawn; all/none and CSV use expense month
     }
   }
 });
+
+test('compra de inventario calcula y bloquea el valor del movimiento', () => {
+  const view = readFileSync('src/admin/cash/AdminCashView.tsx','utf8');
+  assert.match(view,/purchaseTotalDisplay/);
+  assert.match(view,/name="amount" value=\{purchaseTotalDisplay\}/);
+  assert.match(view,/aria-label="Valor total calculado desde los productos"/);
+  assert.match(view,/cursor-not-allowed/);
+  assert.match(view,/disabled readOnly/);
+  assert.match(view,/Se calcula autom.ticamente con los productos recibidos/);
+  assert.doesNotMatch(view,/Diferencia:.*Corrige los valores antes de guardar/);
+});
