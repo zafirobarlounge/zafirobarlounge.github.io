@@ -238,11 +238,16 @@ test('inventario del área inicia cerrado y solo solicita datos al primer despli
   assert.match(panel, /const \[expanded, setExpanded\] = useState\(false\)/);
   assert.match(panel, /if \(action === 'open-and-load'\) void refresh\(\)/);
   assert.match(panel, /if \(expanded\) void refresh\(\)/);
-  assert.match(panel, /expanded \? 'Ocultar' : 'Ver inventario'/);
+  assert.match(panel, /expanded \? 'Ocultar inventario' : requiresAttention \? 'Revisar inventario' : 'Ver inventario'/);
   assert.match(panel, /aria-label="Recargar inventario" title="Recargar inventario"/);
   assert.match(panel, /<RefreshCw aria-hidden="true"/);
   assert.match(panel, /loading\?'animate-spin':''/);
-  assert.equal((panel.match(/\{summaryText\}/g) ?? []).length, 1);
+  assert.match(panel, /Requiere atención/);
+  assert.match(panel, /summary\.depleted===1\?'agotado':'agotados'/);
+  assert.match(panel, /summary\.low===1\?'bajo':'bajos'/);
+  assert.match(panel, /summary\.uncounted.*sin conteo/);
+  assert.match(panel, /summary\.total.*artículos/);
+  assert.match(panel, /border-l-rose-300\/70/);
   assert.match(panel, /await saveInventoryCommand[\s\S]*await refresh\(true\)/);
 });
 

@@ -1,5 +1,5 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { RefreshCw } from 'lucide-react';
+import { Boxes, RefreshCw } from 'lucide-react';
 import {
   formatConfiguredInventoryQuantity,
   formatInventoryQuantity,
@@ -271,21 +271,28 @@ export function AreaInventoryPanel({ area, refreshVersion = 0 }: { area: PosInve
     }
   };
 
-  const summaryText = hasLoaded
-    ? `${summary.total} artículos · ${summary.low} bajos · ${summary.depleted} agotados · ${summary.uncounted} sin conteo`
-    : 'Consulta existencias, solicitudes, conteos y daños del área.';
+  const requiresAttention = hasLoaded && (summary.depleted > 0 || summary.low > 0);
+  const attentionTone = summary.depleted > 0 ? 'border-l-rose-300/70' : summary.low > 0 ? 'border-l-amberGlow/70' : 'border-l-cyanGlow/35';
 
   return (
-    <section data-area-inventory={area} className="rounded-[1.35rem] border border-white/10 bg-white/[0.025] p-4 shadow-[0_20px_60px_rgba(0,0,0,0.12)] sm:p-5">
+    <section data-area-inventory={area} className={`rounded-[1.35rem] border border-l-4 border-white/10 ${attentionTone} bg-white/[0.035] p-4 shadow-[0_20px_60px_rgba(0,0,0,0.16)] sm:p-5`}>
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyanGlow/80">Inventario del área</p>
-          <p className="mt-2 text-sm text-mist">{summaryText}</p>
+        <div className="flex min-w-0 items-start gap-3">
+          <span className={`inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full border ${requiresAttention?'border-amberGlow/35 bg-amberGlow/10 text-amber-100':'border-cyanGlow/25 bg-cyanGlow/[0.08] text-cyanGlow'}`}><Boxes aria-hidden="true" className="h-5 w-5" /></span>
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2"><h3 className="font-display text-2xl text-ivory">Inventario del área</h3>{requiresAttention?<span className="inline-flex items-center gap-1.5 rounded-full border border-amberGlow/30 bg-amberGlow/10 px-2.5 py-1 text-xs font-semibold text-amber-100"><span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-current"/>Requiere atención</span>:null}</div>
+            {hasLoaded?<div className="mt-3 flex flex-wrap gap-2">
+              <span className="rounded-full border border-rose-300/25 bg-rose-300/[0.08] px-2.5 py-1 text-xs font-semibold text-rose-100">{summary.depleted} {summary.depleted===1?'agotado':'agotados'}</span>
+              <span className="rounded-full border border-amberGlow/25 bg-amberGlow/[0.08] px-2.5 py-1 text-xs font-semibold text-amber-100">{summary.low} {summary.low===1?'bajo':'bajos'}</span>
+              <span className="rounded-full border border-white/15 bg-white/[0.05] px-2.5 py-1 text-xs font-semibold text-mist">{summary.uncounted} sin conteo</span>
+              <span className="rounded-full border border-cyanGlow/20 bg-cyanGlow/[0.06] px-2.5 py-1 text-xs text-cyanGlow">{summary.total} artículos</span>
+            </div>:<p className="mt-2 text-sm text-mist">Consulta existencias, solicitudes, conteos y daños del área.</p>}
+          </div>
         </div>
         <div className="flex items-center gap-2 self-end sm:self-auto">
           {expanded && hasLoaded ? <button type="button" aria-label="Recargar inventario" title="Recargar inventario" className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-white/12 bg-white/[0.05] text-cyanGlow transition hover:border-cyanGlow/30 hover:bg-cyanGlow/10 disabled:cursor-wait disabled:opacity-50" disabled={loading} onClick={() => void refresh(true)}><RefreshCw aria-hidden="true" className={`h-4 w-4 ${loading?'animate-spin':''}`}/></button> : null}
           <button type="button" aria-expanded={expanded} className={ghostButton} onClick={toggleInventory}>
-            {expanded ? 'Ocultar' : 'Ver inventario'}
+            {expanded ? 'Ocultar inventario' : requiresAttention ? 'Revisar inventario' : 'Ver inventario'}
           </button>
         </div>
       </div>
