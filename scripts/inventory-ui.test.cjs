@@ -326,6 +326,10 @@ test('compras vinculadas reutilizan líneas, exigen totales y muestran pago y tr
   assert.match(editor, /Cantidad base recibida/);
   assert.match(editor, /content_per_package/);
   assert.match(editor, /Aplicar a solicitud pendiente \(opcional\)/);
+  assert.match(editor, /Solicitud vinculada/);
+  assert.match(editor, /pendiente por aplicar/);
+  assert.match(editor, /border-amberGlow\/40 bg-amberGlow/);
+  assert.match(editor, /border-emerald-300\/35 bg-emerald-300/);
   assert.match(editor, /pendingSubmissions/);
   assert.match(editor, /onSubmissionNotice/);
   assert.match(view, /pendingSubmissions=\{pendingSubmissions\}/);

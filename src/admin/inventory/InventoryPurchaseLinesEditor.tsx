@@ -171,13 +171,18 @@ export function InventoryPurchaseLinesEditor({ data, lines, setLines, lockedFirs
             <input aria-label={`Costo de compra ${index + 1}`} className={fieldClass} inputMode="decimal" value={line.costDisplay} onChange={(event) => { const value = inventoryMoneyInput(event.target.value); update(line.key, { costDisplay: value.display, costValue: value.value }); }} placeholder="0" />
           </label>
         </div>
-        <label className="mt-4 block">
-          <span className="mb-2 block text-xs font-semibold uppercase tracking-[0.14em] text-mist">Aplicar a solicitud pendiente (opcional)</span>
-          <select aria-label={`Solicitud pendiente para producto ${index + 1}`} className={fieldClass} disabled={pendingSubmissions == null} value={line.submissionLineId ?? ''} onChange={(event) => { onSubmissionNotice?.(null); update(line.key, { submissionLineId: event.target.value || null, submissionSelectionResolved: true }); }}>
-            <option value="">{pendingSubmissions == null ? 'Cargando solicitudes…' : 'Recepción directa, sin solicitud'}</option>
-            {compatibleRequests.map((request) => <option key={request.id} value={request.id}>{inventoryAreaName(data.areas, request.area)} · {preview.item ? formatInventoryQuantity(Number(request.approved_quantity) - Number(request.received_quantity), preview.item.base_unit, preview.item.precision_scale) : Number(request.approved_quantity) - Number(request.received_quantity)} pendientes · {new Date(request.createdAt).toLocaleDateString('es-CO', { timeZone: 'America/Bogota' })}</option>)}
-          </select>
-        </label>
+        <div className={`mt-4 rounded-[0.9rem] border p-3 transition ${linkedRequest ? 'border-emerald-300/35 bg-emerald-300/[0.08]' : compatibleRequests.length ? 'border-amberGlow/40 bg-amberGlow/[0.08]' : 'border-white/10 bg-black/10'}`}>
+          <label className="block">
+            <span className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <span className="text-xs font-semibold uppercase tracking-[0.14em] text-ivory">Aplicar a solicitud pendiente (opcional)</span>
+              {linkedRequest ? <span className="inline-flex items-center gap-2 rounded-full border border-emerald-300/30 bg-emerald-300/10 px-2.5 py-1 text-xs font-semibold text-emerald-200"><span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-current" />Solicitud vinculada</span> : compatibleRequests.length ? <span className="inline-flex items-center gap-2 rounded-full border border-amberGlow/30 bg-amberGlow/10 px-2.5 py-1 text-xs font-semibold text-amber-100"><span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-current" />{compatibleRequests.length} {compatibleRequests.length === 1 ? 'pendiente por aplicar' : 'pendientes por aplicar'}</span> : null}
+            </span>
+            <select aria-label={`Solicitud pendiente para producto ${index + 1}`} className={`${fieldClass} ${linkedRequest ? 'border-emerald-300/40' : compatibleRequests.length ? 'border-amberGlow/50' : ''}`} disabled={pendingSubmissions == null} value={line.submissionLineId ?? ''} onChange={(event) => { onSubmissionNotice?.(null); update(line.key, { submissionLineId: event.target.value || null, submissionSelectionResolved: true }); }}>
+              <option value="">{pendingSubmissions == null ? 'Cargando solicitudes…' : 'Recepción directa, sin solicitud'}</option>
+              {compatibleRequests.map((request) => <option key={request.id} value={request.id}>{inventoryAreaName(data.areas, request.area)} · {preview.item ? formatInventoryQuantity(Number(request.approved_quantity) - Number(request.received_quantity), preview.item.base_unit, preview.item.precision_scale) : Number(request.approved_quantity) - Number(request.received_quantity)} pendientes · {new Date(request.createdAt).toLocaleDateString('es-CO', { timeZone: 'America/Bogota' })}</option>)}
+            </select>
+          </label>
+        </div>
         {requestPreview && preview.item ? <div className="mt-3 grid gap-x-5 gap-y-1 rounded-[0.8rem] border border-cyanGlow/20 bg-cyanGlow/[0.06] p-3 text-sm text-mist sm:grid-cols-2">
           <p>Pendiente de solicitud: <strong className="text-ivory">{formatInventoryQuantity(requestPreview.pending, preview.item.base_unit, preview.item.precision_scale)}</strong></p>
           <p>Cantidad realmente recibida: <strong className="text-ivory">{formatInventoryQuantity(requestPreview.received, preview.item.base_unit, preview.item.precision_scale)}</strong></p>
