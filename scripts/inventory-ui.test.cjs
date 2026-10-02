@@ -266,6 +266,8 @@ test('vista previa separa recibido, aplicado, excedente y pendiente de solicitud
   const view = readFileSync('src/admin/inventory/AdminInventoryView.tsx', 'utf8');
   for (const label of ['Pendiente de solicitud','Cantidad realmente recibida','Aplicado a solicitud','Excedente de esta entrada','Pendiente después de guardar']) assert.match(view, new RegExp(label));
   assert.match(view, /line\.applied_submission_quantity/);
+  assert.match(view, /Recepción directa, sin solicitud/);
+  assert.doesNotMatch(view, /Recepci\?n directa/);
 });
 
 test('compras vinculadas reutilizan líneas, exigen totales y muestran pago y trazabilidad', () => {
