@@ -118,7 +118,6 @@ const DRAFT_EDITABLE_STATUSES = new Set<OrderOperationalStatus>(['draft']);
 const CONTROLLED_CANCEL_STATUSES = new Set<OrderOperationalStatus>(['draft', 'sent', 'pending_preparation']);
 const KITCHEN_PRODUCT_TYPES = new Set(['comida']);
 const BAR_PRODUCT_TYPES = new Set(['cocteles', 'micheladas', 'jugos-y-limonadas', 'bebidas']);
-const SALES_SESSION_CUTOFF_HOUR = 18;
 
 type PosRealtimeTable =
   | 'pos_tables'
@@ -212,56 +211,19 @@ export async function loadPosStateFromSupabase(options: LoadPosStateOptions = {}
   };
 }
 
-export async function openSalesSessionInSupabase(actor: PosActorContext, notes?: string) {
-  const currentOpenSession = await getOpenSalesSession();
-  if (currentOpenSession) {
-    return currentOpenSession;
-  }
-
-  const openedAt = new Date().toISOString();
-  const businessDate = deriveSalesBusinessDate(openedAt, SALES_SESSION_CUTOFF_HOUR);
-  const sessionLabel = `Jornada ${businessDate}`;
-  const supabase = getSupabaseClient();
-  const { data, error } = await supabase
-    .from('pos_sales_sessions')
-    .insert({
-      business_date: businessDate,
-      cutoff_hour: SALES_SESSION_CUTOFF_HOUR,
-      notes: notes?.trim() ?? '',
-      opened_at: openedAt,
-      opened_by_email: actor.email,
-      session_label: sessionLabel,
-      status: 'open',
-      summary: {} as never,
-    } as never)
-    .select('*')
-    .single();
-
-  throwIfError(error, 'No fue posible abrir una jornada de ventas');
-  await insertPosLog({
-    actor,
-    afterData: data,
-    eventType: 'sales_session_opened',
-    notes: `Jornada abierta: ${sessionLabel}`,
-  });
-  return mapPosSalesSessionRow(data);
+export async function openSalesSessionInSupabase(_actor: PosActorContext, _notes?: string) {
+  const { data, error } = await getSupabaseClient().rpc('pos_cash_ensure_session');
+  throwIfError(error, 'No fue posible abrir la jornada');
+  return mapPosSalesSessionRow(data as unknown as PosSalesSessionRow);
 }
 
 export async function loadPosProductOptionsFromSupabase() {
   const supabase = getSupabaseClient();
-  const { data, error } = await supabase
-    .from('menu_items_public')
-    .select('*')
-    .eq('visible', true)
-    .eq('disponible', true)
-    .order('tipo', { ascending: true })
-    .order('subgrupo', { ascending: true })
-    .order('orden', { ascending: true })
-    .order('name', { ascending: true });
+  const { data, error } = await supabase.rpc('pos_product_options' as never);
 
   throwIfError(error, 'No fue posible cargar el catalogo operativo para POS');
 
-  return (data ?? []).map(mapMenuItemPublicRow);
+  return ((data ?? []) as unknown as MenuItemPublicRow[]).map(mapMenuItemPublicRow);
 }
 
 export async function updatePosOperationalFlowSettingsInSupabase(input: UpdatePosOperationalFlowSettingsInput, actor: PosActorContext) {
@@ -1172,6 +1134,15 @@ export async function voidProcessedOrderItemInSupabase(
   actor: PosActorContext,
   currentItemOverride?: PosOrderItem,
   voidQuantity = 1,
+  inventoryResolutions: Array<{
+    consumption_line_id: string;
+    returned_quantity: number;
+    waste_quantity: number;
+    courtesy_quantity: number;
+    internal_quantity: number;
+    client_consumed_quantity: number;
+    classification?: 'returned' | 'waste' | 'courtesy' | 'internal' | null;
+  }> = [],
 ) {
   ensureCanVoidProcessedItem(actor.roles);
 
@@ -1216,95 +1187,17 @@ export async function voidProcessedOrderItemInSupabase(
     throw new Error('Anular este producto dejaria la cuenta sobrepagada. Hace falta resolver una devolucion o ajuste de pago antes.');
   }
 
-  const supabase = getSupabaseClient();
-  const now = new Date().toISOString();
-  let updatedRows: PosOrderItemRow[];
-
-  if (normalizedVoidQuantity === currentItem.quantity) {
-    const { data, error } = await supabase
-      .from('pos_order_items')
-      .update({
-        cancellation_reason: normalizedReason,
-        cancelled_at: now,
-        cancelled_by_email: actor.email,
-        financial_status: 'cancelled',
-        operational_status: 'cancelled',
-        updated_by_email: actor.email,
-      } as never)
-      .eq('id', itemId)
-      .not('operational_status', 'eq', 'cancelled')
-      .select('*')
-      .single();
-
-    throwIfError(error, 'No fue posible anular el producto por excepcion');
-    updatedRows = [data];
-  } else {
-    const remainingQuantity = currentItem.quantity - normalizedVoidQuantity;
-    const { data: activeLine, error: activeLineError } = await supabase
-      .from('pos_order_items')
-      .update({
-        quantity: remainingQuantity,
-        total_price: currentItem.unitPrice * remainingQuantity,
-        updated_by_email: actor.email,
-      } as never)
-      .eq('id', itemId)
-      .not('operational_status', 'eq', 'cancelled')
-      .select('*')
-      .single();
-
-    throwIfError(activeLineError, 'No fue posible ajustar la cantidad activa del producto');
-
-    const { data: cancelledUnit, error: cancelledUnitError } = await supabase
-      .from('pos_order_items')
-      .insert({
-        cancelled_at: now,
-        cancelled_by_email: actor.email,
-        cancellation_reason: normalizedReason,
-        created_by_email: actor.email,
-        delivered_at: currentItem.deliveredAt,
-        delivered_by_email: currentItem.deliveredByEmail,
-        financial_status: 'cancelled',
-        menu_item_source_key: currentItem.menuItemSourceKey,
-        notes: currentItem.notes ?? '',
-        operational_status: 'cancelled',
-        order_id: currentItem.orderId,
-        picking_up_at: currentItem.pickingUpAt,
-        picking_up_by_email: currentItem.pickingUpByEmail,
-        prep_area: currentItem.prepArea,
-        preparation_started_at: currentItem.preparationStartedAt,
-        product_name: currentItem.productName,
-        product_slug: currentItem.productSlug,
-        quantity: normalizedVoidQuantity,
-        ready_at: currentItem.readyAt,
-        replacement_for_item_id: currentItem.id,
-        sent_at: currentItem.sentAt,
-        service_round: currentItem.serviceRound,
-        total_price: voidedAmount,
-        unit_price: currentItem.unitPrice,
-        updated_by_email: actor.email,
-      } as never)
-      .select('*')
-      .single();
-
-    throwIfError(cancelledUnitError, 'No fue posible registrar la unidad anulada');
-    updatedRows = [activeLine, cancelledUnit];
-  }
-
-  await reconcileOrderState(currentItem.orderId, actor.email);
-  await insertPosLog({
-    actor,
-    afterData: {
-      rows: updatedRows,
-      voidedQuantity: normalizedVoidQuantity,
+  const { data, error } = await getSupabaseClient().rpc('inventory_void_processed_item' as never, {
+    request_id: crypto.randomUUID(),
+    payload: {
+      item_id: itemId,
+      reason: normalizedReason,
+      void_quantity: normalizedVoidQuantity,
+      resolutions: inventoryResolutions,
     },
-    beforeData: currentItem,
-    eventType: 'item_voided_after_process',
-    notes: normalizedReason,
-    orderId: currentItem.orderId,
-    orderItemId: currentItem.id,
-  });
-
-  return updatedRows.map(mapPosOrderItemRow);
+  } as never);
+  throwIfError(error, 'No fue posible anular el producto y resolver su inventario');
+  return (data as unknown as PosOrderItemRow[]).map(mapPosOrderItemRow);
 }
 
 export async function sendDraftItemsToPreparationInSupabase(orderId: string, actor: PosActorContext) {
@@ -1437,33 +1330,14 @@ export async function markOrderItemDeliveredInSupabase(itemId: string, actor: Po
     throw new Error('Solo puedes marcar como entregado un producto que ya este listo para salir.');
   }
 
-  const supabase = getSupabaseClient();
-  const now = new Date().toISOString();
-  const { data, error } = await supabase
-    .from('pos_order_items')
-    .update({
-      delivered_at: now,
-      delivered_by_email: actor.email,
-      operational_status: 'delivered',
-      updated_by_email: actor.email,
-    } as never)
-    .eq('id', itemId)
-    .in('operational_status', ['ready', 'picking_up'])
-    .select('*')
-    .single();
+  const { data, error } = await getSupabaseClient().rpc('inventory_deliver_pos_item' as never, {
+    item_id: itemId,
+    direct_delivery: false,
+  } as never);
 
-  throwIfError(error, 'No fue posible marcar la linea como entregada');
+  throwIfError(error, 'No fue posible entregar la linea y registrar su consumo de inventario');
   await reconcileOrderState(item.orderId, actor.email);
-  await insertPosLog({
-    actor,
-    afterData: data,
-    beforeData: item,
-    eventType: 'item_delivered',
-    orderId: item.orderId,
-    orderItemId: item.id,
-  });
-
-  return mapPosOrderItemRow(data);
+  return mapPosOrderItemRow(data as unknown as PosOrderItemRow);
 }
 
 export async function markOrderItemDirectDeliveredInSupabase(itemId: string, actor: PosActorContext, currentItemOverride?: PosOrderItem) {
@@ -1479,34 +1353,14 @@ export async function markOrderItemDirectDeliveredInSupabase(itemId: string, act
     throw new Error('Solo puedes entregar directo un producto activo de preparacion o despacho.');
   }
 
-  const supabase = getSupabaseClient();
-  const now = new Date().toISOString();
-  const { data, error } = await supabase
-    .from('pos_order_items')
-    .update({
-      delivered_at: now,
-      delivered_by_email: actor.email,
-      operational_status: 'delivered',
-      ready_at: item.readyAt ?? now,
-      updated_by_email: actor.email,
-    } as never)
-    .eq('id', itemId)
-    .in('operational_status', allowedCurrent)
-    .select('*')
-    .single();
+  const { data, error } = await getSupabaseClient().rpc('inventory_deliver_pos_item' as never, {
+    item_id: itemId,
+    direct_delivery: true,
+  } as never);
 
-  throwIfError(error, 'No fue posible entregar directo la linea');
+  throwIfError(error, 'No fue posible entregar directo y registrar el consumo de inventario');
   await reconcileOrderState(item.orderId, actor.email);
-  await insertPosLog({
-    actor,
-    afterData: data,
-    beforeData: item,
-    eventType: 'item_direct_delivered',
-    orderId: item.orderId,
-    orderItemId: item.id,
-  });
-
-  return mapPosOrderItemRow(data);
+  return mapPosOrderItemRow(data as unknown as PosOrderItemRow);
 }
 
 export async function recordPosPaymentInSupabase(orderId: string, input: RecordPaymentInput, actor: PosActorContext) {
@@ -1584,97 +1438,6 @@ export async function recordPosPaymentInSupabase(orderId: string, input: RecordP
   return mapPosPaymentRow(data);
 }
 
-export async function closeActiveSalesSessionInSupabase(actor: PosActorContext, notes?: string) {
-  const supabase = getSupabaseClient();
-  const session = await getOpenSalesSession();
-
-  if (!session) {
-    throw new Error('No hay una jornada activa para cerrar en este momento.');
-  }
-
-  const sessionPayments = await loadPaymentsBySalesSessionId(session.id);
-  const directSessionOrders = await loadOrdersForSalesSession(session.id);
-  const paymentLinkedOrderIds = Array.from(new Set(sessionPayments.map((payment) => payment.orderId)));
-  const missingOrderIds = paymentLinkedOrderIds.filter((orderId) => !directSessionOrders.some((order) => order.id === orderId));
-  const inferredOrders = missingOrderIds.length ? await loadOrdersByIds(missingOrderIds) : [];
-  const sessionOrders = dedupeOrdersById([...directSessionOrders, ...inferredOrders]).sort((left, right) => left.openedAt.localeCompare(right.openedAt));
-  const sessionOrderIds = sessionOrders.map((order) => order.id);
-  const sessionItems = sessionOrderIds.length ? await loadOrderItemsByOrderIds(sessionOrderIds) : [];
-  const itemsByOrderId = new Map<string, PosOrderItem[]>();
-  const paymentsByOrderId = new Map<string, PosPayment[]>();
-
-  for (const item of sessionItems) {
-    const bucket = itemsByOrderId.get(item.orderId) ?? [];
-    bucket.push(item);
-    itemsByOrderId.set(item.orderId, bucket);
-  }
-
-  for (const payment of sessionPayments) {
-    const bucket = paymentsByOrderId.get(payment.orderId) ?? [];
-    bucket.push(payment);
-    paymentsByOrderId.set(payment.orderId, bucket);
-  }
-
-  const ordersWithRelations = sessionOrders.map((order) => {
-    const orderItems = itemsByOrderId.get(order.id) ?? [];
-    const orderPayments = paymentsByOrderId.get(order.id) ?? [];
-    return {
-      ...order,
-      items: orderItems,
-      payments: orderPayments,
-      summary: buildOrderSummary(orderItems, orderPayments),
-    };
-  });
-
-  const ordersWithBalance = ordersWithRelations.filter(
-    (order) => order.summary.remainingBalance > 0 || order.summary.pendingPayments > 0,
-  );
-
-  if (ordersWithBalance.length) {
-    throw new Error('No puedes cerrar la jornada mientras sigan cuentas abiertas, saldos pendientes o pagos por confirmar.');
-  }
-
-  const orderIdsMissingSession = sessionOrders.filter((order) => order.salesSessionId !== session.id).map((order) => order.id);
-  if (orderIdsMissingSession.length) {
-    const { error: attachOrdersError } = await supabase
-      .from('pos_orders')
-      .update({
-        sales_session_id: session.id,
-      } as never)
-      .in('id', orderIdsMissingSession);
-
-    throwIfError(attachOrdersError, 'No fue posible terminar de vincular las cuentas a la jornada antes del cierre');
-  }
-
-  const summary = buildSalesSessionSummary(ordersWithRelations, sessionPayments);
-  const now = new Date().toISOString();
-  const { data, error } = await supabase
-    .from('pos_sales_sessions')
-    .update({
-      closed_at: now,
-      closed_by_email: actor.email,
-      notes: notes?.trim() ?? session.notes,
-      status: 'closed',
-      summary: summary as never,
-    } as never)
-    .eq('id', session.id)
-    .eq('status', 'open')
-    .select('*')
-    .single();
-
-  throwIfError(error, 'No fue posible cerrar la jornada de ventas');
-
-  await insertPosLog({
-    actor,
-    afterData: data,
-    beforeData: session,
-    eventType: 'sales_session_closed',
-    notes: `Jornada cerrada: ${session.sessionLabel}`,
-  });
-
-  return mapPosSalesSessionRow(data);
-}
-
 export async function loadSalesSessionHistoryFromSupabase(): Promise<PosSalesSessionHistoryEntry[]> {
   const [sessions, allOrders, allPayments, allItems] = await Promise.all([
     loadAllPosSalesSessionRows(),
@@ -1683,6 +1446,53 @@ export async function loadSalesSessionHistoryFromSupabase(): Promise<PosSalesSes
     loadAllPosOrderItemRows(),
   ]);
   return buildSalesSessionHistory(sessions, allOrders, allPayments, allItems);
+}
+
+export async function loadAuthorizedSessionReportFromSupabase() {
+  const { data, error } = await getSupabaseClient().rpc('pos_session_report_v2' as never);
+  throwIfError(error, 'No fue posible cargar el reporte. Revisa permisos y migracion 004');
+  const rows = data as unknown as { sessions: PosSalesSessionRow[]; orders: PosOrderRow[]; payments: PosPaymentRow[]; items: PosOrderItemRow[]; tables: PosTableRow[]; reconciled_session_ids: string[]; adjustments?: import('../../shared/operations/operations.types').SessionAdjustment[] };
+  const originalRows = rows.sessions.map(row => ({ ...row }));
+  const adjustments = rows.adjustments ?? [];
+  for (const adjustment of adjustments) {
+    if (adjustment.action === 'window') {
+      const session = rows.sessions.find(row => row.id === adjustment.session_id);
+      if (session) Object.assign(session, { business_date: adjustment.payload.business_date, opened_at: adjustment.payload.opened_at, closed_at: adjustment.payload.closed_at, session_label: adjustment.payload.session_label, notes: adjustment.payload.notes ?? '' });
+    } else {
+      const order = rows.orders.find(row => row.id === adjustment.order_id);
+      if (!order) continue;
+      if (adjustment.action === 'move') {
+        order.sales_session_id = adjustment.destination_id;
+        rows.payments.filter(p => p.order_id === order.id).forEach(p => { p.sales_session_id = adjustment.destination_id; });
+      } else {
+        order.financial_status = 'cancelled';
+        order.cancellation_reason = adjustment.reason;
+        rows.items.filter(i => i.order_id === order.id).forEach(i => { i.financial_status = 'cancelled'; i.operational_status = 'cancelled'; i.cancellation_reason = adjustment.reason; });
+        rows.payments.filter(p => p.order_id === order.id && p.status === 'confirmed').forEach(p => { p.status = 'rejected'; });
+      }
+    }
+  }
+  for (const session of rows.sessions) {
+    if (adjustments.some(a => a.action !== 'window' && (a.session_id === session.id || a.destination_id === session.id))) session.summary = {};
+  }
+  const orders = buildOrdersWithRelations(rows.orders, rows.items, rows.payments);
+  const history = buildSalesSessionHistory(rows.sessions, rows.orders, rows.payments, rows.items).map(session => {
+    const related = adjustments.filter(a => a.session_id === session.id || a.destination_id === session.id);
+    if (related.length) {
+      const originalSummary = mapPosSalesSessionRow(originalRows.find(row => row.id === session.id)!).summary;
+      const summary = related.every(a => a.action === 'window') && rows.reconciled_session_ids.includes(session.id) ? originalSummary : session.summary;
+      return { ...session, summary, orderCount: summary?.orderCount ?? 0, paymentCount: summary?.confirmedPayments ?? 0, totalCollected: summary?.totalCollected ?? 0, totalSold: summary?.grossSales ?? 0, adjustments: related, originalSummary };
+    }
+    if (!rows.reconciled_session_ids.includes(session.id)) return session;
+    const snapshot = mapPosSalesSessionRow(rows.sessions.find(row => row.id === session.id)!).summary;
+    return { ...session, summary: snapshot, orderCount: snapshot?.orderCount ?? 0, paymentCount: snapshot?.confirmedPayments ?? 0, totalCollected: snapshot?.totalCollected ?? 0, totalSold: snapshot?.grossSales ?? 0 };
+  });
+  return { history, closedSales: orders.filter(o => o.closedAt != null), tables: buildTablesWithOrders(rows.tables, orders) };
+}
+
+export async function registerSessionAdjustment(payload: Record<string, string>, requestId: string) {
+  const { error } = await getSupabaseClient().rpc('pos_session_adjustment' as never, { request_id: requestId, payload } as never);
+  throwIfError(error, 'No fue posible registrar el ajuste. Revisa permisos y migracion 004');
 }
 
 export async function loadSalesSessionHistoryViewFromSupabase() {
@@ -3051,30 +2861,6 @@ function parseSalesSessionSummary(value: Record<string, unknown> | null): PosSal
   }
 
   return value as unknown as PosSalesSessionSummary;
-}
-
-function deriveSalesBusinessDate(isoDateTime: string, cutoffHour: number) {
-  const formatter = new Intl.DateTimeFormat('en-CA', {
-    day: '2-digit',
-    hour: '2-digit',
-    hour12: false,
-    month: '2-digit',
-    timeZone: 'America/Bogota',
-    year: 'numeric',
-  });
-  const parts = formatter.formatToParts(new Date(isoDateTime));
-  const pick = (type: string) => parts.find((entry) => entry.type === type)?.value ?? '00';
-  const year = Number(pick('year'));
-  const month = Number(pick('month'));
-  const day = Number(pick('day'));
-  const hour = Number(pick('hour'));
-
-  const localDate = new Date(Date.UTC(year, month - 1, day));
-  if (hour < cutoffHour) {
-    localDate.setUTCDate(localDate.getUTCDate() - 1);
-  }
-
-  return localDate.toISOString().slice(0, 10);
 }
 
 function throwIfError(error: { message: string } | null, fallbackMessage: string): asserts error is null {

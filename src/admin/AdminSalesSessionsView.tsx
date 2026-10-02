@@ -1,15 +1,17 @@
+import { loadCash } from './cash/cash.repository';
+import { bogotaToday, csvCell, type CashData } from './cash/cash.domain';
+import { financeCsv, includeLinkedSession, paymentBreakdown, reportAccess } from './cash/sessionFinance';
+import { SessionFinanceDetail } from './cash/SessionFinanceDetail';
 import type { ReactNode } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { AdminLayout } from './AdminLayout';
 import { useSupabaseAuth } from '../auth/SupabaseAuthProvider';
 import {
-  cancelClosedPaidOrderInSupabase,
+  registerSessionAdjustment,
   createManualSalesSessionInSupabase,
   deleteSalesSessionFromSupabase,
-  loadSalesSessionHistoryViewFromSupabase,
-  reassignOrderSalesSessionInSupabase,
-  updateSalesSessionWindowInSupabase,
+  loadAuthorizedSessionReportFromSupabase,
   type PosActorContext,
 } from '../integrations/supabase/posOperationsRepository';
 import type {
@@ -39,6 +41,29 @@ const paymentMethodLabels: Record<PaymentMethod, string> = {
 
 export function AdminSalesSessionsView() {
   const { isCatalogAdmin, staffProfile, staffRoles, user } = useSupabaseAuth();
+  const access = reportAccess(isCatalogAdmin, staffRoles);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const linkedId = searchParams.get('session');
+  const [cashData, setCashData] = useState<CashData | null>(null);
+  const [cashError, setCashError] = useState('');
+  const [cashLoading, setCashLoading] = useState(true);
+  const cashRequest = useRef(0);
+  const adjustmentRequests = useRef(new Map<string, string>());
+  async function saveAdjustment(payload: Record<string, string>) {
+    const key = JSON.stringify(payload);
+    const requestId = adjustmentRequests.current.get(key) ?? crypto.randomUUID();
+    adjustmentRequests.current.set(key, requestId);
+    await registerSessionAdjustment(payload, requestId);
+    adjustmentRequests.current.delete(key);
+  }
+  async function reloadCash() {
+    const request = ++cashRequest.current;
+    setCashLoading(true); setCashError('');
+    try { const data = await loadCash(); if (request === cashRequest.current) setCashData(data); }
+    catch (e) { if (request === cashRequest.current) { setCashData(null); setCashError((e as Error).message); } }
+    finally { if (request === cashRequest.current) setCashLoading(false); }
+  }
+  useEffect(() => { if (access.read) void reloadCash(); return () => { cashRequest.current++; }; }, [access.read]);
   const actor = useMemo<PosActorContext>(
     () => ({
       email: user?.email?.trim().toLowerCase() ?? staffProfile?.email ?? '',
@@ -57,13 +82,7 @@ export function AdminSalesSessionsView() {
     order: PosOrderWithRelations;
     sourceSession: PosSalesSessionHistoryEntry;
   } | null>(null);
-  const [sessionWindowForm, setSessionWindowForm] = useState({
-    businessDate: '2026-05-28',
-    closedAt: '2026-05-29T02:00',
-    notes: '',
-    openedAt: '2026-05-28T19:00',
-    sessionLabel: 'Jornada 2026-05-28',
-  });
+  const [sessionWindowForm, setSessionWindowForm] = useState(createManualSessionDefaults);
   const [selectedMonthKey, setSelectedMonthKey] = useState(getCurrentMonthKey());
   const [customDateRange, setCustomDateRange] = useState(() => getMonthDateRange(getCurrentMonthKey()));
   const [moveDestinationSessionId, setMoveDestinationSessionId] = useState('');
@@ -95,6 +114,8 @@ export function AdminSalesSessionsView() {
     () => filterSessionsByPeriod(sessions, selectedMonthKey, customDateRange),
     [customDateRange, selectedMonthKey, sessions],
   );
+  const detailSessions = useMemo(() => includeLinkedSession(visibleSessions, sessions, linkedId), [visibleSessions, sessions, linkedId]);
+  const linkedOutsidePeriod = Boolean(linkedId && sessions.some(s => s.id === linkedId) && !visibleSessions.some(s => s.id === linkedId));
   const visibleClosedSessions = useMemo(() => visibleSessions.filter((session) => session.status === 'closed'), [visibleSessions]);
   const visibleSessionIds = useMemo(() => new Set(visibleSessions.map((session) => session.id)), [visibleSessions]);
   const visibleClosedSales = useMemo(
@@ -127,7 +148,7 @@ export function AdminSalesSessionsView() {
     setErrorMessage(null);
     setIsLoading(true);
     try {
-      const { history, closedSales, tables } = await loadSalesSessionHistoryViewFromSupabase();
+      const { history, closedSales, tables } = await loadAuthorizedSessionReportFromSupabase();
       if (!isMountedRef.current || requestId !== loadRequestIdRef.current) {
         return;
       }
@@ -139,7 +160,7 @@ export function AdminSalesSessionsView() {
           return current;
         }
 
-        return history.find((session) => session.status === 'closed')?.id ?? history[0]?.id ?? null;
+        return null;
       });
     } catch (error) {
       if (isMountedRef.current && requestId === loadRequestIdRef.current) {
@@ -154,7 +175,7 @@ export function AdminSalesSessionsView() {
 
   useEffect(() => {
     isMountedRef.current = true;
-    if (!isCatalogAdmin) {
+    if (!access.read) {
       setIsLoading(false);
     } else {
       void loadSessions();
@@ -164,7 +185,7 @@ export function AdminSalesSessionsView() {
       isMountedRef.current = false;
       loadRequestIdRef.current++;
     };
-  }, [isCatalogAdmin]);
+  }, [access.read]);
 
   useEffect(() => {
     if (!expandedSessionId) {
@@ -182,17 +203,22 @@ export function AdminSalesSessionsView() {
   }, [expandedSessionId]);
 
   useEffect(() => {
-    if (!visibleSessions.length) {
+    if (!detailSessions.length) {
       setExpandedSessionId(null);
       return;
     }
 
-    if (expandedSessionId && !visibleSessions.some((session) => session.id === expandedSessionId)) {
-      setExpandedSessionId(visibleSessions[0].id);
+    if (expandedSessionId && !detailSessions.some((session) => session.id === expandedSessionId)) {
+      setExpandedSessionId(null);
     }
-  }, [expandedSessionId, visibleSessions]);
+  }, [expandedSessionId, detailSessions]);
+
+  useEffect(() => {
+    if (linkedId && sessions.some(s => s.id === linkedId)) setExpandedSessionId(linkedId);
+  }, [linkedId, sessions]);
 
   const handleDeleteSession = async () => {
+    if (!access.manage) return;
     if (!sessionPendingDelete) {
       return;
     }
@@ -222,6 +248,7 @@ export function AdminSalesSessionsView() {
   };
 
   const openMoveOrderModal = (sourceSession: PosSalesSessionHistoryEntry, order: PosOrderWithRelations) => {
+    if (!access.manage) return;
     const defaultDestination = closedSessions.find((session) => session.id !== sourceSession.id)?.id ?? '';
     setMoveErrorMessage(null);
     setMoveDestinationSessionId(defaultDestination);
@@ -229,9 +256,12 @@ export function AdminSalesSessionsView() {
   };
 
   const handleMoveOrderSession = async () => {
+    if (!access.manage) return;
     if (!orderPendingMove) {
       return;
     }
+    const reason = window.prompt('Motivo para mover esta cuenta de jornada (el cierre original se conserva):');
+    if (!reason?.trim()) return;
 
     setBusyOrderId(orderPendingMove.order.id);
     setErrorMessage(null);
@@ -239,14 +269,16 @@ export function AdminSalesSessionsView() {
     setActionMessage(null);
 
     try {
-      await reassignOrderSalesSessionInSupabase(orderPendingMove.order.id, moveDestinationSessionId, actor);
+      await saveAdjustment({ action: 'move', order_id: orderPendingMove.order.id, session_id: orderPendingMove.sourceSession.id, destination_id: moveDestinationSessionId, reason });
       const destination = sessions.find((session) => session.id === moveDestinationSessionId);
       setExpandedSessionId(moveDestinationSessionId);
+      setSearchParams({ session: moveDestinationSessionId });
       setOrderPendingMove(null);
       setActionMessage(
         `${resolveOrderTableLabel(orderPendingMove.order, tablesById)} movida a ${destination?.sessionLabel ?? 'la jornada destino'}.`,
       );
       await loadSessions();
+      void reloadCash();
     } catch (error) {
       const message = error instanceof Error ? error.message : 'No fue posible mover la cuenta a otra jornada.';
       setMoveErrorMessage(message);
@@ -257,6 +289,7 @@ export function AdminSalesSessionsView() {
   };
 
   const handleCancelClosedPaidOrder = async (session: PosSalesSessionHistoryEntry, order: PosOrderWithRelations) => {
+    if (!access.manage) return;
     const tableLabel = resolveOrderTableLabel(order, tablesById);
     const reason = window.prompt(
       `Motivo para anular la venta cerrada de ${tableLabel}:`,
@@ -267,7 +300,7 @@ export function AdminSalesSessionsView() {
     }
 
     const confirmed = window.confirm(
-      `Esto anulara ${tableLabel} por ${formatCurrency(order.summary.totalDue)} dentro de ${session.sessionLabel}. La venta saldra de vendido/cobrado y quedara trazabilidad. ¿Continuar?`,
+      `Esto anulara ${tableLabel} por ${formatCurrency(order.summary.totalDue)} en el reporte ajustado de ${session.sessionLabel}. El arqueo original se conserva. No registra una devolucion de dinero. ¿Continuar?`,
     );
     if (!confirmed) {
       return;
@@ -278,9 +311,10 @@ export function AdminSalesSessionsView() {
     setActionMessage(null);
 
     try {
-      await cancelClosedPaidOrderInSupabase(order.id, reason, actor, order);
+      await saveAdjustment({ action: 'cancel', order_id: order.id, session_id: session.id, reason });
       setActionMessage(`Venta anulada: ${tableLabel}.`);
       await loadSessions();
+      void reloadCash();
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'No fue posible anular la venta cerrada.');
     } finally {
@@ -289,19 +323,15 @@ export function AdminSalesSessionsView() {
   };
 
   const openCreateSessionModal = () => {
+    if (!access.manage) return;
     setSessionPendingEdit(null);
     setSessionWindowErrorMessage(null);
-    setSessionWindowForm({
-      businessDate: '2026-05-28',
-      closedAt: '2026-05-29T02:00',
-      notes: 'Jornada manual creada para corregir ventas del 2026-05-28.',
-      openedAt: '2026-05-28T19:00',
-      sessionLabel: 'Jornada 2026-05-28',
-    });
+    setSessionWindowForm(createManualSessionDefaults());
     setIsCreateSessionModalOpen(true);
   };
 
   const openEditSessionModal = (session: PosSalesSessionHistoryEntry) => {
+    if (!access.manage) return;
     setIsCreateSessionModalOpen(false);
     setSessionWindowErrorMessage(null);
     setSessionPendingEdit(session);
@@ -315,6 +345,9 @@ export function AdminSalesSessionsView() {
   };
 
   const handleSaveSessionWindow = async () => {
+    if (!access.manage) return;
+    const reason = sessionPendingEdit ? window.prompt('Motivo del ajuste de fechas (el cierre original se conserva):') : '';
+    if (sessionPendingEdit && !reason?.trim()) return;
     const payload = {
       businessDate: sessionWindowForm.businessDate,
       closedAt: toIsoFromDateTimeLocal(sessionWindowForm.closedAt),
@@ -330,7 +363,7 @@ export function AdminSalesSessionsView() {
 
     try {
       if (sessionPendingEdit) {
-        await updateSalesSessionWindowInSupabase(sessionPendingEdit.id, payload, actor);
+        await saveAdjustment({ action: 'window', session_id: sessionPendingEdit.id, reason: reason!, business_date: payload.businessDate, opened_at: payload.openedAt, closed_at: payload.closedAt, session_label: payload.sessionLabel, notes: payload.notes });
         setActionMessage(`Jornada ajustada: ${payload.sessionLabel || sessionPendingEdit.sessionLabel}`);
         setSessionPendingEdit(null);
       } else {
@@ -340,6 +373,7 @@ export function AdminSalesSessionsView() {
       }
 
       await loadSessions();
+      void reloadCash();
     } catch (error) {
       const message = error instanceof Error ? error.message : 'No fue posible guardar la jornada.';
       setSessionWindowErrorMessage(message);
@@ -350,6 +384,7 @@ export function AdminSalesSessionsView() {
   };
 
   const handleExportSummaryCsv = () => {
+    if (!cashData || cashLoading || cashError) return;
     const rows = visibleSessions.map((session) => {
       const sessionSales = visibleClosedSales.filter((order) => order.salesSessionId === session.id);
       const cashTotal = getSalesSessionCashTotal(session);
@@ -370,8 +405,19 @@ export function AdminSalesSessionsView() {
         pagos_registrados: session.paymentCount,
         pendiente: session.summary?.pendingBalance ?? 0,
         productos_vendidos: productsCount,
+        // Legacy CSV column: retain its aggregate for existing consumers.
         transferencias: transferTotal,
         vendido: session.summary?.grossSales ?? session.totalSold,
+        no_efectivo: transferTotal,
+        nequi: paymentBreakdown(session).nequi,
+        transferencia_bancaria: paymentBreakdown(session).bank_transfer,
+        tarjeta: paymentBreakdown(session).card,
+        otros_cobros: paymentBreakdown(session).other,
+        ...financeCsv(session.id, cashData),
+        cantidad_ajustes: session.adjustments?.length ?? 0,
+        vendido_cierre_original: session.originalSummary?.grossSales ?? (session.adjustments?.length ? null : session.summary?.grossSales),
+        cobrado_cierre_original: session.originalSummary?.totalCollected ?? (session.adjustments?.length ? null : session.summary?.totalCollected),
+        historial_ajustes: session.adjustments?.map(a => `${a.created_at} | ${a.action} | ${a.actor} | ${a.reason}`).join('\n') ?? '',
       };
     });
 
@@ -440,11 +486,11 @@ export function AdminSalesSessionsView() {
     setActionMessage('Se descargo el detalle del periodo seleccionado.');
   };
 
-  if (!isCatalogAdmin) {
+  if (!access.read) {
     return (
       <AdminLayout>
         <section className="rounded-[1.6rem] border border-rose-300/20 bg-rose-300/10 p-6 text-rose-100">
-          Solo superadmin puede administrar el historial de jornadas.
+          Acceso restringido: solo administracion y caja pueden consultar este reporte.
         </section>
       </AdminLayout>
     );
@@ -457,20 +503,20 @@ export function AdminSalesSessionsView() {
           <p className="text-[0.72rem] uppercase tracking-[0.28em] text-cyanGlow/80">Historial POS</p>
           <h1 className="mt-3 font-display text-[2.35rem] leading-none text-ivory sm:text-[3.6rem]">Jornadas previas</h1>
           <p className="mt-4 max-w-2xl text-sm leading-7 text-mist sm:text-base">
-            Revisa cada jornada con sus ventas, productos y pagos. Las jornadas de prueba se pueden eliminar desde su detalle.
+            Revisa cada jornada con sus ventas, productos y pagos. El detalle financiero conserva la trazabilidad de cada jornada.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <button type="button" onClick={openCreateSessionModal} disabled={isLoading} className={primaryButtonClassName}>
+          {access.manage && <button type="button" onClick={openCreateSessionModal} disabled={isLoading} className={primaryButtonClassName}>
             Crear jornada manual
-          </button>
-          <button type="button" onClick={handleExportSummaryCsv} disabled={isLoading || !visibleSessions.length} className={primaryButtonClassName}>
+          </button>}
+          <button type="button" onClick={handleExportSummaryCsv} disabled={isLoading || !visibleSessions.length || cashLoading || !cashData || Boolean(cashError)} className={primaryButtonClassName}>
             Exportar resumen
           </button>
           <button type="button" onClick={handleExportDetailCsv} disabled={isLoading || !visibleSessions.length} className={ghostButtonClassName}>
             Exportar detalle
           </button>
-          <button type="button" onClick={() => void loadSessions()} disabled={isLoading} className={primaryButtonClassName}>
+          <button type="button" onClick={() => { void loadSessions(); void reloadCash(); }} disabled={isLoading} className={primaryButtonClassName}>
             Actualizar
           </button>
           <Link to="/admin" className={ghostButtonClassName}>
@@ -479,6 +525,10 @@ export function AdminSalesSessionsView() {
         </div>
       </section>
 
+      {linkedId && !isLoading && !errorMessage && !sessions.some(s => s.id === linkedId) && <p role="alert" className="mt-4 text-amberGlow">No existe una jornada accesible con el ID indicado: {linkedId}.</p>}
+      {linkedOutsidePeriod && <p className="mt-3 text-sm text-mist">La jornada del enlace está fuera del período. Abrir su detalle no cambia los totales, comparaciones ni exportaciones: cada cálculo conserva sus filtros de período. <button className="underline" onClick={() => setSearchParams({})}>Volver al filtro del periodo</button></p>}
+      {cashLoading && <p role="status" className="mt-4 text-mist">Cargando detalle financiero...</p>}
+      {cashError && <div role="alert" className="mt-4 rounded-xl border border-rose-300/30 p-4 text-rose-100"><p>{cashError}</p><button className={ghostButtonClassName} onClick={() => void reloadCash()}>Reintentar carga de caja</button><p>Las ventas siguen disponibles. El resumen CSV espera la carga financiera.</p></div>}
       {errorMessage ? (
         <section className="mt-5 rounded-[1.2rem] border border-rose-200/20 bg-rose-200/10 px-4 py-3 text-sm text-rose-100">{errorMessage}</section>
       ) : null}
@@ -546,7 +596,7 @@ export function AdminSalesSessionsView() {
         <MetricCard label="Cobrado" value={formatCurrency(visibleSummary.collectedTotal)} insight={formatComparisonInsight(visibleSummary.collectedTotal, comparisonSummary.collectedTotal, comparisonLabel)} />
         <MetricCard label="Vendido" value={formatCurrency(visibleSummary.soldTotal)} insight={formatComparisonInsight(visibleSummary.soldTotal, comparisonSummary.soldTotal, comparisonLabel)} />
         <MetricCard label="Efectivo" value={formatCurrency(visibleSummary.cashTotal)} />
-        <MetricCard label="Transferencias" value={formatCurrency(visibleSummary.transferTotal)} />
+        <MetricCard label="Otros medios (sin efectivo)" value={formatCurrency(visibleSummary.transferTotal)} />
         <MetricCard label="Ticket prom." value={formatCurrency(visibleSummary.averageTicket)} insight={formatComparisonInsight(visibleSummary.averageTicket, comparisonSummary.averageTicket, comparisonLabel)} />
         <MetricCard label="Producto top" value={visibleSummary.topProductLabel} />
       </section>
@@ -578,9 +628,11 @@ export function AdminSalesSessionsView() {
 
             {!visibleSessions.length ? <EmptyState message="No hay jornadas en este periodo." /> : null}
 
-            {visibleSessions.map((session) => {
+            {detailSessions.map((session) => {
               const isExpanded = expandedSessionId === session.id;
-              const sessionSales = visibleClosedSales.filter((order) => order.salesSessionId === session.id);
+              const reconciled = Boolean(cashData?.registers.find(r => r.sales_session_id === session.id)?.closed_at);
+              const canEdit = access.manage && Boolean(cashData) && !cashLoading && session.status === 'closed';
+              const sessionSales = closedSales.filter((order) => order.salesSessionId === session.id && isPaidClosedSale(order));
               const cashTotal = getSalesSessionCashTotal(session);
               const transferTotal = getSalesSessionTransferTotal(session);
               const productsCount = getSalesSessionProductsCount(session);
@@ -590,12 +642,13 @@ export function AdminSalesSessionsView() {
 
               return (
                 <article key={session.id} className="space-y-3">
+                  {!visibleSessionIds.has(session.id) && <p className="text-sm text-amberGlow">Detalle solicitado · Fuera del período</p>}
                   <button
                     ref={(node) => {
                       sessionHeaderRefs.current[session.id] = node;
                     }}
                     type="button"
-                    onClick={() => setExpandedSessionId((current) => (current === session.id ? null : session.id))}
+                    onClick={() => { const next = isExpanded ? null : session.id; setExpandedSessionId(next); setSearchParams(next ? { session: next } : {}); }}
                     className={`w-full overflow-hidden rounded-[1.35rem] border text-left transition ${
                       isExpanded ? 'border-cyanGlow/45 bg-cyanGlow/10 shadow-[0_0_0_1px_rgba(86,211,255,0.10)]' : 'border-white/10 bg-white/[0.035] hover:border-cyanGlow/25'
                     }`}
@@ -654,11 +707,19 @@ export function AdminSalesSessionsView() {
                         <SummaryPill label="Vendido" value={formatCurrency(session.summary?.grossSales ?? session.totalSold)} />
                         <SummaryPill label="Cobrado" value={formatCurrency(session.summary?.totalCollected ?? session.totalCollected)} />
                         <SummaryPill label="Efectivo" value={formatCurrency(cashTotal)} />
-                        <SummaryPill label="Transferencias" value={formatCurrency(transferTotal)} />
+                        <SummaryPill label="Otros medios (sin efectivo)" value={formatCurrency(transferTotal)} />
                         <SummaryPill label="Pendiente" value={formatCurrency(session.summary?.pendingBalance ?? 0)} />
                         <SummaryPill label="Mesas cerradas" value={String(sessionSales.length)} />
                       </div>
 
+                      <div className="grid gap-2 sm:grid-cols-3">{Object.entries(paymentBreakdown(session)).map(([method,value]) => <SummaryPill key={method} label={paymentMethodLabels[method as PaymentMethod]} value={formatCurrency(value)} />)}</div>
+                      {!!session.adjustments?.length && <section className="space-y-2 rounded-xl border border-amberGlow/30 p-4">
+                        <h3 className="font-semibold">Reporte con ajustes posteriores al cierre</h3>
+                        <p>Ventas, cobros, cuentas y fechas de este reporte incluyen las correcciones. El detalle financiero muestra el arqueo original; estos ajustes no registran devoluciones ni movimientos de efectivo.</p>
+                        <p>Vendido al cierre: {session.originalSummary ? formatCurrency(session.originalSummary.grossSales) : 'Sin registrar'} · Cobrado al cierre: {session.originalSummary ? formatCurrency(session.originalSummary.totalCollected) : 'Sin registrar'}</p>
+                        {session.adjustments.map(a => <p key={a.request_id} className="text-sm">{formatDateTime(a.created_at)} · {a.actor} · {a.action === 'move' ? `Cuenta ${a.order_id}: traslado de ${a.session_id} a ${a.destination_id}` : a.action === 'cancel' ? `Anulación de venta ${a.order_id}` : `Fechas: ${a.payload.business_date}, ${formatDateTime(a.payload.opened_at)} a ${formatDateTime(a.payload.closed_at)}`} · Motivo: {a.reason}</p>)}
+                      </section>}
+                      {!cashLoading && !cashError && cashData && <SessionFinanceDetail id={session.id} data={cashData} />}
                       {session.notes ? (
                         <div className="rounded-[1rem] border border-amberGlow/20 bg-amberGlow/10 px-4 py-3 text-sm leading-6 text-amber-100">{session.notes}</div>
                       ) : null}
@@ -671,7 +732,7 @@ export function AdminSalesSessionsView() {
                       <div className="space-y-3">
                         <div className="flex flex-wrap items-center justify-between gap-3">
                           <p className="text-[0.68rem] uppercase tracking-[0.22em] text-cyanGlow/75">Mesas cerradas</p>
-                          <div className="flex flex-wrap gap-2">
+                          {canEdit && <div className="flex flex-wrap gap-2">
                             <button type="button" onClick={() => openEditSessionModal(session)} disabled={isSessionWindowBusy} className={ghostButtonClassName}>
                               Ajustar fechas
                             </button>
@@ -681,12 +742,13 @@ export function AdminSalesSessionsView() {
                                 setDeleteErrorMessage(null);
                                 setSessionPendingDelete(session);
                               }}
-                              disabled={session.status === 'open' || busySessionId === session.id}
+                              disabled={reconciled || Boolean(session.adjustments?.length) || busySessionId === session.id}
+                              title={reconciled || session.adjustments?.length ? 'No se puede eliminar una jornada con arqueo o ajustes' : undefined}
                               className={dangerButtonClassName}
                             >
                               {busySessionId === session.id ? 'Eliminando...' : 'Eliminar jornada'}
                             </button>
-                          </div>
+                          </div>}
                         </div>
 
                         {sessionSales.map((order) => (
@@ -712,6 +774,7 @@ export function AdminSalesSessionsView() {
                             </summary>
 
                             <div className="mt-4 space-y-4 border-t border-white/8 pt-4">
+                              {canEdit && <>
                               <div className="flex flex-wrap items-center justify-between gap-3 rounded-[1rem] border border-cyanGlow/15 bg-cyanGlow/8 px-3 py-3">
                                 <p className="text-sm leading-6 text-mist">Si esta mesa quedo en la jornada equivocada, muevela completa con sus pagos.</p>
                                 <button
@@ -738,6 +801,7 @@ export function AdminSalesSessionsView() {
                                 </button>
                               </div>
 
+                              </>}
                               <div>
                                 <p className="text-[0.68rem] uppercase tracking-[0.22em] text-cyanGlow/75">Productos</p>
                                 <div className="mt-3 space-y-2">
@@ -795,7 +859,7 @@ export function AdminSalesSessionsView() {
         </section>
       )}
 
-      {sessionPendingDelete ? (
+      {access.manage && sessionPendingDelete ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/72 px-4">
           <div className="w-full max-w-lg rounded-[1.4rem] border border-white/10 bg-[#0b0b0f] p-5 shadow-[0_18px_60px_rgba(0,0,0,0.45)]">
             <p className="text-[0.68rem] uppercase tracking-[0.22em] text-rose-200">Eliminar jornada</p>
@@ -832,13 +896,13 @@ export function AdminSalesSessionsView() {
         </div>
       ) : null}
 
-      {orderPendingMove ? (
+      {access.manage && orderPendingMove ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/72 px-4">
           <div className="w-full max-w-xl rounded-[1.4rem] border border-white/10 bg-[#0b0b0f] p-5 shadow-[0_18px_60px_rgba(0,0,0,0.45)]">
             <p className="text-[0.68rem] uppercase tracking-[0.22em] text-cyanGlow/80">Mover cuenta de jornada</p>
             <h2 className="mt-2 font-display text-2xl text-ivory">{resolveOrderTableLabel(orderPendingMove.order, tablesById)}</h2>
             <p className="mt-3 text-sm leading-6 text-mist">
-              Origen: {orderPendingMove.sourceSession.sessionLabel}. Se movera la orden completa y sus pagos a la jornada destino.
+              Origen: {orderPendingMove.sourceSession.sessionLabel}. El reporte ajustado asignará la cuenta y sus cobros a la jornada destino. Los registros y arqueos originales se conservan; no se traslada efectivo entre cajas.
             </p>
 
             {moveErrorMessage ? (
@@ -895,17 +959,17 @@ export function AdminSalesSessionsView() {
         </div>
       ) : null}
 
-      {isCreateSessionModalOpen || sessionPendingEdit ? (
+      {access.manage && (isCreateSessionModalOpen || sessionPendingEdit) ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/72 px-4">
           <div className="w-full max-w-xl rounded-[1.4rem] border border-white/10 bg-[#0b0b0f] p-5 shadow-[0_18px_60px_rgba(0,0,0,0.45)]">
             <p className="text-[0.68rem] uppercase tracking-[0.22em] text-cyanGlow/80">
               {sessionPendingEdit ? 'Ajustar jornada' : 'Crear jornada manual'}
             </p>
             <h2 className="mt-2 font-display text-2xl text-ivory">
-              {sessionPendingEdit ? sessionPendingEdit.sessionLabel : 'Jornada 2026-05-28'}
+              {sessionPendingEdit ? sessionPendingEdit.sessionLabel : sessionWindowForm.sessionLabel}
             </h2>
             <p className="mt-3 text-sm leading-6 text-mist">
-              Usa horarios locales de Colombia. Para tu caso: apertura 2026-05-28 7:00 p. m. y cierre 2026-05-29 2:00 a. m.
+              Usa horarios locales de Colombia. Ajusta la fecha de la jornada y los horarios de apertura y cierre al periodo que quieres registrar.
             </p>
 
             {sessionWindowErrorMessage ? (
@@ -992,24 +1056,26 @@ function MetricCard({ insight, label, value }: { insight?: string | null; label:
 }
 
 function ProductRanking({ products }: { products: Array<{ productName: string; quantity: number; totalAmount: number }> }) {
+  const [showAll,setShowAll]=useState(false);
   if (!products.length) {
     return null;
   }
 
   const maxQuantity = Math.max(...products.map((product) => product.quantity), 1);
+  const displayedProducts=showAll?products:products.slice(0,5);
 
   return (
     <section className="rounded-[1.25rem] border border-white/10 bg-white/[0.03] p-4">
       <div className="flex flex-wrap items-end justify-between gap-2">
         <div>
           <p className="text-[0.68rem] uppercase tracking-[0.24em] text-cyanGlow/80">Productos destacados</p>
-          <h2 className="mt-2 font-display text-2xl text-ivory">Top 5 del periodo</h2>
+          <h2 className="mt-2 font-display text-2xl text-ivory">{showAll?'Todos los productos del periodo':'Top 5 del periodo'}</h2>
         </div>
-        <p className="text-sm text-mist">Cantidad y valor vendido.</p>
+        <div className="flex flex-wrap items-center justify-end gap-3"><p className="text-sm text-mist">Cantidad y valor vendido.</p>{products.length>5?<button type="button" className={ghostButtonClassName} onClick={()=>setShowAll((current)=>!current)}>{showAll?'Ver Top 5':'Ver todos los productos'}</button>:null}</div>
       </div>
 
       <div className="mt-4 grid gap-3 lg:grid-cols-5">
-        {products.slice(0, 5).map((product, index) => (
+        {displayedProducts.map((product, index) => (
           <article key={product.productName} className="min-w-0 border-l border-white/10 pl-3 first:border-l-cyanGlow/60">
             <p className="text-[0.6rem] uppercase tracking-[0.2em] text-cyanGlow/70">#{index + 1}</p>
             <p className="mt-1 truncate font-semibold text-ivory">{product.productName}</p>
@@ -1045,7 +1111,7 @@ function PaymentSplit({ cashTotal, transferTotal }: { cashTotal: number; transfe
     <div className="min-w-0 border-t border-white/8 pt-3 md:border-l md:border-t-0 md:pl-5 md:pt-0">
       <div className="flex items-center justify-between gap-3">
         <p className="text-[0.6rem] uppercase tracking-[0.18em] text-mist">Pagos</p>
-        <p className="text-[0.68rem] text-mist">{total ? `${cashPercent}% efectivo / ${transferPercent}% transf.` : 'Sin pagos'}</p>
+        <p className="text-[0.68rem] text-mist">{total ? `${cashPercent}% efectivo / ${transferPercent}% otros medios` : 'Sin pagos'}</p>
       </div>
       <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/10">
         <div className="h-full rounded-full bg-cyanGlow/80" style={{ width: `${cashPercent}%` }} />
@@ -1056,7 +1122,7 @@ function PaymentSplit({ cashTotal, transferTotal }: { cashTotal: number; transfe
           <p className="mt-1 font-semibold text-ivory">{formatCurrency(cashTotal)}</p>
         </div>
         <div>
-          <p className="text-[0.56rem] uppercase tracking-[0.18em] text-cyanGlow/70">Transferencias</p>
+          <p className="text-[0.56rem] uppercase tracking-[0.18em] text-cyanGlow/70">Otros medios</p>
           <p className="mt-1 font-semibold text-ivory">{formatCurrency(transferTotal)}</p>
         </div>
       </div>
@@ -1234,6 +1300,18 @@ function getSalesSessionTopProductLabel(session: PosSalesSessionHistoryEntry) {
   return topProduct ? `${topProduct.productName} (${topProduct.quantity})` : 'Sin ventas';
 }
 
+function createManualSessionDefaults() {
+  const today = bogotaToday();
+  const tomorrow = formatDateKey(addDays(parseDateKey(today)!, 1));
+  return {
+    businessDate: today,
+    closedAt: `${tomorrow}T02:00`,
+    notes: '',
+    openedAt: `${today}T18:00`,
+    sessionLabel: `Jornada ${today}`,
+  };
+}
+
 function getCurrentMonthKey() {
   const formatter = new Intl.DateTimeFormat('en-CA', {
     month: '2-digit',
@@ -1407,6 +1485,7 @@ function formatCurrency(value: number) {
 
 function formatDateTime(value: string) {
   return new Date(value).toLocaleString('es-CO', {
+    timeZone: 'America/Bogota',
     day: '2-digit',
     hour: '2-digit',
     minute: '2-digit',
@@ -1494,13 +1573,7 @@ function downloadCsv(fileName: string, rows: CsvRow[]) {
 }
 
 function escapeCsvCell(value: CsvValue) {
-  if (value == null) {
-    return '';
-  }
-
-  const normalized = typeof value === 'number' ? String(value) : value;
-  const escaped = normalized.replace(/"/g, '""');
-  return /[;\n\r"]/.test(escaped) ? `"${escaped}"` : escaped;
+  return csvCell(value);
 }
 
 function toDateTimeLocalValue(value: string) {
@@ -1509,12 +1582,13 @@ function toDateTimeLocalValue(value: string) {
     return '';
   }
 
-  const offsetMs = date.getTimezoneOffset() * 60_000;
-  return new Date(date.getTime() - offsetMs).toISOString().slice(0, 16);
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Bogota', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(date);
+  const part = (type: string) => parts.find(p => p.type === type)!.value;
+  return `${part('year')}-${part('month')}-${part('day')}T${part('hour')}:${part('minute')}`;
 }
 
 function toIsoFromDateTimeLocal(value: string) {
-  return new Date(value).toISOString();
+  return new Date(`${value}-05:00`).toISOString();
 }
 
 const inputClassName =

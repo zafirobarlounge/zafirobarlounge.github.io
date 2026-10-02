@@ -10,7 +10,14 @@
     "menu:build:local": "node scripts/excel-to-json-local.cjs",
     "menu:build:link": "node scripts/excel-to-json-link.cjs",
     "menu:build": "npm run menu:build:link || npm run menu:build:local",
-    "supabase:seed:build": "node scripts/generate-supabase-seed.cjs"
+    "supabase:seed:build": "node scripts/generate-supabase-seed.cjs",
+    "test:cash": "node --test scripts/cash-domain.test.cjs scripts/cash-ui.test.cjs",
+    "test:cash:db": "node --test scripts/cash-db.test.cjs",
+    "test:pos": "node --test scripts/pos-sync.test.cjs",
+    "test:report": "node --test scripts/session-finance.test.cjs",
+    "test:inventory": "node --test scripts/inventory-ui.test.cjs",
+    "test:inventory:db": "node --test scripts/inventory-db.test.cjs",
+    "test:inventory:import": "node --test scripts/inventory-import.test.cjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.106.1",

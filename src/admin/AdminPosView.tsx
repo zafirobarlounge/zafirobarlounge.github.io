@@ -1,8 +1,13 @@
+import { Link } from 'react-router-dom';
+import { AdminCashView } from './cash/AdminCashView';
 import type { ReactNode } from 'react';
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, LayoutGrid, List } from 'lucide-react';
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { Check, ChevronDown, Gift, LayoutGrid, List, PackageCheck, Trash2, Utensils } from 'lucide-react';
 import { AdminLayout } from './AdminLayout';
 import { useSupabaseAuth } from '../auth/SupabaseAuthProvider';
+import { loadInventoryMenuAlerts, loadPosConsumptionResolution, subscribeToInventoryRealtime, type PosConsumptionResolutionLine } from './inventory/inventory.repository';
+import type { InventoryMenuAlert } from './inventory/inventory.domain';
+import { AreaInventoryPanel } from './inventory/AreaInventoryPanel';
 import type {
   AddCustomOrderItemInput,
   AddOrderItemInput,
@@ -26,7 +31,6 @@ import {
   addItemsToTableInSupabase,
   addCustomItemToTableInSupabase,
   cancelOrderItemInSupabase,
-  closeActiveSalesSessionInSupabase,
   createPosTableInSupabase,
   defaultPosOperationalFlowSettings,
   deletePosTableInSupabase,
@@ -36,7 +40,6 @@ import {
   markOrderItemDeliveredInSupabase,
   markOrderItemPickingUpInSupabase,
   moveActiveOrderToTableInSupabase,
-  openSalesSessionInSupabase,
   recordPosPaymentInSupabase,
   replaceOrderItemInSupabase,
   sendDraftItemsToPreparationInSupabase,
@@ -74,6 +77,17 @@ function nextPosSyncLoadId() {
 type WorkspaceTab = 'floor' | 'kitchen' | 'bar' | 'cashier';
 type CashierRightPanel = 'summary' | 'previous_sessions' | 'validations' | 'movements';
 type AddItemMode = 'menu' | 'extra';
+type InventoryVoidAllocation = PosConsumptionResolutionLine & {
+  destination: InventoryVoidDestination|null;
+};
+type InventoryVoidDestination = 'returned'|'waste'|'courtesy'|'internal';
+type InventoryVoidDialogState = {
+  item: PosOrderItem;
+  reason: string;
+  lines: InventoryVoidAllocation[];
+  destination: InventoryVoidDestination|null;
+  advanced: boolean;
+};
 
 const roleLabels: Record<StaffRole, string> = {
   superadmin: 'Superadmin',
@@ -136,6 +150,8 @@ const emptyCreateTableForm: CreatePosTableInput = {
 };
 
 export function AdminPosView() {
+  const [cashModal, setCashModal] = useState<'session' | 'movement' | null>(null);
+  const [inventoryVoidDialog, setInventoryVoidDialog] = useState<InventoryVoidDialogState|null>(null);
   const { hasRole, isCatalogAdmin, staffProfile, staffRoles, user } = useSupabaseAuth();
   const actor = useMemo(
     () => ({
@@ -196,6 +212,10 @@ export function AdminPosView() {
     ? posState.activeSalesSession
     : null;
   const [products, setProducts] = useState<PosProductOption[]>([]);
+  const [inventoryMenuAlerts, setInventoryMenuAlerts] = useState<InventoryMenuAlert[]>([]);
+  const [inventoryRefreshVersion, setInventoryRefreshVersion] = useState(0);
+  const inventoryRefreshRequestRef = useRef(0);
+  const inventoryRealtimeActiveRef = useRef(true);
   const [selectedTableId, setSelectedTableIdState] = useState<string | null>(null);
   const selectedTableIdRef = useRef<string | null>(null);
   const [isTableSheetOpen, setIsTableSheetOpen] = useState(false);
@@ -225,8 +245,6 @@ export function AdminPosView() {
   const [activePaymentField, setActivePaymentField] = useState<'amount' | 'percentage' | 'received' | null>(null);
   const [paymentReference, setPaymentReference] = useState('');
   const [paymentNotes, setPaymentNotes] = useState('');
-  const [salesSessionClosingNotes, setSalesSessionClosingNotes] = useState('');
-  const [salesSessionOpeningNotes, setSalesSessionOpeningNotes] = useState('');
   const [selectedPaymentItemIds, setSelectedPaymentItemIds] = useState<string[]>([]);
   const [cashierRightPanel, setCashierRightPanel] = useState<CashierRightPanel>('summary');
   const [selectedDetachedCashierOrderId, setSelectedDetachedCashierOrderId] = useState<string | null>(null);
@@ -490,6 +508,24 @@ export function AdminPosView() {
       isMounted = false;
     };
   }, [canOperateFloor, selectedProductSourceKey]);
+
+  const refreshPosInventoryReadModels = useCallback(async () => {
+    const requestId=++inventoryRefreshRequestRef.current;
+    setInventoryRefreshVersion((current)=>current+1);
+    try {
+      const alerts=await loadInventoryMenuAlerts();
+      if(inventoryRealtimeActiveRef.current&&requestId===inventoryRefreshRequestRef.current)setInventoryMenuAlerts(alerts);
+    } catch {
+      // Preserve the last valid snapshot when a background refresh fails.
+    }
+  },[]);
+
+  useEffect(() => {
+    inventoryRealtimeActiveRef.current=true;
+    void refreshPosInventoryReadModels();
+    const unsubscribe=subscribeToInventoryRealtime(()=>{void refreshPosInventoryReadModels();});
+    return () => { inventoryRealtimeActiveRef.current=false;unsubscribe(); };
+  }, [refreshPosInventoryReadModels]);
 
   useEffect(() => {
     let isMounted = true;
@@ -803,6 +839,7 @@ export function AdminPosView() {
     () => filteredProducts.find((product) => product.sourceKey === selectedProductSourceKey) ?? products.find((product) => product.sourceKey === selectedProductSourceKey) ?? null,
     [filteredProducts, products, selectedProductSourceKey],
   );
+  const selectedInventoryAlert = inventoryMenuAlerts.find((alert) => alert.menu_item_source_key === selectedProductSourceKey) ?? null;
   const selectedOrderDraftItems = selectedOrder?.items.filter((item) => item.operationalStatus === 'draft') ?? [];
   const parsedLineQuantity = parseOptionalNumber(lineQuantity);
   const isLineQuantityValid = parsedLineQuantity != null && parsedLineQuantity > 0;
@@ -1814,6 +1851,7 @@ export function AdminPosView() {
     await executeAction(`${item.productName} entregado`, async () => markOrderItemDeliveredInSupabase(item.id, actor, item), {
       onSuccess: (updatedItem) => {
         setPosState((current) => (current ? mergeUpdatedItemsIntoPosState(current, [updatedItem]) : current));
+        void refreshPosInventoryReadModels();
       },
     });
   };
@@ -1822,6 +1860,7 @@ export function AdminPosView() {
     await executeAction(`${item.productName} entregado directo`, async () => markOrderItemDirectDeliveredInSupabase(item.id, actor, item), {
       onSuccess: (updatedItem) => {
         setPosState((current) => (current ? mergeUpdatedItemsIntoPosState(current, [updatedItem]) : current));
+        void refreshPosInventoryReadModels();
       },
     });
   };
@@ -1848,6 +1887,22 @@ export function AdminPosView() {
       return;
     }
 
+    if (item.operationalStatus === 'delivered') {
+      try {
+        const consumption = await loadPosConsumptionResolution(item.id, 1);
+        setInventoryVoidDialog({
+          item,
+          reason: reason.trim(),
+          lines: consumption.lines.map((line) => ({ ...line, destination: null })),
+          destination: null,
+          advanced: false,
+        });
+      } catch (error) {
+        setErrorMessage(error instanceof Error ? error.message : 'No fue posible cargar los componentes consumidos.');
+      }
+      return;
+    }
+
     const confirmed = window.confirm(
       `Se anulara 1 unidad de "${item.productName}" sin borrarla del historial. Esta accion recalcula la cuenta y queda registrada en trazabilidad. ¿Continuar?`,
     );
@@ -1858,6 +1913,28 @@ export function AdminPosView() {
     await executeAction(`Unidad anulada por excepcion: ${item.productName}`, async () => voidProcessedOrderItemInSupabase(item.id, reason, actor, item, 1), {
       onSuccess: (updatedItems) => {
         setPosState((current) => (current ? mergeUpdatedItemsIntoPosState(current, updatedItems) : current));
+      },
+    });
+  };
+
+  const handleConfirmDeliveredVoid = async () => {
+    if (!inventoryVoidDialog) return;
+    const dialog = inventoryVoidDialog;
+    let resolutions: ReturnType<typeof buildInventoryVoidResolution>[];
+    try {
+      resolutions=buildInventoryVoidResolutions(dialog);
+    } catch(error) {
+      setErrorMessage(error instanceof Error?error.message:'Selecciona el destino de la anulación.');
+      return;
+    }
+    await executeAction(`Unidad anulada por excepción: ${dialog.item.productName}`, async () => voidProcessedOrderItemInSupabase(
+      dialog.item.id, dialog.reason, actor, dialog.item, 1,
+      resolutions,
+    ), {
+      onSuccess: (updatedItems) => {
+        setInventoryVoidDialog(null);
+        setPosState((current) => (current ? mergeUpdatedItemsIntoPosState(current, updatedItems) : current));
+        void refreshPosInventoryReadModels();
       },
     });
   };
@@ -1924,52 +2001,6 @@ export function AdminPosView() {
       onSuccess: (updatedPayment) => {
         setPosState((current) => (current ? mergePaymentIntoPosState(current, updatedPayment) : current));
         setHighlightedPendingPaymentId((current) => (current === paymentId ? null : current));
-      },
-    });
-  };
-
-  const handleCloseActiveSalesSession = async () => {
-    await executeAction('Jornada cerrada', async () => closeActiveSalesSessionInSupabase(actor, salesSessionClosingNotes), {
-      onSuccess: (closedSession) => {
-        setPosState((current) => {
-          if (!current) {
-            return current;
-          }
-
-          const nextRecentSessions = [
-            closedSession,
-            ...current.recentSalesSessions.filter((session) => session.id !== closedSession.id),
-          ].slice(0, 10);
-
-          return {
-            ...current,
-            activeSalesSession: null,
-            recentSalesSessions: nextRecentSessions,
-          };
-        });
-        setCashierRightPanel('previous_sessions');
-        setSelectedHistoricalSessionId(closedSession.id);
-        setSalesSessionClosingNotes('');
-      },
-    });
-  };
-
-  const handleOpenSalesSession = async () => {
-    await executeAction('Jornada abierta', async () => openSalesSessionInSupabase(actor, salesSessionOpeningNotes), {
-      onSuccess: (openedSession) => {
-        setPosState((current) => {
-          if (!current) {
-            return current;
-          }
-
-          return {
-            ...current,
-            activeSalesSession: openedSession,
-            recentSalesSessions: [openedSession, ...current.recentSalesSessions.filter((session) => session.id !== openedSession.id)].slice(0, 10),
-          };
-        });
-        setCashierRightPanel('summary');
-        setSalesSessionOpeningNotes('');
       },
     });
   };
@@ -2125,6 +2156,7 @@ export function AdminPosView() {
                       ))}
                     </select>
                   </Field>
+                  {selectedInventoryAlert ? <InventoryAvailabilityNotice alert={selectedInventoryAlert} /> : <p className="text-xs text-mist">Sin seguimiento de inventario configurado. El producto puede venderse normalmente.</p>}
                 </>
               ) : (
                 <>
@@ -2327,6 +2359,16 @@ export function AdminPosView() {
 
   return (
     <AdminLayout>
+      {cashModal && <AdminCashView embedded initialAction={cashModal} onClose={() => { setCashModal(null); void loadStateRef.current(false, 'cash-modal'); }} />}
+      {inventoryVoidDialog ? (
+        <InventoryVoidResolutionDialog
+          value={inventoryVoidDialog}
+          busy={Boolean(busyAction)}
+          onChange={setInventoryVoidDialog}
+          onClose={() => setInventoryVoidDialog(null)}
+          onConfirm={() => void handleConfirmDeliveredVoid()}
+        />
+      ) : null}
       <section className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
         <div className="max-w-3xl">
           <h1 className="text-[0.72rem] font-normal uppercase tracking-[0.28em] text-cyanGlow/80">POS operativo</h1>
@@ -2356,6 +2398,11 @@ export function AdminPosView() {
               {workspaceLabels[tab]}
             </button>
           ))}
+          {(actor.roles.includes('superadmin') || canOperateCashier || canOperateKitchen || canOperateBar) ? (
+            <Link to="/admin/inventory" className="rounded-full border border-amberGlow/25 bg-amberGlow/10 px-3 py-1.5 text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-amberGlow sm:px-4 sm:py-2 sm:text-xs sm:tracking-[0.22em]">
+              Existencias y solicitudes
+            </Link>
+          ) : null}
       </nav>
 
       {showMetricsOverview || showPreparationMetrics || showFloorMetrics ? (
@@ -2673,6 +2720,7 @@ export function AdminPosView() {
                               ))}
                             </select>
                           </Field>
+                          {selectedInventoryAlert ? <InventoryAvailabilityNotice alert={selectedInventoryAlert} /> : <p className="text-xs text-mist">Sin seguimiento de inventario configurado. El producto puede venderse normalmente.</p>}
                         </>
                       ) : (
                         <>
@@ -3061,27 +3109,33 @@ export function AdminPosView() {
       ) : null}
 
       {activeTab === 'kitchen' && canOperateKitchen ? (
-        <PreparationQueuePanel
-          areaLabel="Cocina"
-          busyAction={busyAction}
-          items={sortedKitchenQueue}
-          onDirectDelivered={handleDirectDelivered}
-          onMoveStatus={handleMovePrepStatus}
-          operationalFlowSettings={operationalFlowSettings}
-          title="Cola de cocina"
-        />
+        <div className="space-y-8">
+          <PreparationQueuePanel
+            areaLabel="Cocina"
+            busyAction={busyAction}
+            items={sortedKitchenQueue}
+            onDirectDelivered={handleDirectDelivered}
+            onMoveStatus={handleMovePrepStatus}
+            operationalFlowSettings={operationalFlowSettings}
+            title="Cola de cocina"
+          />
+          <AreaInventoryPanel area="kitchen" refreshVersion={inventoryRefreshVersion} />
+        </div>
       ) : null}
 
       {activeTab === 'bar' && canOperateBar ? (
-        <PreparationQueuePanel
-          areaLabel="Bar"
-          busyAction={busyAction}
-          items={sortedBarQueue}
-          onDirectDelivered={handleDirectDelivered}
-          onMoveStatus={handleMovePrepStatus}
-          operationalFlowSettings={operationalFlowSettings}
-          title="Cola de bebidas"
-        />
+        <div className="space-y-8">
+          <PreparationQueuePanel
+            areaLabel="Bar"
+            busyAction={busyAction}
+            items={sortedBarQueue}
+            onDirectDelivered={handleDirectDelivered}
+            onMoveStatus={handleMovePrepStatus}
+            operationalFlowSettings={operationalFlowSettings}
+            title="Cola de bebidas"
+          />
+          <AreaInventoryPanel area="bar" refreshVersion={inventoryRefreshVersion} />
+        </div>
       ) : null}
 
 
@@ -3557,50 +3611,14 @@ export function AdminPosView() {
                   </div>
                 </details>
 
-                <div className="rounded-[1.2rem] border border-white/8 bg-white/[0.02] p-4">
+                <div className="flex flex-col items-start gap-3 rounded-[1.2rem] border border-white/8 bg-white/[0.02] p-4">
                   <p className="text-[0.68rem] uppercase tracking-[0.22em] text-cyanGlow/75">Control de jornada</p>
-                  {posState?.activeSalesSession ? (
-                    <div className="mt-4 space-y-4">
-                      <Field label="Nota de cierre">
-                        <input
-                          value={salesSessionClosingNotes}
-                          onChange={(event) => setSalesSessionClosingNotes(event.target.value)}
-                          className={inputClassName}
-                          placeholder="Cierre madrugada, caja principal, observaciones..."
-                        />
-                      </Field>
-
-                      <button
-                        type="button"
-                        onClick={() => void handleCloseActiveSalesSession()}
-                        disabled={Boolean(busyAction) || activeSalesSessionSummary.pendingBalance > 0 || activeSalesSessionSummary.pendingPayments > 0}
-                        className={primaryButtonClassName}
-                      >
-                        Cerrar jornada
-                      </button>
-
-                      {activeSalesSessionSummary.pendingBalance > 0 || activeSalesSessionSummary.pendingPayments > 0 ? (
-                        <p className="text-sm text-amberGlow">
-                          Antes de cerrar debes dejar esta jornada sin saldo pendiente ni pagos por confirmar.
-                        </p>
-                      ) : null}
-                    </div>
-                  ) : (
-                    <div className="mt-4 space-y-4">
-                      <Field label="Nota de apertura">
-                        <input
-                          value={salesSessionOpeningNotes}
-                          onChange={(event) => setSalesSessionOpeningNotes(event.target.value)}
-                          className={inputClassName}
-                          placeholder="Prueba turno noche, caja principal, observaciones..."
-                        />
-                      </Field>
-                      <button type="button" onClick={() => void handleOpenSalesSession()} disabled={Boolean(busyAction)} className={primaryButtonClassName}>
-                        Abrir jornada ahora
-                      </button>
-                      <p className="text-sm text-mist">Tambien puede abrirse sola cuando se mueve la operacion, pero aqui tienes control explicito para pruebas y turnos reales.</p>
-                    </div>
-                  )}
+                  <button type="button" onClick={() => setCashModal('session')} className={`${primaryButtonClassName} inline-flex min-h-[44px] max-w-full items-center justify-center text-center`}>
+                    {posState?.activeSalesSession ? 'Arqueo y cierre de jornada' : 'Abrir jornada y caja'}
+                  </button>
+                  <button type="button" onClick={() => setCashModal('movement')} className={ghostButtonClassName}>Registrar movimiento</button>
+                  <Link to="/admin/cash" className="text-sm text-cyanGlow underline">Caja y gastos</Link>
+                  <p className="text-sm leading-6 text-mist">Registra la base inicial y realiza el arqueo en Caja y gastos. Debes resolver las cuentas y pagos pendientes antes del cierre.</p>
                 </div>
 
                 <div className="rounded-[1.2rem] border border-white/8 bg-white/[0.02] p-4">
@@ -5609,6 +5627,93 @@ function sanitizePercentageInput(value: string) {
   return String(Math.min(Number(digits), 100));
 }
 
+function InventoryVoidResolutionDialog({ value, busy, onChange, onClose, onConfirm }: {
+  value: InventoryVoidDialogState;
+  busy: boolean;
+  onChange: (value: InventoryVoidDialogState) => void;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const canAdjustByIngredient=canAdjustInventoryVoidByIngredient(value.lines);
+  const canConfirm=canConfirmInventoryVoid(value);
+  const showAdvanced=canAdjustByIngredient&&value.advanced;
+  return <div className="fixed inset-0 z-[100] flex items-end justify-center bg-black/75 p-3 sm:items-center" role="dialog" aria-modal="true">
+    <div className="max-h-[92vh] w-full max-w-4xl overflow-y-auto rounded-[1.4rem] border border-white/12 bg-[#0d0d13] p-5 shadow-2xl sm:p-6">
+      <div className="flex items-start justify-between gap-3"><div><p className="text-xs uppercase tracking-[0.2em] text-amberGlow">Anulación después de entregar</p><h2 className="mt-2 font-display text-3xl text-ivory">Anular producto entregado</h2></div><button type="button" className={ghostButtonClassName} onClick={onClose}>Cerrar</button></div>
+      <div className="mt-5 rounded-[1rem] border border-cyanGlow/20 bg-cyanGlow/[0.06] px-5 py-4"><p className="font-display text-2xl text-ivory">{value.item.productName}</p><p className="mt-1 text-xs uppercase tracking-[0.16em] text-cyan-100/75">Producto entregado</p></div>
+      {showAdvanced?<div className="mt-5"><div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="text-lg font-semibold text-ivory">Destino por ingrediente</h3><p className="mt-1 text-sm text-mist">Selecciona qué ocurrió con cada ingrediente.</p></div><button type="button" className={ghostButtonClassName} onClick={()=>onChange(returnToInventoryVoidSingleMode(value))}>Volver a destino único</button></div><div className="mt-4 space-y-3">{value.lines.map((line,index)=><article key={line.consumption_line_id} className="rounded-[1rem] border border-white/10 bg-white/[0.03] p-4"><h4 className="font-semibold text-ivory">{line.item_name}</h4><InventoryVoidDestinationChoices compact name={`inventory-void-${line.consumption_line_id}`} value={line.destination} onChange={(destination)=>onChange({...value,lines:value.lines.map((current,lineIndex)=>lineIndex===index?{...current,destination}:current)})}/></article>)}</div></div>:<fieldset className="mt-5"><legend className="text-lg font-semibold text-ivory">¿Qué ocurrió con este producto?</legend><InventoryVoidDestinationChoices name="inventory-void-destination" value={value.destination} onChange={(destination)=>onChange({...value,destination})}/>{canAdjustByIngredient?<button type="button" className={`${ghostButtonClassName} mt-4`} onClick={()=>onChange(openInventoryVoidIngredientMode(value))}>Ajustar por ingrediente</button>:null}</fieldset>}
+      {!value.lines.length?<p className="mt-4 rounded-[0.9rem] border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-mist">Este producto no tenía inventario asociado al entregarse; la anulación no moverá existencias.</p>:null}
+      <div className="mt-5 rounded-[0.9rem] border border-white/10 bg-black/20 px-4 py-3 text-sm text-mist"><span className="font-semibold text-ivory">Motivo de anulación:</span> {value.reason}</div><div className="mt-5 flex flex-wrap justify-end gap-2"><button type="button" className={ghostButtonClassName} onClick={onClose}>Cancelar</button><button type="button" disabled={busy||!canConfirm} className={canConfirm?dangerButtonClassName:disabledDangerButtonClassName} onClick={onConfirm}>{busy ? 'Guardando…' : 'Confirmar anulación'}</button></div>
+    </div>
+  </div>;
+}
+
+const inventoryVoidDestinationOptions: Array<{value:InventoryVoidDestination;label:string;description:string}> = [
+  { value:'returned',label:'Regresó al inventario',description:'Puede volver a venderse o utilizarse.' },
+  { value:'waste',label:'Merma',description:'Se perdió, dañó o descartó.' },
+  { value:'courtesy',label:'Cortesía',description:'Se entregó sin cobro al cliente.' },
+  { value:'internal',label:'Consumo interno',description:'Fue utilizado por el equipo.' },
+];
+
+function InventoryVoidDestinationIcon({ destination }: { destination:InventoryVoidDestination }) {
+  const iconClassName="h-5 w-5";
+  if(destination==='returned')return <PackageCheck className={iconClassName}/>;
+  if(destination==='waste')return <Trash2 className={iconClassName}/>;
+  if(destination==='courtesy')return <Gift className={iconClassName}/>;
+  return <Utensils className={iconClassName}/>;
+}
+
+function InventoryVoidDestinationChoices({ name,value,onChange,compact=false }: { name:string;value:InventoryVoidDestination|null;onChange:(destination:InventoryVoidDestination)=>void;compact?:boolean }) {
+  return <div className={`mt-3 grid gap-2 ${compact?'sm:grid-cols-2 lg:grid-cols-4':'sm:grid-cols-2'}`}>{inventoryVoidDestinationOptions.map((option)=>{const selected=value===option.value;return <label key={option.value} className={`relative flex cursor-pointer items-center gap-3 rounded-[0.9rem] border px-3 py-3 transition ${selected?'border-cyanGlow bg-cyanGlow/15 text-ivory shadow-[0_0_0_1px_rgba(71,211,255,0.15)]':'border-white/12 bg-white/[0.04] text-mist hover:border-cyanGlow/45 hover:bg-white/[0.07]'}`}><input className="sr-only" type="radio" name={name} value={option.value} checked={selected} onChange={()=>onChange(option.value)}/><span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${selected?'bg-cyanGlow text-[#071015]':'bg-white/[0.07] text-cyan-100'}`}><InventoryVoidDestinationIcon destination={option.value}/></span><span className="min-w-0"><span className="block text-sm font-semibold">{option.label}</span>{!compact?<span className="mt-0.5 block text-xs leading-4 text-mist">{option.description}</span>:null}</span>{selected?<Check className="ml-auto h-5 w-5 shrink-0 text-cyanGlow" aria-hidden="true"/>:null}</label>;})}</div>;
+}
+
+function buildInventoryVoidResolution(line: InventoryVoidAllocation,destination:InventoryVoidDestination|null) {
+  const quantity=Number(line.quantity);
+  return {
+    consumption_line_id:line.consumption_line_id,
+    returned_quantity:destination==='returned'?quantity:0,
+    waste_quantity:destination==='waste'?quantity:0,
+    courtesy_quantity:destination==='courtesy'?quantity:0,
+    internal_quantity:destination==='internal'?quantity:0,
+    client_consumed_quantity:0,
+    classification:destination,
+  };
+}
+
+function canAdjustInventoryVoidByIngredient(lines: InventoryVoidAllocation[]) {
+  return lines.length>1;
+}
+
+function openInventoryVoidIngredientMode(value: InventoryVoidDialogState): InventoryVoidDialogState {
+  return {...value,advanced:true,lines:value.lines.map((line)=>({...line,destination:value.destination}))};
+}
+
+function returnToInventoryVoidSingleMode(value: InventoryVoidDialogState): InventoryVoidDialogState {
+  return {...value,advanced:false,destination:null,lines:value.lines.map((line)=>({...line,destination:null}))};
+}
+
+function canConfirmInventoryVoid(value: InventoryVoidDialogState) {
+  return value.advanced?value.lines.every((line)=>line.destination!==null):value.destination!==null;
+}
+
+function buildInventoryVoidResolutions(value: InventoryVoidDialogState) {
+  if(!canConfirmInventoryVoid(value)) {
+    throw new Error(value.advanced?'Selecciona un destino para cada ingrediente.':'Selecciona qué ocurrió con el producto entregado.');
+  }
+  return value.lines.map((line)=>buildInventoryVoidResolution(line,value.advanced?line.destination:value.destination));
+}
+
+function InventoryAvailabilityNotice({ alert }: { alert: InventoryMenuAlert }) {
+  const message = alert.has_uncounted
+    ? 'Inventario configurado con componentes sin conteo inicial.'
+    : alert.cannot_make_one
+      ? 'Posible agotado. Venta permitida.'
+      : `Aprox. ${alert.controlled_units_available ?? 0} unidad(es) disponibles.`;
+  return <p className={`rounded-[0.8rem] border px-3 py-2 text-xs ${alert.cannot_make_one || alert.has_uncounted ? 'border-amberGlow/30 bg-amberGlow/10 text-amber-100' : 'border-emerald-300/20 bg-emerald-300/[0.07] text-emerald-100'}`}>
+    {message} {alert.control_mode === 'partial' ? 'Estimación parcial.' : ''}
+  </p>;
+}
+
 const inputClassName =
   'w-full rounded-[1rem] border border-white/10 bg-obsidian/50 px-4 py-3 text-base text-ivory outline-none transition focus:border-cyanGlow/40';
 const invalidInputClassName =
@@ -5620,6 +5725,8 @@ const ghostButtonClassName =
   'rounded-full border border-white/14 bg-white/[0.06] px-4 py-2.5 text-xs font-semibold uppercase tracking-[0.22em] text-ivory transition hover:border-cyanGlow/24 hover:bg-white/[0.1] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyanGlow/20';
 const dangerButtonClassName =
   'rounded-full border border-rose-300/24 bg-rose-300/12 px-4 py-2.5 text-xs font-semibold uppercase tracking-[0.22em] text-rose-100 transition hover:border-rose-300/38 hover:bg-rose-300/16 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-300/20';
+const disabledDangerButtonClassName =
+  'cursor-not-allowed rounded-full border border-white/12 bg-white/[0.04] px-4 py-2.5 text-xs font-semibold uppercase tracking-[0.22em] text-white/40 opacity-55';
 
 function getQuantityInputClassName(isValid: boolean) {
   return isValid ? inputClassName : invalidInputClassName;
