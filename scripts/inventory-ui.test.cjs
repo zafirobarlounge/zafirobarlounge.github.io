@@ -448,14 +448,15 @@ test('migracion 010 pagina historiales en PostgreSQL y la UI consume sus RPC', (
 test('solicitudes abren en pendientes y filtran estados terminales desde PostgreSQL', () => {
   const view = readFileSync('src/admin/inventory/AdminInventoryView.tsx', 'utf8');
   const requests = view.slice(view.indexOf('function RequestsTab'), view.indexOf('function SubmissionLineDetails'));
-  const migration = readFileSync('supabase/migrations/202609290014_inventory_pending_submissions_filter.sql', 'utf8');
+  const migration = readFileSync('supabase/migrations/202610010022_inventory_pending_submissions_by_kind.sql', 'utf8');
   assert.match(requests, /useState<'pending'\|'all'>\('pending'\)/);
   assert.match(requests, /<Field label="Vista">[\s\S]*?<option value="pending">Pendientes<\/option><option value="all">Todos<\/option>/);
-  assert.match(requests, /status==='all'\?\(scope==='pending'\?'pending':null\):status/);
+  assert.match(requests, /status==='all'\?\(scope==='pending'\?'pending':null\):\(scope==='pending'\?`pending_\$\{status\}`:status\)/);
   assert.match(requests, /'sent','partially_approved','approved','partially_received'/);
   assert.doesNotMatch(requests.match(/const pendingStatuses=\[[^\]]+\]/)?.[0] ?? '', /draft/);
   assert.match(requests, /scope==='all'\|\|pendingStatuses\.includes\(value\)/);
-  assert.match(migration, /requested_status='pending' and s\.status in \('sent','partially_approved','approved','partially_received'\)/);
+  assert.match(migration, /requested_status='pending' and \(s\.status in \('sent','partially_approved'\) or \(s\.kind='replenishment' and s\.status in \('approved','partially_received'\)\)\)/);
+  assert.match(migration, /requested_status='pending_approved' and s\.kind='replenishment' and s\.status='approved'/);
   assert.match(migration, /order by s\.created_at desc,s\.id desc limit 21/);
 });
 
@@ -473,8 +474,13 @@ test('estados de solicitudes reutilizan una pildora visual central con indicador
   assert.match(badge, /aria-hidden="true"/);
   assert.match(badge, /h-1\.5 w-1\.5 shrink-0 rounded-full bg-current/);
   assert.match(adminView, /<InventoryStatusBadge status=\{entry\.status\}/);
+  assert.match(adminView, /<InventorySubmissionStage kind=\{entry\.kind\} status=\{entry\.status\}/);
   assert.match(areaPanel, /<InventoryStatusBadge status=\{submission\.status\}/);
   assert.match(adminView, /Object\.entries\(inventoryStatusLabels\)/);
+  for (const stage of ['Por revisar','Por comprar o recibir','Compra completada','Revisado y aplicado']) assert.match(badge,new RegExp(stage));
+  assert.match(badge,/kind === 'replenishment'/);
+  assert.match(badge,/status === 'sent' \|\| status === 'partially_approved'/);
+  assert.match(badge,/absolute inset-y-0 left-0 w-1/);
 });
 
 test('Realtime de inventario agrupa eventos, actualiza ambos clientes y limpia suscripciones', async () => {
