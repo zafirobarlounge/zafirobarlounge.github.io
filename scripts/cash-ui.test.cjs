@@ -188,7 +188,7 @@ function harness({
       if (name.includes("inventory.repository"))
         return { loadInventory: async () => ({ items:[],presentations:[] }), loadInventoryPendingReplenishments: async () => [], saveInventoryPurchase: save, subscribeToInventoryRealtime: () => () => {} };
       if (name.includes("InventoryPurchaseLinesEditor"))
-        return { InventoryPurchaseLinesEditor: 'purchase-lines', buildInventoryPurchaseLines:()=>[], createInventoryPurchaseLine:()=>({}), inventoryPurchaseLinesValid:()=>true, inventoryPurchaseTotal:()=>0 };
+        return { InventoryPurchaseLinesEditor: 'purchase-lines', buildInventoryPurchaseLines:()=>[], createInventoryPurchaseLine:()=>({}), inventoryPurchaseLinesValid:()=>true, inventoryPurchaseTotal:()=>0, rememberInventoryPurchasePresentations:()=>{} };
       throw new Error(name);
     },
   };

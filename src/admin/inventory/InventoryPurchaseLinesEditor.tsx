@@ -23,9 +23,37 @@ export type InventoryPurchaseDraftLine = {
   submissionSelectionResolved?: boolean;
 };
 
+const presentationPreferenceKey = 'zafiro-inventory-last-presentations';
+
+function storedPresentationPreferences(): Record<string, string> {
+  if (typeof localStorage === 'undefined') return {};
+  try { return JSON.parse(localStorage.getItem(presentationPreferenceKey) ?? '{}') as Record<string, string>; }
+  catch { return {}; }
+}
+
+export function inventoryPurchasePresentationDefaults(data: InventoryData, itemId: string, preferredPresentationId?: string | null) {
+  const active = data.presentations.filter((presentation) => presentation.item_id === itemId && presentation.active);
+  const presentation = active.find((candidate) => candidate.id === preferredPresentationId) ?? active[0];
+  return {
+    presentationId: presentation?.id ?? 'base',
+    costDisplay: formatInventoryMoneyInput(presentation?.suggested_package_cost),
+    costValue: presentation?.suggested_package_cost ?? null,
+  };
+}
+
+export function rememberInventoryPurchasePresentations(payload: unknown) {
+  if (typeof localStorage === 'undefined' || !Array.isArray(payload)) return;
+  const preferences = storedPresentationPreferences();
+  for (const line of payload as Array<{ item_id?: unknown; presentation_id?: unknown }>) {
+    if (typeof line.item_id === 'string' && typeof line.presentation_id === 'string') preferences[line.item_id] = line.presentation_id;
+  }
+  localStorage.setItem(presentationPreferenceKey, JSON.stringify(preferences));
+}
+
 export function createInventoryPurchaseLine(data: InventoryData, itemId?: string): InventoryPurchaseDraftLine {
   const tracked = data.items.filter((item) => item.tracking_started_at);
-  return { key: crypto.randomUUID(), itemId: itemId ?? tracked[0]?.id ?? '', presentationId: 'base', quantity: '', costDisplay: '', costValue: null, submissionSelectionResolved: false };
+  const selectedItemId = itemId ?? tracked[0]?.id ?? '';
+  return { key: crypto.randomUUID(), itemId: selectedItemId, ...inventoryPurchasePresentationDefaults(data, selectedItemId, storedPresentationPreferences()[selectedItemId]), quantity: '', submissionSelectionResolved: false };
 }
 
 export function inventoryPurchaseLinePreview(data: InventoryData, line: InventoryPurchaseDraftLine) {
@@ -150,9 +178,9 @@ export function InventoryPurchaseLinesEditor({ data, lines, setLines, lockedFirs
                 const search = event.target.value;
                 const nextMatches = tracked.filter((item) => inventoryItemMatchesSearch(item, search));
                 setSearches((current) => ({ ...current, [line.key]: search }));
-                if (!nextMatches.some((item) => item.id === line.itemId)) update(line.key, { itemId: nextMatches[0]?.id ?? '', presentationId: 'base', costDisplay: '', costValue: null, submissionLineId: null, submissionSelectionResolved: false });
+                if (!nextMatches.some((item) => item.id === line.itemId)) { const itemId=nextMatches[0]?.id??''; update(line.key, { itemId, ...inventoryPurchasePresentationDefaults(data,itemId,storedPresentationPreferences()[itemId]), submissionLineId: null, submissionSelectionResolved: false }); }
               }} placeholder="Nombre o código" />
-              <select aria-label={`Producto de compra ${index + 1}`} className={fieldClass} value={matchingItems.some((item) => item.id === line.itemId) ? line.itemId : ''} onChange={(event) => update(line.key, { itemId: event.target.value, presentationId: 'base', costDisplay: '', costValue: null, submissionLineId: null, submissionSelectionResolved: false })}>{matchingItems.length ? matchingItems.map((item) => <option key={item.id} value={item.id}>{item.name}</option>) : <option value="">Sin artículos coincidentes</option>}</select>
+              <select aria-label={`Producto de compra ${index + 1}`} className={fieldClass} value={matchingItems.some((item) => item.id === line.itemId) ? line.itemId : ''} onChange={(event) => { const itemId=event.target.value; update(line.key, { itemId, ...inventoryPurchasePresentationDefaults(data,itemId,storedPresentationPreferences()[itemId]), submissionLineId: null, submissionSelectionResolved: false }); }}>{matchingItems.length ? matchingItems.map((item) => <option key={item.id} value={item.id}>{item.name}</option>) : <option value="">Sin artículos coincidentes</option>}</select>
             </>}</div>
           </label>
           <label className="block">

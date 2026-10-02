@@ -26,7 +26,7 @@ import {
 import { loadCash, saveCash } from "./cash.repository";
 import { loadInventory, loadInventoryPendingReplenishments, saveInventoryPurchase, subscribeToInventoryRealtime } from "../inventory/inventory.repository";
 import type { InventoryData, InventorySubmission } from "../inventory/inventory.domain";
-import { InventoryPurchaseLinesEditor, buildInventoryPurchaseLines, createInventoryPurchaseLine, inventoryPurchaseLinesValid, inventoryPurchaseTotal, type InventoryPurchaseDraftLine } from "../inventory/InventoryPurchaseLinesEditor";
+import { InventoryPurchaseLinesEditor, buildInventoryPurchaseLines, createInventoryPurchaseLine, inventoryPurchaseLinesValid, inventoryPurchaseTotal, rememberInventoryPurchasePresentations, type InventoryPurchaseDraftLine } from "../inventory/InventoryPurchaseLinesEditor";
 import { salesDayOptions } from "../../shared/operations/salesBusinessDate";
 import { sessionDetailUrl } from './sessionFinance';
 
@@ -249,6 +249,7 @@ export function AdminCashView({ embedded = false, initialAction = null, onClose 
       const result = request.payload.action === 'purchase'
         ? await saveInventoryPurchase(request.id, request.payload)
         : await saveCash(request.id, request.payload);
+      if(request.payload.action==='purchase')rememberInventoryPurchasePresentations(request.payload.lines);
       localStorage.removeItem(pendingKey);
       setPending(null);
       form?.reset();

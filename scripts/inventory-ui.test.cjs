@@ -8,11 +8,13 @@ const compile = (file) => ts.transpileModule(readFileSync(file, 'utf8'), { compi
 const domain = { exports: {}, Intl, Date };
 vm.runInNewContext(compile('src/admin/inventory/inventory.domain.ts'), domain);
 const purchaseEditorModule = { exports: {} };
+const editorStorage = new Map();
 vm.runInNewContext(compile('src/admin/inventory/InventoryPurchaseLinesEditor.tsx'), {
   module: purchaseEditorModule,
   exports: purchaseEditorModule.exports,
   Intl,
   Date,
+  localStorage: { getItem:key=>editorStorage.get(key)??null, setItem:(key,value)=>editorStorage.set(key,value) },
   require(name) {
     if (name === 'react') return { useEffect() {}, useState() {} };
     if (name === 'react/jsx-runtime') return { jsx() {}, jsxs() {}, Fragment: 'fragment' };
@@ -92,7 +94,22 @@ test('todos los selectores filtrados excluyen el articulo anterior y seleccionan
   assert.doesNotMatch(view, /selected&&!matching|item&&!matchingTracked/);
   assert.ok((view.match(/getInventoryItemSearchSelection/g) ?? []).length >= 8);
   assert.ok((view.match(/Sin artículos coincidentes/g) ?? []).length >= 3);
-  assert.match(readFileSync('src/admin/inventory/InventoryPurchaseLinesEditor.tsx','utf8'), /presentationId: 'base'/);
+  assert.match(readFileSync('src/admin/inventory/InventoryPurchaseLinesEditor.tsx','utf8'), /presentationId: presentation\?\.id \?\? 'base'/);
+});
+
+test('compras prefieren la última presentación usada y usan la primera activa como respaldo', () => {
+  const data={presentations:[
+    {id:'p1',item_id:'item',name:'Paquete x4',active:true,suggested_package_cost:4000},
+    {id:'p2',item_id:'item',name:'Paquete x12',active:true,suggested_package_cost:10000},
+    {id:'inactive',item_id:'item',name:'Inactiva',active:false,suggested_package_cost:1},
+  ]};
+  assert.equal(purchaseEditor.inventoryPurchasePresentationDefaults(data,'item').presentationId,'p1');
+  assert.equal(purchaseEditor.inventoryPurchasePresentationDefaults(data,'item','p2').presentationId,'p2');
+  assert.equal(purchaseEditor.inventoryPurchasePresentationDefaults(data,'item','inactive').presentationId,'p1');
+  purchaseEditor.rememberInventoryPurchasePresentations([{item_id:'item',presentation_id:'p2'},{item_id:'direct',presentation_id:null}]);
+  assert.equal(JSON.parse(editorStorage.get('zafiro-inventory-last-presentations')).item,'p2');
+  assert.match(readFileSync('src/admin/inventory/AdminInventoryView.tsx','utf8'),/rememberInventoryPurchasePresentations\(payload\.lines\)/);
+  assert.match(readFileSync('src/admin/cash/AdminCashView.tsx','utf8'),/rememberInventoryPurchasePresentations\(request\.payload\.lines\)/);
 });
 
 test('nuevo reporte limita artículos al área elegida incluso para administración', () => {

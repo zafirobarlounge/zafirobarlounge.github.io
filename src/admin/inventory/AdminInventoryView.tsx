@@ -10,7 +10,7 @@ import {
 import { createInventoryTemplateWorkbook, inventoryImportFingerprint, parseInventoryWorkbook, type ParsedInventoryImport } from './inventory-import';
 import { commitInventoryImport, deleteInventoryConfiguration, downloadInventoryCsv, loadInventory, loadInventoryMovementExport, loadInventoryMovementsPage, loadInventoryPendingReplenishments, loadInventoryReceiptsPage, loadInventorySubmissionsPage, previewInventoryImport, saveInventoryCommand, saveInventoryPurchase, subscribeToInventoryRealtime, type InventoryImportServerPreview, type InventoryRealtimeEventKind } from './inventory.repository';
 import { InventoryStatusBadge, InventorySubmissionStage, inventoryStatusLabels } from './InventoryStatusBadge';
-import { InventoryPurchaseLinesEditor, buildInventoryPurchaseLines, createInventoryPurchaseLine, inventoryPurchaseLinesValid, inventoryPurchaseTotal, type InventoryPurchaseDraftLine } from './InventoryPurchaseLinesEditor';
+import { InventoryPurchaseLinesEditor, buildInventoryPurchaseLines, createInventoryPurchaseLine, inventoryPurchaseLinesValid, inventoryPurchaseTotal, rememberInventoryPurchasePresentations, type InventoryPurchaseDraftLine } from './InventoryPurchaseLinesEditor';
 import { loadCash } from '../cash/cash.repository';
 import { bogotaToday, methods, origins, type CashData } from '../cash/cash.domain';
 
@@ -110,7 +110,7 @@ export function AdminInventoryView() {
         const saved=JSON.parse(localStorage.getItem(purchasePendingKey)??'null') as {id:string;payload:Record<string,unknown>}|null;
         if(saved&&JSON.stringify(saved.payload)!==JSON.stringify(payload))throw new Error('Hay una compra pendiente de confirmar. Reintenta la misma operación antes de registrar otra.');
         const pending=saved??{id:requestId,payload}; requestId=pending.id; localStorage.setItem(purchasePendingKey,JSON.stringify(pending));setPurchasePending(pending);
-        await saveInventoryPurchase(requestId,payload); localStorage.removeItem(purchasePendingKey);setPurchasePending(null);
+        await saveInventoryPurchase(requestId,payload); rememberInventoryPurchasePresentations(payload.lines); localStorage.removeItem(purchasePendingKey);setPurchasePending(null);
       } else await saveInventoryCommand(requestId, payload);
       inventoryCache.current = {}; setNotice(message); setModal(null); setSelectedItemId(null); refreshSections(); await refresh(true);
     } catch (reason) { if((reason as {confirmedRejection?:boolean}).confirmedRejection){localStorage.removeItem(purchasePendingKey);setPurchasePending(null);}setError(reason instanceof Error ? reason.message : 'No se pudo guardar.'); }
