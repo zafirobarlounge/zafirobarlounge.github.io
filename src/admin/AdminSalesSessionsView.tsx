@@ -6,6 +6,7 @@ import type { ReactNode } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { AdminLayout } from './AdminLayout';
+import { useModalScrollLock } from './useModalScrollLock';
 import { useSupabaseAuth } from '../auth/SupabaseAuthProvider';
 import {
   registerSessionAdjustment,
@@ -95,6 +96,7 @@ export function AdminSalesSessionsView() {
   const [moveErrorMessage, setMoveErrorMessage] = useState<string | null>(null);
   const [sessionWindowErrorMessage, setSessionWindowErrorMessage] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
+  useModalScrollLock(Boolean(sessionPendingDelete || orderPendingMove || isCreateSessionModalOpen || sessionPendingEdit));
   const sessionHeaderRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const isMountedRef = useRef(false);
   const loadRequestIdRef = useRef(0);
@@ -860,8 +862,8 @@ export function AdminSalesSessionsView() {
       )}
 
       {access.manage && sessionPendingDelete ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/72 px-4">
-          <div className="w-full max-w-lg rounded-[1.4rem] border border-white/10 bg-[#0b0b0f] p-5 shadow-[0_18px_60px_rgba(0,0,0,0.45)]">
+        <div className="zafiro-modal-backdrop fixed inset-0 z-50 flex overflow-hidden overscroll-none bg-black/72 px-4">
+          <div data-zafiro-modal-scroller className="max-h-[calc(100dvh-2rem)] w-full max-w-lg overflow-y-auto overscroll-contain rounded-[1.4rem] border border-white/10 bg-[#0b0b0f] p-5 shadow-[0_18px_60px_rgba(0,0,0,0.45)]">
             <p className="text-[0.68rem] uppercase tracking-[0.22em] text-rose-200">Eliminar jornada</p>
             <h2 className="mt-2 font-display text-2xl text-ivory">{sessionPendingDelete.sessionLabel}</h2>
             <p className="mt-3 text-sm leading-6 text-mist">
@@ -897,8 +899,8 @@ export function AdminSalesSessionsView() {
       ) : null}
 
       {access.manage && orderPendingMove ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/72 px-4">
-          <div className="w-full max-w-xl rounded-[1.4rem] border border-white/10 bg-[#0b0b0f] p-5 shadow-[0_18px_60px_rgba(0,0,0,0.45)]">
+        <div className="zafiro-modal-backdrop fixed inset-0 z-50 flex overflow-hidden overscroll-none bg-black/72 px-4">
+          <div data-zafiro-modal-scroller className="max-h-[calc(100dvh-2rem)] w-full max-w-xl overflow-y-auto overscroll-contain rounded-[1.4rem] border border-white/10 bg-[#0b0b0f] p-5 shadow-[0_18px_60px_rgba(0,0,0,0.45)]">
             <p className="text-[0.68rem] uppercase tracking-[0.22em] text-cyanGlow/80">Mover cuenta de jornada</p>
             <h2 className="mt-2 font-display text-2xl text-ivory">{resolveOrderTableLabel(orderPendingMove.order, tablesById)}</h2>
             <p className="mt-3 text-sm leading-6 text-mist">
@@ -960,8 +962,8 @@ export function AdminSalesSessionsView() {
       ) : null}
 
       {access.manage && (isCreateSessionModalOpen || sessionPendingEdit) ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/72 px-4">
-          <div className="w-full max-w-xl rounded-[1.4rem] border border-white/10 bg-[#0b0b0f] p-5 shadow-[0_18px_60px_rgba(0,0,0,0.45)]">
+        <div className="zafiro-modal-backdrop fixed inset-0 z-50 flex overflow-hidden overscroll-none bg-black/72 px-4">
+          <div data-zafiro-modal-scroller className="max-h-[calc(100dvh-2rem)] w-full max-w-xl overflow-y-auto overscroll-contain rounded-[1.4rem] border border-white/10 bg-[#0b0b0f] p-5 shadow-[0_18px_60px_rgba(0,0,0,0.45)]">
             <p className="text-[0.68rem] uppercase tracking-[0.22em] text-cyanGlow/80">
               {sessionPendingEdit ? 'Ajustar jornada' : 'Crear jornada manual'}
             </p>

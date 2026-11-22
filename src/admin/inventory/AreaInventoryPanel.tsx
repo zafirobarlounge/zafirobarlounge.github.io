@@ -24,6 +24,7 @@ import {
 } from './inventory.domain';
 import { loadInventory, loadInventoryAreaPendingReplenishments, loadInventoryRecentSubmissions, saveInventoryCommand } from './inventory.repository';
 import { InventoryStatusBadge } from './InventoryStatusBadge';
+import { useModalScrollLock } from '../useModalScrollLock';
 
 export type AreaInventoryStatusFilter = 'all' | 'low' | 'depleted' | 'uncounted';
 export type AreaInventoryItemState = Exclude<AreaInventoryStatusFilter, 'all'> | 'available';
@@ -129,6 +130,7 @@ export function AreaInventoryPanel({ area, refreshVersion = 0 }: { area: PosInve
   const [notice, setNotice] = useState<string | null>(null);
   const [filters, setFilters] = useState<Record<InventoryUsageType,{search:string;status:AreaInventoryStatusFilter}>>({ consumable: { search: '', status: 'all' }, operational: { search: '', status: 'all' } });
   const [report, setReport] = useState<{ item: InventoryItem; kind: InventorySubmissionKind } | null>(null);
+  useModalScrollLock(Boolean(report));
   const [quantity, setQuantity] = useState('');
   const [notes, setNotes] = useState('');
   const [selectedPresentationId, setSelectedPresentationId] = useState('');
@@ -340,9 +342,9 @@ export function AreaInventoryPanel({ area, refreshVersion = 0 }: { area: PosInve
               </div>
 
               <div className="mt-5 rounded-[1.1rem] border border-white/10 bg-white/[0.02] p-4">
-                <button type="button" aria-expanded={recentReportsExpanded} aria-controls={`area-recent-reports-${area}`} className="flex w-full items-center justify-between gap-4 text-left" onClick={() => setRecentReportsExpanded((current) => !current)}>
+                <button type="button" aria-expanded={recentReportsExpanded} aria-controls={`area-recent-reports-${area}`} className="flex w-full flex-col items-start gap-3 text-left sm:flex-row sm:items-center sm:justify-between" onClick={() => setRecentReportsExpanded((current) => !current)}>
                   <span><span className="block font-display text-2xl text-ivory">Reportes recientes del área</span><span className="mt-1 block text-xs text-mist">{recentSubmissions.length} reporte(s) reciente(s)</span></span>
-                  <span className="shrink-0 text-xs font-semibold uppercase tracking-[0.16em] text-cyanGlow">{recentReportsExpanded ? 'Ocultar' : 'Ver reportes'}</span>
+                  <span className="shrink-0 rounded-full border border-cyanGlow/20 bg-cyanGlow/[0.06] px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.16em] text-cyanGlow">{recentReportsExpanded ? 'Ocultar' : 'Ver reportes'}</span>
                 </button>
                 {recentReportsExpanded ? <div id={`area-recent-reports-${area}`} className="mt-3 grid gap-2 border-t border-white/10 pt-3 lg:grid-cols-2">
                     {recentSubmissions.map((submission) => {
@@ -369,7 +371,7 @@ export function AreaInventoryPanel({ area, refreshVersion = 0 }: { area: PosInve
 
               {!items.length ? <div className="mt-5"><EmptyState message={!data.items.length && usageType==='operational'?'No hay artículos operativos asignados a esta área. Los artículos existentes son Consumibles hasta que Administración cambie su Tipo de uso.':'No hay artículos que coincidan con la búsqueda y el filtro seleccionados.'} /></div> : null}
               {items.length ? (
-                <div className="mt-5 grid gap-3 sm:grid-cols-2 2xl:grid-cols-3">
+                <div className="mt-5 grid w-full min-w-0 grid-cols-1 gap-3 sm:grid-cols-2 2xl:grid-cols-3">
                   {items.map((item) => <AreaInventoryItemCard key={item.id} item={item} area={area} pendingReplenishments={pendingReplenishments} onReport={(kind) => openReport(item, kind)} />)}
                 </div>
               ) : null}
@@ -413,7 +415,7 @@ function AreaInventoryItemCard({ item, area, pendingReplenishments, onReport }: 
       : 'border-emerald-300/25 bg-emerald-300/[0.07] text-emerald-100';
   const replenishmentAttention = getInventoryReplenishmentAttention(pendingReplenishments, item.id, area);
   return (
-    <article className="rounded-[1.05rem] border border-white/10 bg-white/[0.035] p-4">
+    <article className="min-w-0 max-w-full rounded-[1.05rem] border border-white/10 bg-white/[0.035] p-4">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <h3 className="truncate font-display text-xl text-ivory">{item.name}</h3>
@@ -426,7 +428,7 @@ function AreaInventoryItemCard({ item, area, pendingReplenishments, onReport }: 
         <p>Mínimo<br/><strong className="text-ivory">{formatConfiguredInventoryQuantity(item.minimum_quantity, item.base_unit, item.precision_scale)}</strong></p>
       </div>
       {replenishmentAttention.review.length || replenishmentAttention.receiving.length ? <AreaReplenishmentAttention item={item} attention={replenishmentAttention} /> : null}
-      <div className="mt-4 grid grid-cols-3 gap-2">
+      <div className="mt-4 grid grid-cols-1 gap-2 min-[390px]:grid-cols-3">
         <button type="button" className={smallPrimaryButton} onClick={() => onReport('replenishment')}>Solicitar</button>
         <button type="button" className={smallGhostButton} onClick={() => onReport('count')}>Contar</button>
         <button type="button" className={smallDangerButton} onClick={() => onReport('damage')}>Daño</button>
@@ -484,8 +486,8 @@ function InventoryReportDialog({ areaLabel, busy, error, item, kind, notes, pres
       ? packageQuantity
       : null;
   return (
-    <div className="fixed inset-0 z-[100] flex items-end justify-center bg-black/75 p-3 sm:items-center" role="dialog" aria-modal="true">
-      <div className="max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-[1.4rem] border border-white/12 bg-[#0d0d13] p-5 shadow-2xl sm:p-7">
+    <div className="zafiro-modal-backdrop fixed inset-0 z-[100] flex overflow-hidden overscroll-none bg-black/75 p-3" role="dialog" aria-modal="true">
+      <div data-zafiro-modal-scroller className="max-h-[calc(100dvh-1.5rem)] w-full max-w-2xl overflow-y-auto overscroll-contain rounded-[1.4rem] border border-white/12 bg-[#0d0d13] p-5 shadow-2xl sm:max-h-[92dvh] sm:p-7">
         <div className="mb-5 flex items-start justify-between gap-3">
           <div><p className="text-xs uppercase tracking-[0.2em] text-cyanGlow">Inventario de {areaLabel}</p><h2 className="mt-2 font-display text-3xl text-ivory">{submissionKindLabels[kind]}</h2></div>
           <button type="button" className={ghostButton} onClick={onClose}>Cerrar</button>
