@@ -80,6 +80,8 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
       values('${legacyLinkedReceiptId}','${legacyLinkedRequestId}','${legacyLinkedExpenseId}',5000,'2026-09-22T18:00:00Z','legacy@test.invalid','Recepción histórica vinculada');`);
     sql(readFileSync('supabase/migrations/202609290021_inventory_linked_purchases.sql', 'utf8'));
     sql(readFileSync('supabase/migrations/202610010022_inventory_pending_submissions_by_kind.sql', 'utf8'));
+    sql(readFileSync('supabase/migrations/202610120023_inventory_receipt_multi_request_allocations.sql', 'utf8'));
+    sql(readFileSync('supabase/migrations/202610120024_inventory_submission_receipt_history.sql', 'utf8'));
     sql(`truncate public.inventory_realtime_events;`);
     sql(`insert into public.admin_users(email) values ('admin@test.invalid');
       insert into public.staff_profiles(email,full_name,is_active) values ('super@test.invalid','Superadmin',true),('cashier@test.invalid','Caja',true),('bar@test.invalid','Bar',true),('kitchen@test.invalid','Cocina',true),('waiter@test.invalid','Mesero',true),('inactive@test.invalid','Inactivo',false);
@@ -678,6 +680,13 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
       const countLine = sql(`select id from public.inventory_submission_lines where submission_id='${count.id}';`);
       command('cashier@test.invalid', { action: 'review_submission', submission_id: count.id, status: 'approved', notes: 'Conteo revisado', lines: [{ line_id: countLine, approved_quantity: 9 }] });
       assert.equal(sql(`select sum(quantity_delta) from public.inventory_movements where item_id='${bread.id}';`), '10.000');
+      const receiptsBeforeDamage=sql(`select count(*) from public.inventory_receipts where id in (select receipt_id from public.inventory_receipt_lines where item_id='${bread.id}');`);
+      const balanceBeforeDamage=Number(sql(`select current_quantity from public.inventory_item_valuations where item_id='${bread.id}';`));
+      const damage=command('kitchen@test.invalid', { action: 'submit', kind: 'damage', area: 'kitchen', status: 'sent', lines: [{ item_id: bread.id, requested_quantity: 2 }] });
+      const damageLine=sql(`select id from public.inventory_submission_lines where submission_id='${damage.id}';`);
+      command('cashier@test.invalid', { action: 'review_submission', submission_id: damage.id, status: 'approved', notes: 'Daño revisado', lines: [{ line_id: damageLine, approved_quantity: 2 }] });
+      assert.equal(sql(`select count(*) from public.inventory_receipts where id in (select receipt_id from public.inventory_receipt_lines where item_id='${bread.id}');`), receiptsBeforeDamage);
+      assert.equal(Number(sql(`select current_quantity from public.inventory_item_valuations where item_id='${bread.id}';`)), balanceBeforeDamage-2);
     });
 
     await t.test('recepcion distinta y parcial conserva pendientes por cantidad base', () => {
@@ -704,6 +713,30 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
       assert.equal(sql(`select received_quantity from public.inventory_submission_lines where id='${partialLine}';`), '12.000');
       assert.equal(sql(`select approved_quantity-received_quantity from public.inventory_submission_lines where id='${partialLine}';`), '12.000');
       assert.equal(sql(`select status from public.inventory_submissions where id='${partialRequest.id}';`), 'partially_received');
+
+      const requestA=command('bar@test.invalid',{action:'submit',kind:'replenishment',area:'bar',status:'sent',lines:[{item_id:soda.id,requested_quantity:10}]});
+      const requestB=command('bar@test.invalid',{action:'submit',kind:'replenishment',area:'bar',status:'sent',lines:[{item_id:soda.id,requested_quantity:5}]});
+      sql(`update public.inventory_submissions set created_at='2026-01-01T00:00:00Z' where id in ('${requestA.id}','${requestB.id}');`);
+      const lineA=sql(`select id from public.inventory_submission_lines where submission_id='${requestA.id}';`), lineB=sql(`select id from public.inventory_submission_lines where submission_id='${requestB.id}';`);
+      command('cashier@test.invalid',{action:'review_submission',submission_id:requestA.id,status:'approved',lines:[{line_id:lineA,approved_quantity:10}]});
+      command('cashier@test.invalid',{action:'review_submission',submission_id:requestB.id,status:'approved',lines:[{line_id:lineB,approved_quantity:5}]});
+      const distributedRequestId=randomUUID();
+      const receipt=command('cashier@test.invalid',{action:'receive',supplier:'Distribución QA',lines:[{item_id:soda.id,base_quantity:13,submission_allocations:[{submission_line_id:lineA,quantity:10},{submission_line_id:lineB,quantity:3}]}]},distributedRequestId);
+      assert.equal(sql(`select received_quantity from public.inventory_submission_lines where id='${lineA}';`),'10.000');
+      assert.equal(sql(`select received_quantity from public.inventory_submission_lines where id='${lineB}';`),'3.000');
+      assert.equal(sql(`select status from public.inventory_submissions where id='${requestA.id}';`),'received');
+      assert.equal(sql(`select approved_quantity-received_quantity from public.inventory_submission_lines where id='${lineB}';`),'2.000');
+      assert.equal(sql(`select count(*) from public.inventory_receipt_lines where receipt_id='${receipt.id}';`),'1');
+      assert.deepEqual(sql(`select array_agg(applied_quantity order by applied_quantity) from public.inventory_receipt_line_submission_applications where receipt_line_id in (select id from public.inventory_receipt_lines where receipt_id='${receipt.id}');`).replace(/[{}]/g,'').split(','),['3','10']);
+      assert.equal(command('cashier@test.invalid',{action:'receive',supplier:'Distribución QA',lines:[{item_id:soda.id,base_quantity:13,submission_allocations:[{submission_line_id:lineA,quantity:10},{submission_line_id:lineB,quantity:3}]}]},distributedRequestId).id,receipt.id);
+      fails(login('cashier@test.invalid')+`select public.inventory_command('${randomUUID()}',${quote(JSON.stringify({action:'receive',lines:[{item_id:soda.id,base_quantity:3,submission_allocations:[{submission_line_id:lineB,quantity:3}]}]}))}::jsonb);`,'asignacion supera la cantidad pendiente');
+
+      const assignedHistory=JSON.parse(sql(login('cashier@test.invalid')+`select public.inventory_submission_receipt_history(array['${lineA}'::uuid,'${lineB}'::uuid]);`));
+      assert.equal(Number(assignedHistory[lineA][0].applied_quantity),10);
+      assert.equal(Number(assignedHistory[lineB][0].applied_quantity),3);
+      assert.equal(assignedHistory[lineA][0].receipt_line_id,assignedHistory[lineB][0].receipt_line_id);
+      fails(login('bar@test.invalid')+`select public.inventory_submission_receipt_history(array['${lineA}'::uuid]);`,'Acceso denegado a historial de recepciones');
+
     });
 
     await t.test('importación inicial es administrativa, transaccional, idempotente y no inventa movimientos', () => {
@@ -869,6 +902,20 @@ test('PostgreSQL aislado: inventario, permisos, conversiones, POS e idempotencia
       fails(login('cashier@test.invalid') + `update public.inventory_items set name='Alterado';`, 'permission denied');
       fails(login('cashier@test.invalid') + `update public.inventory_areas set active=false;`, 'permission denied');
       fails(`update public.inventory_movements set reason='Alterado';`, 'inmutable');
+    });
+
+    await t.test('historial administrativo muestra la asignación real de Bretaña parcial', () => {
+      const breta=command('admin@test.invalid',{action:'save_item',name:'Bretaña 300 ml',base_unit:'unit',precision_scale:0,areas:['bar']});
+      command('cashier@test.invalid',{action:'initial_count',item_id:breta.id,quantity:0,reason:'Inicio Bretaña'});
+      const bretaNotes=`zafiro-presentation-v1:${JSON.stringify({presentation:{presentation_id:'historical-paca-24',presentation_name:'Paca x24',content_per_package:24,content_unit:'unit',package_quantity:2},notes:''})}`;
+      const bretaRequest=command('bar@test.invalid',{action:'submit',kind:'replenishment',area:'bar',status:'sent',lines:[{item_id:breta.id,requested_quantity:48,notes:bretaNotes}]});
+      const bretaLine=sql(`select id from public.inventory_submission_lines where submission_id='${bretaRequest.id}';`);
+      command('cashier@test.invalid',{action:'review_submission',submission_id:bretaRequest.id,status:'approved',lines:[{line_id:bretaLine,approved_quantity:48}]});
+      command('cashier@test.invalid',{action:'receive',supplier:'Entrega parcial Bretaña',lines:[{item_id:breta.id,base_quantity:20,submission_allocations:[{submission_line_id:bretaLine,quantity:20}]}]});
+      const bretaHistory=JSON.parse(sql(login('cashier@test.invalid')+`select public.inventory_submission_receipt_history(array['${bretaLine}'::uuid]);`));
+      assert.equal(Number(bretaHistory[bretaLine][0].applied_quantity),20);
+      assert.equal(Number(sql(`select received_quantity from public.inventory_submission_lines where id='${bretaLine}';`)),20);
+      assert.equal(Number(sql(`select approved_quantity-received_quantity from public.inventory_submission_lines where id='${bretaLine}';`)),28);
     });
 
     await t.test('ventas históricas quedan intactas y productos sin receta no bloquean', () => {

@@ -87,6 +87,79 @@ export interface InventorySubmission {
   lines: InventorySubmissionLine[];
 }
 
+export interface InventorySubmissionReceiptApplication {
+  receipt_id: string;
+  receipt_line_id: string;
+  received_at: string;
+  document_reference: string | null;
+  purchase_id: string | null;
+  presentation_name_snapshot: string | null;
+  content_per_package_snapshot: number | null;
+  content_unit_snapshot: InventoryUnit | null;
+  package_quantity: number | null;
+  applied_quantity: number;
+}
+
+export function summarizeInventorySubmissionReceiptApplications(
+  line: Pick<InventorySubmissionLine, 'approved_quantity'>,
+  applications: InventorySubmissionReceiptApplication[],
+) {
+  const received_quantity = applications.reduce((total, application) => total + Number(application.applied_quantity), 0);
+  const approved_quantity = line.approved_quantity == null ? null : Number(line.approved_quantity);
+  return {
+    approved_quantity,
+    received_quantity,
+    pending_quantity: approved_quantity == null ? null : Math.max(approved_quantity - received_quantity, 0),
+  };
+}
+
+export type InventoryReplenishmentAttentionState = 'review' | 'receiving';
+
+export interface InventoryReplenishmentAttentionLine {
+  submission_id: string;
+  submission_status: Extract<InventorySubmissionStatus, 'sent' | 'partially_approved' | 'approved' | 'partially_received'>;
+  line: InventorySubmissionLine;
+  state: InventoryReplenishmentAttentionState;
+  quantity: number;
+}
+
+/**
+ * Keeps pending approvals separate from quantities that are already approved
+ * and still waiting for a receipt. All quantities are already in the item's
+ * base unit; the presentation snapshot remains attached to the source line.
+ */
+export function getInventoryReplenishmentAttention(
+  submissions: InventorySubmission[],
+  itemId: string,
+  area: InventoryArea,
+) {
+  const review: InventoryReplenishmentAttentionLine[] = [];
+  const receiving: InventoryReplenishmentAttentionLine[] = [];
+
+  for (const submission of submissions) {
+    if (submission.kind !== 'replenishment' || submission.area !== area) continue;
+    if (!['sent', 'partially_approved', 'approved', 'partially_received'].includes(submission.status)) continue;
+    const status = submission.status as InventoryReplenishmentAttentionLine['submission_status'];
+    for (const line of submission.lines) {
+      if (line.item_id !== itemId) continue;
+      if (status === 'sent' || status === 'partially_approved') {
+        const quantity = Number(line.requested_quantity ?? 0);
+        if (quantity > 0) review.push({ submission_id: submission.id, submission_status: status, line, state: 'review', quantity });
+        continue;
+      }
+      const quantity = Math.max(Number(line.approved_quantity ?? 0) - Number(line.received_quantity ?? 0), 0);
+      if (quantity > 0) receiving.push({ submission_id: submission.id, submission_status: status, line, state: 'receiving', quantity });
+    }
+  }
+
+  return {
+    review,
+    receiving,
+    review_quantity: review.reduce((total, entry) => total + entry.quantity, 0),
+    receiving_quantity: receiving.reduce((total, entry) => total + entry.quantity, 0),
+  };
+}
+
 export interface InventoryMovement {
   id: string;
   item_id: string;

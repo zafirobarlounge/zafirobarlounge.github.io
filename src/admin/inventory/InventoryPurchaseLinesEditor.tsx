@@ -6,6 +6,7 @@ import {
   inventoryItemMatchesSearch,
   inventoryMoneyInput,
   inventoryUnitLabels,
+  parseInventorySubmissionLineNotes,
   receiptCostPreview,
   receiptRequestApplicationPreview,
   type InventoryData,
@@ -21,6 +22,9 @@ export type InventoryPurchaseDraftLine = {
   costValue: number | null;
   submissionLineId?: string | null;
   submissionSelectionResolved?: boolean;
+  submissionAllocations?: Array<{ submissionLineId: string; quantity: string }>;
+  allocationMode?: 'automatic' | 'manual';
+  preferredSubmissionLineId?: string | null;
 };
 
 const presentationPreferenceKey = 'zafiro-inventory-last-presentations';
@@ -53,7 +57,30 @@ export function rememberInventoryPurchasePresentations(payload: unknown) {
 export function createInventoryPurchaseLine(data: InventoryData, itemId?: string): InventoryPurchaseDraftLine {
   const tracked = data.items.filter((item) => item.tracking_started_at);
   const selectedItemId = itemId ?? tracked[0]?.id ?? '';
-  return { key: crypto.randomUUID(), itemId: selectedItemId, ...inventoryPurchasePresentationDefaults(data, selectedItemId, storedPresentationPreferences()[selectedItemId]), quantity: '', submissionSelectionResolved: false };
+  return { key: crypto.randomUUID(), itemId: selectedItemId, ...inventoryPurchasePresentationDefaults(data, selectedItemId, storedPresentationPreferences()[selectedItemId]), quantity: '', submissionSelectionResolved: false, submissionAllocations: [], allocationMode: 'automatic' };
+}
+
+export function createInventoryPurchaseLinesForSubmission(data: InventoryData, submission: InventorySubmission): InventoryPurchaseDraftLine[] {
+  return submission.lines.flatMap((line) => {
+    const pending = Math.max(Number(line.approved_quantity ?? 0) - Number(line.received_quantity ?? 0), 0);
+    if (pending <= 0) return [];
+    const requestedPresentationId = parseInventorySubmissionLineNotes(line.notes).presentation?.presentation_id;
+    const requestedPresentation = data.presentations.find((presentation) => presentation.id === requestedPresentationId && presentation.item_id === line.item_id && presentation.active);
+    const requestedPackageQuantity = requestedPresentation ? pending / Number(requestedPresentation.content_per_package) : null;
+    const useRequestedPresentation = requestedPresentation != null && Number.isInteger(requestedPackageQuantity);
+    return [{
+      ...createInventoryPurchaseLine(data, line.item_id),
+      ...(useRequestedPresentation
+        ? inventoryPurchasePresentationDefaults(data, line.item_id, requestedPresentation?.id)
+        : { presentationId: 'base', costDisplay: '', costValue: null }),
+      quantity: String(useRequestedPresentation ? requestedPackageQuantity : pending),
+      submissionLineId: line.id,
+      submissionSelectionResolved: true,
+      submissionAllocations: [{ submissionLineId: line.id, quantity: String(pending) }],
+      allocationMode: 'automatic',
+      preferredSubmissionLineId: line.id,
+    }];
+  });
 }
 
 export function inventoryPurchaseLinePreview(data: InventoryData, line: InventoryPurchaseDraftLine) {
@@ -75,6 +102,7 @@ export function buildInventoryPurchaseLines(data: InventoryData, lines: Inventor
       line_total_cost: preview.presentation ? null : line.costValue,
       base_unit_cost: null,
       submission_line_id: line.submissionLineId || null,
+      ...(line.submissionAllocations?.length ? { submission_allocations: line.submissionAllocations.filter((allocation) => Number(allocation.quantity) > 0).map((allocation) => ({ submission_line_id: allocation.submissionLineId, quantity: Number(allocation.quantity) })) } : {}),
     };
   });
 }
@@ -87,7 +115,8 @@ export function inventoryPurchaseTotal(data: InventoryData, lines: InventoryPurc
 export function inventoryPurchaseLinesValid(data: InventoryData, lines: InventoryPurchaseDraftLine[]) {
   return lines.length > 0 && lines.every((line) => {
     const preview = inventoryPurchaseLinePreview(data, line);
-    return Boolean(preview.item?.tracking_started_at) && Number(line.quantity) > 0;
+    const allocated = (line.submissionAllocations ?? []).reduce((sum, allocation) => sum + Math.max(Number(allocation.quantity) || 0, 0), 0);
+    return Boolean(preview.item?.tracking_started_at) && Number(line.quantity) > 0 && allocated <= (Number(preview.baseQuantity) || 0);
   });
 }
 
@@ -106,6 +135,32 @@ export function inventoryPendingSubmissionLines(submissions: InventorySubmission
   });
 }
 
+export function rebalanceInventoryPurchaseAllocations(data: InventoryData, lines: InventoryPurchaseDraftLine[], submissions: InventorySubmission[]) {
+  const used = new Map<string, number>();
+  return lines.map((line) => {
+    const preview = inventoryPurchaseLinePreview(data, line);
+    if (line.allocationMode === 'manual') {
+      for (const allocation of line.submissionAllocations ?? []) used.set(allocation.submissionLineId, (used.get(allocation.submissionLineId) ?? 0) + Math.max(Number(allocation.quantity) || 0, 0));
+      return line;
+    }
+    let remaining = Math.max(Number(preview.baseQuantity) || 0, 0);
+    const compatible = inventoryPendingSubmissionLines(submissions, line.itemId).sort((left, right) => {
+      if (left.id === line.preferredSubmissionLineId) return -1;
+      if (right.id === line.preferredSubmissionLineId) return 1;
+      return left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id);
+    });
+    const submissionAllocations = compatible.flatMap((candidate) => {
+      const pending = Math.max(Number(candidate.approved_quantity ?? 0) - Number(candidate.received_quantity ?? 0) - (used.get(candidate.id) ?? 0), 0);
+      const quantity = Math.min(remaining, pending);
+      remaining -= quantity;
+      if (quantity <= 0) return [];
+      used.set(candidate.id, (used.get(candidate.id) ?? 0) + quantity);
+      return [{ submissionLineId: candidate.id, quantity: String(quantity) }];
+    });
+    return { ...line, submissionAllocations };
+  });
+}
+
 export function reconcileInventoryPurchaseSubmissionLinks(lines: InventoryPurchaseDraftLine[], submissions: InventorySubmission[]) {
   const selected = new Set<string>();
   let invalidated = false;
@@ -119,12 +174,6 @@ export function reconcileInventoryPurchaseSubmissionLinks(lines: InventoryPurcha
       }
       invalidated = true;
       return { ...line, submissionLineId: null, submissionSelectionResolved: true };
-    }
-    if (line.submissionSelectionResolved) return line;
-    const available = compatible.filter((candidate) => !selected.has(candidate.id));
-    if (available.length === 1) {
-      selected.add(available[0].id);
-      return { ...line, submissionLineId: available[0].id, submissionSelectionResolved: true };
     }
     return line;
   });
@@ -149,9 +198,10 @@ export function InventoryPurchaseLinesEditor({ data, lines, setLines, lockedFirs
   useEffect(() => {
     if (pendingSubmissions == null) return;
     const reconciled = reconcileInventoryPurchaseSubmissionLinks(lines, pendingSubmissions);
-    if (reconciled.lines.some((line, index) => line !== lines[index])) setLines(reconciled.lines);
+    const rebalanced = rebalanceInventoryPurchaseAllocations(data, reconciled.lines, pendingSubmissions);
+    if (JSON.stringify(rebalanced) !== JSON.stringify(lines)) setLines(rebalanced);
     if (reconciled.invalidated) onSubmissionNotice?.('Una solicitud seleccionada dejó de estar disponible. La línea quedó como recepción directa; revisa antes de guardar.');
-  }, [lines, onSubmissionNotice, pendingSubmissions, setLines]);
+  }, [data, lines, onSubmissionNotice, pendingSubmissions, setLines]);
 
   return <div className="space-y-3">
     {pendingError ? <p role="alert" className="rounded-[0.8rem] border border-amberGlow/25 bg-amberGlow/[0.07] p-3 text-sm text-amber-100">{pendingError}</p> : null}
@@ -162,8 +212,11 @@ export function InventoryPurchaseLinesEditor({ data, lines, setLines, lockedFirs
       const precision = preview.presentation ? 0 : preview.item?.precision_scale ?? 3;
       const selectedElsewhere = new Set(lines.filter((candidate) => candidate.key !== line.key).map((candidate) => candidate.submissionLineId).filter(Boolean));
       const compatibleRequests = pendingSubmissions == null ? [] : inventoryPendingSubmissionLines(pendingSubmissions, line.itemId).filter((candidate) => !selectedElsewhere.has(candidate.id));
-      const linkedRequest = compatibleRequests.find((candidate) => candidate.id === line.submissionLineId);
+      const allocations = line.submissionAllocations ?? [];
+      const linkedRequest = compatibleRequests.find((candidate) => candidate.id === (allocations[0]?.submissionLineId ?? line.submissionLineId));
       const requestPreview = linkedRequest ? receiptRequestApplicationPreview(Number(linkedRequest.approved_quantity ?? 0), Number(linkedRequest.received_quantity ?? 0), preview.baseQuantity) : null;
+      const allocationTotal = allocations.reduce((sum, allocation) => sum + Math.max(Number(allocation.quantity) || 0, 0), 0);
+      const unassigned = Math.max((Number(preview.baseQuantity) || 0) - allocationTotal, 0);
 
       return <section key={line.key} className="rounded-[1rem] border border-white/10 bg-black/15 p-4">
         <div className="mb-3 flex items-center justify-between gap-3">
@@ -178,9 +231,9 @@ export function InventoryPurchaseLinesEditor({ data, lines, setLines, lockedFirs
                 const search = event.target.value;
                 const nextMatches = tracked.filter((item) => inventoryItemMatchesSearch(item, search));
                 setSearches((current) => ({ ...current, [line.key]: search }));
-                if (!nextMatches.some((item) => item.id === line.itemId)) { const itemId=nextMatches[0]?.id??''; update(line.key, { itemId, ...inventoryPurchasePresentationDefaults(data,itemId,storedPresentationPreferences()[itemId]), submissionLineId: null, submissionSelectionResolved: false }); }
+                if (!nextMatches.some((item) => item.id === line.itemId)) { const itemId=nextMatches[0]?.id??''; update(line.key, { itemId, ...inventoryPurchasePresentationDefaults(data,itemId,storedPresentationPreferences()[itemId]), submissionLineId: null, submissionSelectionResolved: false, submissionAllocations: [], allocationMode: 'automatic', preferredSubmissionLineId: null }); }
               }} placeholder="Nombre o código" />
-              <select aria-label={`Producto de compra ${index + 1}`} className={fieldClass} value={matchingItems.some((item) => item.id === line.itemId) ? line.itemId : ''} onChange={(event) => { const itemId=event.target.value; update(line.key, { itemId, ...inventoryPurchasePresentationDefaults(data,itemId,storedPresentationPreferences()[itemId]), submissionLineId: null, submissionSelectionResolved: false }); }}>{matchingItems.length ? matchingItems.map((item) => <option key={item.id} value={item.id}>{item.name}</option>) : <option value="">Sin artículos coincidentes</option>}</select>
+              <select aria-label={`Producto de compra ${index + 1}`} className={fieldClass} value={matchingItems.some((item) => item.id === line.itemId) ? line.itemId : ''} onChange={(event) => { const itemId=event.target.value; update(line.key, { itemId, ...inventoryPurchasePresentationDefaults(data,itemId,storedPresentationPreferences()[itemId]), submissionLineId: null, submissionSelectionResolved: false, submissionAllocations: [], allocationMode: 'automatic', preferredSubmissionLineId: null }); }}>{matchingItems.length ? matchingItems.map((item) => <option key={item.id} value={item.id}>{item.name}</option>) : <option value="">Sin artículos coincidentes</option>}</select>
             </>}</div>
           </label>
           <label className="block">
@@ -205,12 +258,18 @@ export function InventoryPurchaseLinesEditor({ data, lines, setLines, lockedFirs
               <span className="text-xs font-semibold uppercase tracking-[0.14em] text-ivory">Aplicar a solicitud pendiente (opcional)</span>
               {linkedRequest ? <span className="inline-flex items-center gap-2 rounded-full border border-emerald-300/30 bg-emerald-300/10 px-2.5 py-1 text-xs font-semibold text-emerald-200"><span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-current" />Solicitud vinculada</span> : compatibleRequests.length ? <span className="inline-flex items-center gap-2 rounded-full border border-amberGlow/30 bg-amberGlow/10 px-2.5 py-1 text-xs font-semibold text-amber-100"><span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-current" />{compatibleRequests.length} {compatibleRequests.length === 1 ? 'pendiente por aplicar' : 'pendientes por aplicar'}</span> : null}
             </span>
-            <select aria-label={`Solicitud pendiente para producto ${index + 1}`} className={`${fieldClass} ${linkedRequest ? 'border-emerald-300/40' : compatibleRequests.length ? 'border-amberGlow/50' : ''}`} disabled={pendingSubmissions == null} value={line.submissionLineId ?? ''} onChange={(event) => { onSubmissionNotice?.(null); update(line.key, { submissionLineId: event.target.value || null, submissionSelectionResolved: true }); }}>
+            <select aria-label={`Solicitud pendiente para producto ${index + 1}`} className={`${fieldClass} ${linkedRequest ? 'border-emerald-300/40' : compatibleRequests.length ? 'border-amberGlow/50' : ''}`} disabled={pendingSubmissions == null} value={allocations[0]?.submissionLineId ?? line.submissionLineId ?? ''} onChange={(event) => { const submissionLineId=event.target.value; onSubmissionNotice?.(null); update(line.key, { submissionLineId: submissionLineId || null, submissionSelectionResolved: true, allocationMode: 'manual', submissionAllocations: submissionLineId ? [{ submissionLineId, quantity: String(Number(preview.baseQuantity) || 0) }] : [] }); }}>
               <option value="">{pendingSubmissions == null ? 'Cargando solicitudes…' : 'Recepción directa, sin solicitud'}</option>
               {compatibleRequests.map((request) => <option key={request.id} value={request.id}>{inventoryAreaName(data.areas, request.area)} · {preview.item ? formatInventoryQuantity(Number(request.approved_quantity) - Number(request.received_quantity), preview.item.base_unit, preview.item.precision_scale) : Number(request.approved_quantity) - Number(request.received_quantity)} pendientes · {new Date(request.createdAt).toLocaleDateString('es-CO', { timeZone: 'America/Bogota' })}</option>)}
             </select>
           </label>
         </div>
+        {compatibleRequests.length && preview.item ? <div className="mt-3 rounded-[0.8rem] border border-cyanGlow/20 bg-cyanGlow/[0.06] p-3 text-sm text-mist">
+          <div className="flex flex-wrap items-center justify-between gap-2"><p className="font-semibold text-ivory">Distribución entre solicitudes</p><button type="button" className="text-xs font-semibold text-cyanGlow underline" onClick={() => update(line.key, { allocationMode: line.allocationMode === 'automatic' ? 'manual' : 'automatic' })}>{line.allocationMode === 'automatic' ? 'Ajustar distribución' : 'Restaurar automática'}</button></div>
+          <p className="mt-1 text-xs">{line.allocationMode === 'automatic' ? 'Se distribuye por antigüedad; la solicitud abierta desde esta pantalla tiene prioridad.' : 'Ajusta las cantidades en unidad base antes de guardar.'}</p>
+          <div className="mt-3 space-y-2">{compatibleRequests.map((request) => { const allocation=allocations.find((candidate) => candidate.submissionLineId===request.id); const pending=Math.max(Number(request.approved_quantity??0)-Number(request.received_quantity??0),0); return <label key={request.id} className="grid grid-cols-[1fr_7rem] items-center gap-3 rounded-[0.7rem] bg-black/15 px-3 py-2"><span>{inventoryAreaName(data.areas,request.area)} · {formatInventoryQuantity(pending,preview.item!.base_unit,preview.item!.precision_scale)} pendientes</span><input aria-label={`Aplicar a solicitud ${request.id}`} className={fieldClass} disabled={line.allocationMode==='automatic'} type="number" min="0" max={pending} step={preview.item!.precision_scale===0?1:0.001} value={allocation?.quantity??'0'} onChange={(event)=>{const quantity=event.target.value; const rest=allocations.filter((candidate)=>candidate.submissionLineId!==request.id); update(line.key,{allocationMode:'manual',submissionAllocations:[...rest,{submissionLineId:request.id,quantity}]});}}/></label>; })}</div>
+          <p className="mt-3">Asignado: <strong className="text-cyanGlow">{formatInventoryQuantity(allocationTotal,preview.item!.base_unit,preview.item!.precision_scale)}</strong>{unassigned>0?<> · Inventario adicional sin solicitud: <strong className="text-amber-100">{formatInventoryQuantity(unassigned,preview.item!.base_unit,preview.item!.precision_scale)}</strong></>:null}</p>
+        </div>:null}
         {requestPreview && preview.item ? <div className="mt-3 grid gap-x-5 gap-y-1 rounded-[0.8rem] border border-cyanGlow/20 bg-cyanGlow/[0.06] p-3 text-sm text-mist sm:grid-cols-2">
           <p>Pendiente de solicitud: <strong className="text-ivory">{formatInventoryQuantity(requestPreview.pending, preview.item.base_unit, preview.item.precision_scale)}</strong></p>
           <p>Cantidad realmente recibida: <strong className="text-ivory">{formatInventoryQuantity(requestPreview.received, preview.item.base_unit, preview.item.precision_scale)}</strong></p>

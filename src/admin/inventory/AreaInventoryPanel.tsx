@@ -4,7 +4,9 @@ import {
   formatConfiguredInventoryQuantity,
   formatInventoryQuantity,
   encodeInventorySubmissionLineNotes,
+  parseInventorySubmissionLineNotes,
   getInventoryOperationalPriority,
+  getInventoryReplenishmentAttention,
   getInventoryMessageDuration,
   inventoryItemMatchesSearch,
   inventoryUnitLabels,
@@ -16,10 +18,11 @@ import {
   type InventoryReplenishmentPresentationSnapshot,
   type InventorySubmission,
   type InventorySubmissionKind,
+  type InventoryReplenishmentAttentionLine,
   type InventoryUsageType,
   type PosInventoryArea,
 } from './inventory.domain';
-import { loadInventory, loadInventoryRecentSubmissions, saveInventoryCommand } from './inventory.repository';
+import { loadInventory, loadInventoryAreaPendingReplenishments, loadInventoryRecentSubmissions, saveInventoryCommand } from './inventory.repository';
 import { InventoryStatusBadge } from './InventoryStatusBadge';
 
 export type AreaInventoryStatusFilter = 'all' | 'low' | 'depleted' | 'uncounted';
@@ -131,6 +134,7 @@ export function AreaInventoryPanel({ area, refreshVersion = 0 }: { area: PosInve
   const [selectedPresentationId, setSelectedPresentationId] = useState('');
   const [saving, setSaving] = useState(false);
   const [recentSubmissions, setRecentSubmissions] = useState<InventorySubmission[]>([]);
+  const [pendingReplenishments, setPendingReplenishments] = useState<InventorySubmission[]>([]);
   const loadingRef = useRef(false);
   const pendingRefreshRef = useRef(false);
   const { search, status } = filters[usageType];
@@ -145,10 +149,15 @@ export function AreaInventoryPanel({ area, refreshVersion = 0 }: { area: PosInve
     setLoading(true);
     setError(null);
     try {
-      const [inventory, reports] = await Promise.all([loadInventory(usageType, area), loadInventoryRecentSubmissions(area)]);
+      const [inventory, reports, pending] = await Promise.all([
+        loadInventory(usageType, area),
+        loadInventoryRecentSubmissions(area),
+        loadInventoryAreaPendingReplenishments(area),
+      ]);
       inventoryCache.current[usageType] = inventory;
       setData(inventory);
       setRecentSubmissions(reports);
+      setPendingReplenishments(pending);
       setHasLoaded(true);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'No se pudo cargar el inventario del área.');
@@ -361,7 +370,7 @@ export function AreaInventoryPanel({ area, refreshVersion = 0 }: { area: PosInve
               {!items.length ? <div className="mt-5"><EmptyState message={!data.items.length && usageType==='operational'?'No hay artículos operativos asignados a esta área. Los artículos existentes son Consumibles hasta que Administración cambie su Tipo de uso.':'No hay artículos que coincidan con la búsqueda y el filtro seleccionados.'} /></div> : null}
               {items.length ? (
                 <div className="mt-5 grid gap-3 sm:grid-cols-2 2xl:grid-cols-3">
-                  {items.map((item) => <AreaInventoryItemCard key={item.id} item={item} onReport={(kind) => openReport(item, kind)} />)}
+                  {items.map((item) => <AreaInventoryItemCard key={item.id} item={item} area={area} pendingReplenishments={pendingReplenishments} onReport={(kind) => openReport(item, kind)} />)}
                 </div>
               ) : null}
             </>
@@ -391,7 +400,7 @@ export function AreaInventoryPanel({ area, refreshVersion = 0 }: { area: PosInve
   );
 }
 
-function AreaInventoryItemCard({ item, onReport }: { item: InventoryItem; onReport: (kind: InventorySubmissionKind) => void }) {
+function AreaInventoryItemCard({ item, area, pendingReplenishments, onReport }: { item: InventoryItem; area: PosInventoryArea; pendingReplenishments: InventorySubmission[]; onReport: (kind: InventorySubmissionKind) => void }) {
   const state = getAreaInventoryItemState(item);
   const hasPendingIncoming = state === 'available' && Number(item.pending_incoming ?? 0) > 0;
   const stateLabel = state === 'uncounted' ? 'Sin conteo inicial' : state === 'depleted' ? 'Agotado' : state === 'low' ? 'Bajo mínimo' : hasPendingIncoming ? 'Reposición pendiente' : 'Disponible';
@@ -402,6 +411,7 @@ function AreaInventoryItemCard({ item, onReport }: { item: InventoryItem; onRepo
       : hasPendingIncoming
         ? 'border-cyanGlow/30 bg-cyanGlow/[0.08] text-cyanGlow'
       : 'border-emerald-300/25 bg-emerald-300/[0.07] text-emerald-100';
+  const replenishmentAttention = getInventoryReplenishmentAttention(pendingReplenishments, item.id, area);
   return (
     <article className="rounded-[1.05rem] border border-white/10 bg-white/[0.035] p-4">
       <div className="flex items-start justify-between gap-3">
@@ -415,6 +425,7 @@ function AreaInventoryItemCard({ item, onReport }: { item: InventoryItem; onRepo
         <p>Unidad base<br/><strong className="text-ivory">{inventoryUnitLabels[item.base_unit]}</strong></p>
         <p>Mínimo<br/><strong className="text-ivory">{formatConfiguredInventoryQuantity(item.minimum_quantity, item.base_unit, item.precision_scale)}</strong></p>
       </div>
+      {replenishmentAttention.review.length || replenishmentAttention.receiving.length ? <AreaReplenishmentAttention item={item} attention={replenishmentAttention} /> : null}
       <div className="mt-4 grid grid-cols-3 gap-2">
         <button type="button" className={smallPrimaryButton} onClick={() => onReport('replenishment')}>Solicitar</button>
         <button type="button" className={smallGhostButton} onClick={() => onReport('count')}>Contar</button>
@@ -422,6 +433,31 @@ function AreaInventoryItemCard({ item, onReport }: { item: InventoryItem; onRepo
       </div>
     </article>
   );
+}
+
+function AreaReplenishmentAttention({ item, attention }: { item: InventoryItem; attention: ReturnType<typeof getInventoryReplenishmentAttention> }) {
+  const describe = (entry: InventoryReplenishmentAttentionLine) => {
+    const parsed = parseInventorySubmissionLineNotes(entry.line.notes);
+    const requested = Number(entry.line.requested_quantity ?? 0);
+    const approved = entry.line.approved_quantity == null ? null : Number(entry.line.approved_quantity);
+    const received = Number(entry.line.received_quantity ?? 0);
+    return <li key={`${entry.submission_id}-${entry.line.id}`} className="border-t border-white/8 py-2 first:border-t-0 first:pt-0 last:pb-0">
+      <div className="flex flex-wrap items-center justify-between gap-2"><span className={`text-xs font-semibold ${entry.state === 'review' ? 'text-amber-100' : 'text-cyanGlow'}`}>{entry.submission_status === 'partially_approved' ? 'Aprobación parcial' : entry.state === 'review' ? 'En revisión' : 'Por recibir'}</span><span className="text-xs text-ivory">{formatInventoryQuantity(entry.quantity, item.base_unit, item.precision_scale)}</span></div>
+      {parsed.presentation ? <p className="mt-1 text-xs text-mist">Presentación: {parsed.presentation.package_quantity} × {parsed.presentation.presentation_name}</p> : null}
+      <p className="mt-1 text-xs text-mist">Solicitado: {formatInventoryQuantity(requested, item.base_unit, item.precision_scale)}{approved != null ? ` · Aprobado: ${formatInventoryQuantity(approved, item.base_unit, item.precision_scale)}` : ''}{entry.state === 'receiving' ? ` · Pendiente: ${formatInventoryQuantity(Math.max((approved ?? 0) - received, 0), item.base_unit, item.precision_scale)}` : ''}</p>
+    </li>;
+  };
+  return <details className="mt-4 rounded-[0.85rem] border border-cyanGlow/18 bg-cyanGlow/[0.045] px-3 py-2.5">
+    <summary className="flex cursor-pointer list-none flex-wrap items-center gap-2 text-xs font-semibold text-cyanGlow [&::-webkit-details-marker]:hidden">
+      {attention.review.length ? <span className="rounded-full border border-amberGlow/25 bg-amberGlow/[0.08] px-2 py-1 text-amber-100">{attention.review.length} {attention.review.length === 1 ? 'solicitud en revisión' : 'solicitudes en revisión'} · {formatInventoryQuantity(attention.review_quantity, item.base_unit, item.precision_scale)}</span> : null}
+      {attention.receiving.length ? <span className="rounded-full border border-cyanGlow/25 bg-cyanGlow/[0.08] px-2 py-1">{attention.receiving.length} {attention.receiving.length === 1 ? 'solicitud por recibir' : 'solicitudes por recibir'} · {formatInventoryQuantity(attention.receiving_quantity, item.base_unit, item.precision_scale)}</span> : null}
+      <span className="ml-auto text-[0.62rem] uppercase tracking-[0.12em] text-mist">Ver detalle</span>
+    </summary>
+    <div className="mt-3 space-y-3 border-t border-white/10 pt-3">
+      {attention.review.length ? <div><p className="mb-2 text-[0.62rem] font-semibold uppercase tracking-[0.12em] text-amber-100">Pendientes de revisión</p><ul>{attention.review.map(describe)}</ul></div> : null}
+      {attention.receiving.length ? <div><p className="mb-2 text-[0.62rem] font-semibold uppercase tracking-[0.12em] text-cyanGlow">Aprobadas pendientes de recibir</p><ul>{attention.receiving.map(describe)}</ul></div> : null}
+    </div>
+  </details>;
 }
 
 function InventoryReportDialog({ areaLabel, busy, error, item, kind, notes, presentations, quantity, selectedPresentationId, onClose, onNotesChange, onQuantityChange, onSelectedPresentationChange, onSubmit }: {

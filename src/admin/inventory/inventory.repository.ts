@@ -1,6 +1,6 @@
 import { getSupabaseClient } from '../../integrations/supabase/client';
 import type { RealtimeChannel, RealtimePostgresChangesPayload } from '@supabase/supabase-js';
-import type { InventoryArea, InventoryCursor, InventoryCursorPage, InventoryData, InventoryMenuAlert, InventoryMovement, InventoryReceipt, InventorySubmission, InventorySubmissionKind, InventoryUsageType, PosInventoryArea } from './inventory.domain';
+import type { InventoryArea, InventoryCursor, InventoryCursorPage, InventoryData, InventoryMenuAlert, InventoryMovement, InventoryReceipt, InventorySubmission, InventorySubmissionKind, InventorySubmissionReceiptApplication, InventoryUsageType, PosInventoryArea } from './inventory.domain';
 import type { InventoryImportPayload } from './inventory-import';
 
 export type InventoryRealtimeEventKind = 'movement' | 'submission' | 'receipt' | 'configuration';
@@ -58,6 +58,26 @@ export async function loadInventoryRecentSubmissions(area: PosInventoryArea): Pr
   return data as unknown as InventorySubmission[];
 }
 
+export async function loadInventoryAreaPendingReplenishments(area: PosInventoryArea): Promise<InventorySubmission[]> {
+  const rows: InventorySubmission[] = [];
+  let cursor: InventoryCursor | null = null;
+  do {
+    const { data, error } = await getSupabaseClient().rpc('inventory_submissions_page' as never, {
+      requested_kind: 'replenishment',
+      requested_status: 'pending',
+      requested_area: area,
+      before_created_at: cursor?.timestamp ?? null,
+      before_id: cursor?.id ?? null,
+    } as never);
+    if (error) throw new Error(`No se pudieron cargar las solicitudes activas: ${error.message}`);
+    const page = data as unknown as InventoryCursorPage<InventorySubmission>;
+    rows.push(...(page?.rows ?? []));
+    const last = page?.rows?.[page.rows.length - 1];
+    cursor = page?.has_more && last ? { timestamp: last.created_at, id: last.id } : null;
+  } while (cursor);
+  return rows;
+}
+
 export async function loadInventoryPendingReplenishments(): Promise<InventorySubmission[]> {
   const { data, error } = await getSupabaseClient().rpc('inventory_pending_replenishments' as never);
   if (error) throw new Error(`No se pudieron cargar las solicitudes aprobadas: ${error.message}`);
@@ -74,6 +94,13 @@ export async function loadInventorySubmissionsPage(kind: InventorySubmissionKind
   const { data, error } = await getSupabaseClient().rpc('inventory_submissions_page' as never, { requested_kind: kind, requested_status: status, before_created_at: cursor?.timestamp ?? null, before_id: cursor?.id ?? null, requested_area: area } as never);
   if (error) throw new Error(`No se pudieron cargar las solicitudes: ${error.message}`);
   return data as unknown as InventoryCursorPage<InventorySubmission>;
+}
+
+export async function loadInventorySubmissionReceiptHistory(submissionLineIds: string[]): Promise<Record<string, InventorySubmissionReceiptApplication[]>> {
+  if (!submissionLineIds.length) return {};
+  const { data, error } = await getSupabaseClient().rpc('inventory_submission_receipt_history' as never, { requested_submission_line_ids: submissionLineIds } as never);
+  if (error) throw new Error(`No se pudo cargar el historial de recepciones: ${error.message}`);
+  return (data ?? {}) as Record<string, InventorySubmissionReceiptApplication[]>;
 }
 
 export async function loadInventoryMovementsPage(month: string, cursor: InventoryCursor | null): Promise<InventoryCursorPage<InventoryMovement>> {

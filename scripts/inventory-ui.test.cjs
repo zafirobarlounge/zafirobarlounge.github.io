@@ -14,6 +14,7 @@ vm.runInNewContext(compile('src/admin/inventory/InventoryPurchaseLinesEditor.tsx
   exports: purchaseEditorModule.exports,
   Intl,
   Date,
+  crypto: { randomUUID: () => 'draft-line-id' },
   localStorage: { getItem:key=>editorStorage.get(key)??null, setItem:(key,value)=>editorStorage.set(key,value) },
   require(name) {
     if (name === 'react') return { useEffect() {}, useState() {} };
@@ -39,6 +40,74 @@ test('snapshot de presentación conserva conversión y nota sin romper solicitud
   assert.deepEqual(parsed, { notes:'Para barra',presentation });
   assert.deepEqual(JSON.parse(JSON.stringify(domain.exports.parseInventorySubmissionLineNotes('Nota anterior'))), { notes:'Nota anterior',presentation:null });
   assert.deepEqual(JSON.parse(JSON.stringify(domain.exports.parseInventorySubmissionLineNotes('zafiro-presentation-v1:{mal'))), { notes:'zafiro-presentation-v1:{mal',presentation:null });
+});
+
+test('resumen de recepción de solicitud suma solo asignaciones reales y conserva pendiente', () => {
+  const line = { approved_quantity:48 };
+  const applications = [
+    { receipt_id:'receipt-1',receipt_line_id:'line-1',applied_quantity:20 },
+    { receipt_id:'receipt-2',receipt_line_id:'line-2',applied_quantity:15 },
+  ];
+  assert.deepEqual(JSON.parse(JSON.stringify(domain.exports.summarizeInventorySubmissionReceiptApplications(line, applications))), {
+    approved_quantity:48, received_quantity:35, pending_quantity:13,
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(domain.exports.summarizeInventorySubmissionReceiptApplications({ approved_quantity:48 }, [{ receipt_id:'shared',receipt_line_id:'physical-line',applied_quantity:12 }]))), {
+    approved_quantity:48, received_quantity:12, pending_quantity:36,
+  });
+});
+
+test('Administración consulta y presenta el historial de recepción sin tocar el POS', () => {
+  const view = readFileSync('src/admin/inventory/AdminInventoryView.tsx', 'utf8');
+  const repository = readFileSync('src/admin/inventory/inventory.repository.ts', 'utf8');
+  const allocationMigration = readFileSync('supabase/migrations/202610120023_inventory_receipt_multi_request_allocations.sql', 'utf8');
+  const historyMigration = readFileSync('supabase/migrations/202610120024_inventory_submission_receipt_history.sql', 'utf8');
+  assert.match(repository, /loadInventorySubmissionReceiptHistory/);
+  assert.match(repository, /inventory_submission_receipt_history/);
+  assert.match(view, /Historial de recepciones/);
+  assert.match(view, /Pendiente por recibir/);
+  assert.match(view, /summarizeInventorySubmissionReceiptApplications/);
+  assert.match(allocationMigration, /inventory_receipt_line_submission_applications/);
+  assert.match(historyMigration, /'applied_quantity',a\.applied_quantity/);
+  assert.match(historyMigration, /inventory_can_manage\(\)/);
+});
+
+test('indicadores de reposición del área separan revisión, recepción y unidad base', () => {
+  const presentation = { presentation_id:'paca-12',presentation_name:'Paca x12',content_per_package:12,content_unit:'unit',package_quantity:2 };
+  const line = (id, itemId, requested, approved, received, notes='') => ({ id, item_id:itemId, item_name:itemId, requested_quantity:requested, approved_quantity:approved, received_quantity:received, observed_quantity:null, reference_balance:null, reference_at:null, notes });
+  const submissions = [
+    { id:'sent', kind:'replenishment', area:'bar', status:'sent', lines:[line('sent-line','cola',24,null,0,domain.exports.encodeInventorySubmissionLineNotes('',presentation))] },
+    { id:'partial-review', kind:'replenishment', area:'bar', status:'partially_approved', lines:[line('partial-review-line','cola',12,6,0)] },
+    { id:'approved', kind:'replenishment', area:'bar', status:'approved', lines:[line('approved-line','cola',24,24,0)] },
+    { id:'partial-receipt', kind:'replenishment', area:'bar', status:'partially_received', lines:[line('partial-receipt-line','cola',24,24,9)] },
+    { id:'completed', kind:'replenishment', area:'bar', status:'received', lines:[line('completed-line','cola',12,12,12)] },
+    { id:'rejected', kind:'replenishment', area:'bar', status:'rejected', lines:[line('rejected-line','cola',12,null,0)] },
+    { id:'draft', kind:'replenishment', area:'bar', status:'draft', lines:[line('draft-line','cola',12,null,0)] },
+    { id:'kitchen', kind:'replenishment', area:'kitchen', status:'approved', lines:[line('kitchen-line','cola',50,50,0)] },
+    { id:'other-item', kind:'replenishment', area:'bar', status:'approved', lines:[line('other-line','pan',4,4,0)] },
+    { id:'count', kind:'count', area:'bar', status:'sent', lines:[line('count-line','cola',20,null,0)] },
+  ];
+  const attention = JSON.parse(JSON.stringify(domain.exports.getInventoryReplenishmentAttention(submissions, 'cola', 'bar')));
+  assert.deepEqual(attention.review.map((entry) => [entry.submission_id, entry.quantity]), [['sent',24],['partial-review',12]]);
+  assert.deepEqual(attention.receiving.map((entry) => [entry.submission_id, entry.quantity]), [['approved',24],['partial-receipt',15]]);
+  assert.equal(attention.review_quantity,36);
+  assert.equal(attention.receiving_quantity,39);
+  assert.deepEqual(JSON.parse(JSON.stringify(domain.exports.parseInventorySubmissionLineNotes(attention.review[0].line.notes).presentation)), presentation);
+  assert.deepEqual(JSON.parse(JSON.stringify(domain.exports.getInventoryReplenishmentAttention(submissions, 'cola', 'kitchen'))).receiving.map((entry) => entry.submission_id), ['kitchen']);
+});
+
+test('Inventario del área consulta solicitudes de reposición pendientes separadas de reportes recientes', () => {
+  const panel = readFileSync('src/admin/inventory/AreaInventoryPanel.tsx', 'utf8');
+  const repository = readFileSync('src/admin/inventory/inventory.repository.ts', 'utf8');
+  assert.match(repository, /loadInventoryAreaPendingReplenishments/);
+  assert.match(repository, /requested_kind: 'replenishment'/);
+  assert.match(repository, /requested_status: 'pending'/);
+  assert.match(repository, /requested_area: area/);
+  assert.match(repository, /while \(cursor\)/);
+  assert.match(panel, /loadInventoryAreaPendingReplenishments\(area\)/);
+  assert.match(panel, /getInventoryReplenishmentAttention\(pendingReplenishments, item\.id, area\)/);
+  assert.match(panel, /Pendientes de revisión/);
+  assert.match(panel, /Aprobadas pendientes de recibir/);
+  assert.match(panel, /Presentación: \{parsed\.presentation\.package_quantity\} × \{parsed\.presentation\.presentation_name\}/);
 });
 
 test('búsqueda, área y estados filtran existencias sin confundir null con cero', () => {
@@ -110,6 +179,63 @@ test('compras prefieren la última presentación usada y usan la primera activa 
   assert.equal(JSON.parse(editorStorage.get('zafiro-inventory-last-presentations')).item,'p2');
   assert.match(readFileSync('src/admin/inventory/AdminInventoryView.tsx','utf8'),/rememberInventoryPurchasePresentations\(payload\.lines\)/);
   assert.match(readFileSync('src/admin/cash/AdminCashView.tsx','utf8'),/rememberInventoryPurchasePresentations\(request\.payload\.lines\)/);
+});
+
+test('registrar recepción desde una solicitud conserva solo sus cantidades pendientes y el vínculo de cada línea', () => {
+  const data = {
+    items: [{ id:'cola',tracking_started_at:'2026-01-01T00:00:00Z' }, { id:'pan',tracking_started_at:'2026-01-01T00:00:00Z' }],
+    presentations: [],
+  };
+  const submission = {
+    id:'request-1',
+    lines: [
+      { id:'line-cola',item_id:'cola',approved_quantity:24,received_quantity:12 },
+      { id:'line-pan',item_id:'pan',approved_quantity:6,received_quantity:0 },
+      { id:'line-complete',item_id:'cola',approved_quantity:3,received_quantity:3 },
+    ],
+  };
+  const lines=JSON.parse(JSON.stringify(purchaseEditor.createInventoryPurchaseLinesForSubmission(data, submission)));
+  assert.deepEqual(lines.map(({ itemId,quantity,submissionLineId,submissionAllocations })=>({ itemId,quantity,submissionLineId,submissionAllocations })), [
+    { itemId:'cola',quantity:'12',submissionLineId:'line-cola',submissionAllocations:[{submissionLineId:'line-cola',quantity:'12'}] },
+    { itemId:'pan',quantity:'6',submissionLineId:'line-pan',submissionAllocations:[{submissionLineId:'line-pan',quantity:'6'}] },
+  ]);
+});
+
+test('recepción iniciada desde una solicitud conserva su producto y presentación solicitada', () => {
+  const data = {
+    items: [{ id:'carne-mini',tracking_started_at:'2026-01-01T00:00:00Z' }, { id:'aceite',tracking_started_at:'2026-01-01T00:00:00Z' }],
+    presentations: [{ id:'lote-20',item_id:'carne-mini',name:'Lote x20',content_per_package:20,content_unit:'unit',active:true,suggested_package_cost:18000 }],
+  };
+  const notes = domain.exports.encodeInventorySubmissionLineNotes('', { presentation_id:'lote-20',presentation_name:'Lote x20',content_per_package:20,content_unit:'unit',package_quantity:3 });
+  const [line] = purchaseEditor.createInventoryPurchaseLinesForSubmission(data, { id:'request-carne',lines:[{ id:'line-carne',item_id:'carne-mini',approved_quantity:60,received_quantity:0,notes }] });
+  assert.equal(line.itemId, 'carne-mini');
+  assert.equal(line.presentationId, 'lote-20');
+  assert.equal(line.quantity, '3');
+  assert.equal(line.submissionLineId, 'line-carne');
+  assert.notEqual(line.itemId, 'aceite');
+});
+
+test('distribución automática cubre solicitudes compatibles por antigüedad y deja excedente sin vincular', () => {
+  const data={items:[{id:'club',tracking_started_at:'2026-01-01T00:00:00Z'}],presentations:[]};
+  const submissions=[
+    {id:'a',kind:'replenishment',area:'bar',status:'approved',created_at:'2026-10-01T08:00:00Z',lines:[{id:'line-a',item_id:'club',approved_quantity:10,received_quantity:0}]},
+    {id:'b',kind:'replenishment',area:'bar',status:'approved',created_at:'2026-10-01T09:00:00Z',lines:[{id:'line-b',item_id:'club',approved_quantity:5,received_quantity:0}]},
+  ];
+  const [distributed]=purchaseEditor.rebalanceInventoryPurchaseAllocations(data,[{key:'club',itemId:'club',presentationId:'base',quantity:'13',costDisplay:'',costValue:null,allocationMode:'automatic',submissionAllocations:[]}],submissions);
+  assert.deepEqual(JSON.parse(JSON.stringify(distributed.submissionAllocations)),[{submissionLineId:'line-a',quantity:'10'},{submissionLineId:'line-b',quantity:'3'}]);
+  const [excess]=purchaseEditor.rebalanceInventoryPurchaseAllocations(data,[{...distributed,quantity:'20'}],submissions);
+  assert.equal(excess.submissionAllocations.reduce((sum,row)=>sum+Number(row.quantity),0),15);
+});
+
+test('solicitudes muestran acciones contextuales sin crear flujos nuevos', () => {
+  const view = readFileSync('src/admin/inventory/AdminInventoryView.tsx', 'utf8');
+  const requests = view.slice(view.indexOf('function RequestsTab'), view.indexOf('function SubmissionLineDetails'));
+  assert.match(requests, /entry\.kind==='count'\?'Revisar conteo':entry\.kind==='damage'\?'Revisar daño':'Aprobar'/);
+  assert.match(requests, /entry\.kind==='replenishment'&&\['approved','partially_received'\]\.includes\(entry\.status\)/);
+  assert.match(requests, /Number\(line\.approved_quantity\?\?0\)>Number\(line\.received_quantity\?\?0\)/);
+  assert.match(requests, /onClick=\{\(\)=>onReceive\(entry\)\}>Registrar recepción/);
+  assert.match(view, /initialSubmission\?createInventoryPurchaseLinesForSubmission\(data,initialSubmission\)/);
+  assert.match(readFileSync('src/admin/inventory/InventoryPurchaseLinesEditor.tsx', 'utf8'), /submission_line_id: line\.submissionLineId \|\| null/);
 });
 
 test('nuevo reporte limita artículos al área elegida incluso para administración', () => {
@@ -302,7 +428,7 @@ test('vista previa separa recibido, aplicado, excedente y pendiente de solicitud
   assert.doesNotMatch(editor, /Recepci\?n directa/);
 });
 
-test('cada producto vincula solo solicitudes compatibles y revalida cambios en tiempo real', () => {
+test('cada producto ofrece solo solicitudes compatibles, sin vincular entradas directas automáticamente, y revalida cambios en tiempo real', () => {
   const submission = (id,item,status='approved',approved=12,received=0,area='kitchen') => ({
     id:`submission-${id}`,kind:'replenishment',area,status,created_at:'2026-10-01T12:00:00Z',
     lines:[{id,item_id:item,item_name:item,approved_quantity:approved,received_quantity:received}],
@@ -316,9 +442,9 @@ test('cada producto vincula solo solicitudes compatibles y revalida cambios en t
   assert.deepEqual(Array.from(purchaseEditor.inventoryPendingSubmissionLines(candidates,'tomato'), row => row.id), ['tomato']);
   assert.deepEqual(Array.from(purchaseEditor.inventoryPendingSubmissionLines(candidates,'bread'), row => row.id), ['bread']);
   const baseLine = {key:'one',itemId:'tomato',presentationId:'base',quantity:'5',costDisplay:'',costValue:null,submissionLineId:null};
-  const automatic = purchaseEditor.reconcileInventoryPurchaseSubmissionLinks([baseLine], candidates);
-  assert.equal(automatic.lines[0].submissionLineId,'tomato');
-  assert.equal(automatic.invalidated,false);
+  const direct = purchaseEditor.reconcileInventoryPurchaseSubmissionLinks([baseLine], candidates);
+  assert.equal(direct.lines[0].submissionLineId,null);
+  assert.equal(direct.invalidated,false);
   assert.equal(purchaseEditor.reconcileInventoryPurchaseSubmissionLinks([{...baseLine,submissionSelectionResolved:true}],candidates).lines[0].submissionLineId,null);
   const multiple = [...candidates,submission('tomato-2','tomato','partially_received',30,5)];
   assert.equal(purchaseEditor.reconcileInventoryPurchaseSubmissionLinks([baseLine],multiple).lines[0].submissionLineId,null);
@@ -447,9 +573,9 @@ test('crear presentación explica campos faltantes y muestra errores por encima 
 test('administración muestra presentación solicitada y equivalencia base', () => {
   const view = readFileSync('src/admin/inventory/AdminInventoryView.tsx', 'utf8');
   assert.match(view, /parseInventorySubmissionLineNotes/);
-  assert.match(view, /Solicitado:/);
+  assert.match(view, /Presentación solicitada:/);
   assert.match(view, /Equivale a:/);
-  assert.match(view, /formatInventoryQuantity\(requested, item\.base_unit/);
+  assert.match(view, /formatInventoryQuantity\(requested,unit,precision\)/);
 });
 
 test('migración 006 congela costos y aplica valoración sin acoplarla a gastos', () => {
