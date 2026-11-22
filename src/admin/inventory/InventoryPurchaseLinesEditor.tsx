@@ -135,6 +135,31 @@ export function inventoryPendingSubmissionLines(submissions: InventorySubmission
   });
 }
 
+function oldestPendingSubmissionLine(lines: InventoryPendingSubmissionLine[]) {
+  return [...lines].sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id))[0] ?? null;
+}
+
+// General purchase entries may start from stock rather than from a request. In that
+// case, resolve the oldest compatible request once requests have loaded. A line
+// deliberately opened from a request is already resolved and remains untouched.
+export function autoSelectInventoryPurchasePendingSubmissions(lines: InventoryPurchaseDraftLine[], submissions: InventorySubmission[]): InventoryPurchaseDraftLine[] {
+  const selected = new Set(lines.map((line) => line.submissionLineId).filter((id): id is string => Boolean(id)));
+  return lines.map((line) => {
+    if (line.submissionSelectionResolved || line.submissionLineId) return line;
+    const candidate = oldestPendingSubmissionLine(inventoryPendingSubmissionLines(submissions, line.itemId).filter((request) => !selected.has(request.id)));
+    if (!candidate) return { ...line, submissionSelectionResolved: true };
+    selected.add(candidate.id);
+    return {
+      ...line,
+      submissionLineId: candidate.id,
+      submissionSelectionResolved: true,
+      submissionAllocations: [],
+      allocationMode: 'automatic',
+      preferredSubmissionLineId: candidate.id,
+    };
+  });
+}
+
 export function rebalanceInventoryPurchaseAllocations(data: InventoryData, lines: InventoryPurchaseDraftLine[], submissions: InventorySubmission[]) {
   const used = new Map<string, number>();
   return lines.map((line) => {
@@ -182,7 +207,7 @@ export function reconcileInventoryPurchaseSubmissionLinks(lines: InventoryPurcha
 
 const fieldClass = 'w-full rounded-[0.9rem] border border-white/10 bg-obsidian/60 px-4 py-3 text-base text-ivory outline-none transition focus:border-cyanGlow/40';
 
-export function InventoryPurchaseLinesEditor({ data, lines, setLines, lockedFirstItemId = null, pendingSubmissions = null, pendingError = null, onSubmissionNotice }: {
+export function InventoryPurchaseLinesEditor({ data, lines, setLines, lockedFirstItemId = null, pendingSubmissions = null, pendingError = null, onSubmissionNotice, autoSelectPendingSubmissions = false }: {
   data: InventoryData;
   lines: InventoryPurchaseDraftLine[];
   setLines: Dispatch<SetStateAction<InventoryPurchaseDraftLine[]>>;
@@ -190,6 +215,7 @@ export function InventoryPurchaseLinesEditor({ data, lines, setLines, lockedFirs
   pendingSubmissions?: InventorySubmission[] | null;
   pendingError?: string | null;
   onSubmissionNotice?: (message: string | null) => void;
+  autoSelectPendingSubmissions?: boolean;
 }) {
   const tracked = data.items.filter((item) => item.tracking_started_at && item.active);
   const [searches, setSearches] = useState<Record<string, string>>({});
@@ -197,11 +223,12 @@ export function InventoryPurchaseLinesEditor({ data, lines, setLines, lockedFirs
 
   useEffect(() => {
     if (pendingSubmissions == null) return;
-    const reconciled = reconcileInventoryPurchaseSubmissionLinks(lines, pendingSubmissions);
+    const automaticallySelected = autoSelectPendingSubmissions ? autoSelectInventoryPurchasePendingSubmissions(lines, pendingSubmissions) : lines;
+    const reconciled = reconcileInventoryPurchaseSubmissionLinks(automaticallySelected, pendingSubmissions);
     const rebalanced = rebalanceInventoryPurchaseAllocations(data, reconciled.lines, pendingSubmissions);
     if (JSON.stringify(rebalanced) !== JSON.stringify(lines)) setLines(rebalanced);
     if (reconciled.invalidated) onSubmissionNotice?.('Una solicitud seleccionada dejó de estar disponible. La línea quedó como recepción directa; revisa antes de guardar.');
-  }, [data, lines, onSubmissionNotice, pendingSubmissions, setLines]);
+  }, [autoSelectPendingSubmissions, data, lines, onSubmissionNotice, pendingSubmissions, setLines]);
 
   return <div className="space-y-3">
     {pendingError ? <p role="alert" className="rounded-[0.8rem] border border-amberGlow/25 bg-amberGlow/[0.07] p-3 text-sm text-amber-100">{pendingError}</p> : null}

@@ -227,6 +227,45 @@ test('distribución automática cubre solicitudes compatibles por antigüedad y 
   assert.equal(excess.submissionAllocations.reduce((sum,row)=>sum+Number(row.quantity),0),15);
 });
 
+test('entradas generales seleccionan la solicitud compatible más antigua y conservan la distribución automática', () => {
+  const data={items:[{id:'cola',tracking_started_at:'2026-01-01T00:00:00Z'}],presentations:[]};
+  const submission = (id,status,createdAt,approved,received=0) => ({
+    id:`submission-${id}`,kind:'replenishment',area:'bar',status,created_at:createdAt,
+    lines:[{id:`line-${id}`,item_id:'cola',approved_quantity:approved,received_quantity:received}],
+  });
+  const submissions=[
+    submission('new','approved','2026-10-03T09:00:00Z',5),
+    submission('old','approved','2026-10-01T09:00:00Z',10),
+    submission('partial','partially_received','2026-10-02T09:00:00Z',8,3),
+    submission('draft','draft','2026-09-30T09:00:00Z',99),
+    submission('rejected','rejected','2026-09-29T09:00:00Z',99),
+    submission('received','received','2026-09-28T09:00:00Z',5,5),
+  ];
+  const baseLine={key:'cola',itemId:'cola',presentationId:'base',quantity:'22',costDisplay:'',costValue:null,submissionSelectionResolved:false,submissionAllocations:[],allocationMode:'automatic'};
+  const [selected]=purchaseEditor.autoSelectInventoryPurchasePendingSubmissions([baseLine],submissions);
+  assert.equal(selected.submissionLineId,'line-old');
+  assert.equal(selected.preferredSubmissionLineId,'line-old');
+  assert.equal(selected.allocationMode,'automatic');
+  const [distributed]=purchaseEditor.rebalanceInventoryPurchaseAllocations(data,[selected],submissions);
+  assert.deepEqual(JSON.parse(JSON.stringify(distributed.submissionAllocations)),[
+    {submissionLineId:'line-old',quantity:'10'},
+    {submissionLineId:'line-partial',quantity:'5'},
+    {submissionLineId:'line-new',quantity:'5'},
+  ]);
+  const [direct]=purchaseEditor.autoSelectInventoryPurchasePendingSubmissions([{...baseLine,key:'direct',itemId:'sin-solicitud'}],submissions);
+  assert.equal(direct.submissionLineId,undefined);
+  assert.equal(direct.submissionSelectionResolved,true);
+  const [fromRequest]=purchaseEditor.autoSelectInventoryPurchasePendingSubmissions([{
+    ...baseLine,submissionSelectionResolved:true,submissionLineId:'line-partial',preferredSubmissionLineId:'line-partial',submissionAllocations:[{submissionLineId:'line-partial',quantity:'5'}],
+  }],submissions);
+  assert.equal(fromRequest.submissionLineId,'line-partial');
+  assert.deepEqual(JSON.parse(JSON.stringify(fromRequest.submissionAllocations)),[{submissionLineId:'line-partial',quantity:'5'}]);
+  const view=readFileSync('src/admin/inventory/AdminInventoryView.tsx','utf8');
+  const cash=readFileSync('src/admin/cash/AdminCashView.tsx','utf8');
+  assert.match(view,/autoSelectPendingSubmissions=\{!initialSubmission\}/);
+  assert.match(cash,/InventoryPurchaseLinesEditor[^>]+autoSelectPendingSubmissions/);
+});
+
 test('solicitudes muestran acciones contextuales sin crear flujos nuevos', () => {
   const view = readFileSync('src/admin/inventory/AdminInventoryView.tsx', 'utf8');
   const requests = view.slice(view.indexOf('function RequestsTab'), view.indexOf('function SubmissionLineDetails'));
@@ -428,7 +467,7 @@ test('vista previa separa recibido, aplicado, excedente y pendiente de solicitud
   assert.doesNotMatch(editor, /Recepci\?n directa/);
 });
 
-test('cada producto ofrece solo solicitudes compatibles, sin vincular entradas directas automáticamente, y revalida cambios en tiempo real', () => {
+test('cada producto ofrece solo solicitudes compatibles y revalida cambios en tiempo real', () => {
   const submission = (id,item,status='approved',approved=12,received=0,area='kitchen') => ({
     id:`submission-${id}`,kind:'replenishment',area,status,created_at:'2026-10-01T12:00:00Z',
     lines:[{id,item_id:item,item_name:item,approved_quantity:approved,received_quantity:received}],

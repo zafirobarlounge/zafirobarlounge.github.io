@@ -484,7 +484,7 @@ export function AdminCashView({ embedded = false, initialAction = null, onClose 
                       {includeInventory ? inventoryData ? <>
                         {pendingSubmissionsLoading?<p className="text-sm text-cyanGlow">Actualizando solicitudes pendientes…</p>:null}
                         {submissionNotice?<p role="status" className="rounded-xl border border-amberGlow/25 bg-amberGlow/[0.07] p-3 text-sm text-amber-100">{submissionNotice}</p>:null}
-                        <InventoryPurchaseLinesEditor data={inventoryData} lines={purchaseLines} setLines={setPurchaseLines} pendingSubmissions={pendingSubmissions} pendingError={pendingSubmissionsError} onSubmissionNotice={setSubmissionNotice}/>
+                        <InventoryPurchaseLinesEditor data={inventoryData} lines={purchaseLines} setLines={setPurchaseLines} pendingSubmissions={pendingSubmissions} pendingError={pendingSubmissionsError} onSubmissionNotice={setSubmissionNotice} autoSelectPendingSubmissions/>
                         <div className="rounded-xl border border-white/10 bg-black/15 p-3 text-sm"><p>Total de la compra y del gasto: <strong>{purchaseTotal==null?'Completa los costos':money(purchaseTotal)}</strong></p></div>
                         <div className="grid gap-3 sm:grid-cols-2"><Field label="Proveedor (opcional)"><input className={input} name="supplier" maxLength={300}/></Field><Field label="Documento (opcional)"><input className={input} name="document_reference" maxLength={300}/></Field></div>
                       </> : <p className="text-sm text-cyanGlow">Cargando artículos y presentaciones…</p> : null}

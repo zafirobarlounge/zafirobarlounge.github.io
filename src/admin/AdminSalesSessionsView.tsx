@@ -79,6 +79,7 @@ export function AdminSalesSessionsView() {
   const [sessionPendingDelete, setSessionPendingDelete] = useState<PosSalesSessionHistoryEntry | null>(null);
   const [sessionPendingEdit, setSessionPendingEdit] = useState<PosSalesSessionHistoryEntry | null>(null);
   const [isCreateSessionModalOpen, setIsCreateSessionModalOpen] = useState(false);
+  const [isProductRankingModalOpen, setIsProductRankingModalOpen] = useState(false);
   const [orderPendingMove, setOrderPendingMove] = useState<{
     order: PosOrderWithRelations;
     sourceSession: PosSalesSessionHistoryEntry;
@@ -96,7 +97,7 @@ export function AdminSalesSessionsView() {
   const [moveErrorMessage, setMoveErrorMessage] = useState<string | null>(null);
   const [sessionWindowErrorMessage, setSessionWindowErrorMessage] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
-  useModalScrollLock(Boolean(sessionPendingDelete || orderPendingMove || isCreateSessionModalOpen || sessionPendingEdit));
+  useModalScrollLock(Boolean(sessionPendingDelete || orderPendingMove || isCreateSessionModalOpen || sessionPendingEdit || isProductRankingModalOpen));
   const sessionHeaderRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const isMountedRef = useRef(false);
   const loadRequestIdRef = useRef(0);
@@ -613,7 +614,7 @@ export function AdminSalesSessionsView() {
             </div>
           ) : null}
 
-          <ProductRanking products={visibleSummary.topProducts} />
+          <ProductRanking products={visibleSummary.topProducts} onShowAll={() => setIsProductRankingModalOpen(true)} />
 
           <section className="space-y-3">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
@@ -898,6 +899,8 @@ export function AdminSalesSessionsView() {
         </div>
       ) : null}
 
+      {isProductRankingModalOpen ? <ProductRankingModal products={visibleSummary.topProducts} onClose={() => setIsProductRankingModalOpen(false)} /> : null}
+
       {access.manage && orderPendingMove ? (
         <div className="zafiro-modal-backdrop fixed inset-0 z-50 flex overflow-hidden overscroll-none bg-black/72 px-4">
           <div data-zafiro-modal-scroller className="max-h-[calc(100dvh-2rem)] w-full max-w-xl overflow-y-auto overscroll-contain rounded-[1.4rem] border border-white/10 bg-[#0b0b0f] p-5 shadow-[0_18px_60px_rgba(0,0,0,0.45)]">
@@ -1057,23 +1060,22 @@ function MetricCard({ insight, label, value }: { insight?: string | null; label:
   );
 }
 
-function ProductRanking({ products }: { products: Array<{ productName: string; quantity: number; totalAmount: number }> }) {
-  const [showAll,setShowAll]=useState(false);
+function ProductRanking({ products, onShowAll }: { products: Array<{ productName: string; quantity: number; totalAmount: number }>; onShowAll: () => void }) {
   if (!products.length) {
     return null;
   }
 
   const maxQuantity = Math.max(...products.map((product) => product.quantity), 1);
-  const displayedProducts=showAll?products:products.slice(0,5);
+  const displayedProducts=products.slice(0,5);
 
   return (
     <section className="rounded-[1.25rem] border border-white/10 bg-white/[0.03] p-4">
       <div className="flex flex-wrap items-end justify-between gap-2">
         <div>
           <p className="text-[0.68rem] uppercase tracking-[0.24em] text-cyanGlow/80">Productos destacados</p>
-          <h2 className="mt-2 font-display text-2xl text-ivory">{showAll?'Todos los productos del periodo':'Top 5 del periodo'}</h2>
+          <h2 className="mt-2 font-display text-2xl text-ivory">Top 5 del periodo</h2>
         </div>
-        <div className="flex flex-wrap items-center justify-end gap-3"><p className="text-sm text-mist">Cantidad y valor vendido.</p>{products.length>5?<button type="button" className={ghostButtonClassName} onClick={()=>setShowAll((current)=>!current)}>{showAll?'Ver Top 5':'Ver todos los productos'}</button>:null}</div>
+        <div className="flex flex-wrap items-center justify-end gap-3"><p className="text-sm text-mist">Cantidad y valor vendido.</p>{products.length>5?<button type="button" className={ghostButtonClassName} onClick={onShowAll}>Ver todos los productos</button>:null}</div>
       </div>
 
       <div className="mt-4 grid gap-3 lg:grid-cols-5">
@@ -1093,6 +1095,24 @@ function ProductRanking({ products }: { products: Array<{ productName: string; q
       </div>
     </section>
   );
+}
+
+function ProductRankingModal({ products, onClose }: { products: Array<{ productName: string; quantity: number; totalAmount: number }>; onClose: () => void }) {
+  return <div className="zafiro-modal-backdrop fixed inset-0 z-50 flex overflow-hidden overscroll-none bg-black/72 px-4" role="dialog" aria-modal="true" aria-labelledby="all-products-title">
+    <div data-zafiro-modal-scroller className="max-h-[calc(100dvh-2rem)] w-full max-w-2xl overflow-y-auto overscroll-contain rounded-[1.4rem] border border-white/10 bg-[#0b0b0f] p-5 shadow-[0_18px_60px_rgba(0,0,0,0.45)]">
+      <div className="flex items-start justify-between gap-4">
+        <div><p className="text-[0.68rem] uppercase tracking-[0.22em] text-cyanGlow/80">Productos destacados</p><h2 id="all-products-title" className="mt-2 font-display text-2xl text-ivory">Todos los productos del periodo</h2><p className="mt-2 text-sm text-mist">Cantidad y valor vendido.</p></div>
+        <button type="button" className={ghostButtonClassName} onClick={onClose}>Cerrar</button>
+      </div>
+      <ol className="mt-5 divide-y divide-white/10 overflow-hidden rounded-[1rem] border border-white/10 bg-black/15">
+        {products.map((product, index) => <li key={product.productName} className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 px-4 py-3">
+          <span className="text-xs font-semibold tracking-[0.14em] text-cyanGlow">#{index + 1}</span>
+          <div className="min-w-0"><p className="truncate font-semibold text-ivory">{product.productName}</p><p className="mt-1 text-sm text-mist">{product.quantity} und.</p></div>
+          <p className="whitespace-nowrap text-right font-medium text-ivory">{formatCurrency(product.totalAmount)}</p>
+        </li>)}
+      </ol>
+    </div>
+  </div>;
 }
 
 function InlineMetric({ label, value }: { label: string; value: string }) {
