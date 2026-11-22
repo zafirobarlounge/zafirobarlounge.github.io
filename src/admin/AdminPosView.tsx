@@ -9,6 +9,9 @@ import { useSupabaseAuth } from '../auth/SupabaseAuthProvider';
 import { loadInventoryMenuAlerts, loadPosConsumptionResolution, subscribeToInventoryRealtime, type PosConsumptionResolutionLine } from './inventory/inventory.repository';
 import type { InventoryMenuAlert } from './inventory/inventory.domain';
 import { AreaInventoryPanel } from './inventory/AreaInventoryPanel';
+import { PrinterLinkControl, ThermalPrinterTestPanel } from './ThermalPrinterTestPanel';
+import { PrintJobsPanel } from './PrintJobsPanel';
+import { printSaleReceipt } from './posPrint';
 import type {
   AddCustomOrderItemInput,
   AddOrderItemInput,
@@ -151,7 +154,13 @@ const emptyCreateTableForm: CreatePosTableInput = {
 };
 
 export function AdminPosView() {
+  const isKioskPrintingProfile = new URLSearchParams(window.location.search).get('zafiro-kiosk-printing') === '1';
   const [cashModal, setCashModal] = useState<'session' | 'movement' | null>(null);
+  const [isPrintStationActive, setIsPrintStationActive] = useState(false);
+  const [receiptPrintOrder, setReceiptPrintOrder] = useState<PosOrderWithRelations | null>(null);
+  const [receiptPrintQueue, setReceiptPrintQueue] = useState<PosOrderWithRelations[]>([]);
+  const knownClosedReceiptOrderIdsRef = useRef(new Set<string>());
+  const hasSeededClosedReceiptOrdersRef = useRef(false);
   const [inventoryVoidDialog, setInventoryVoidDialog] = useState<InventoryVoidDialogState|null>(null);
   const { hasRole, isCatalogAdmin, staffProfile, staffRoles, user } = useSupabaseAuth();
   const actor = useMemo(
@@ -1024,6 +1033,23 @@ export function AdminPosView() {
     () => activeSalesSessionClosedSales.filter(isPaidClosedSale),
     [activeSalesSessionClosedSales],
   );
+  useEffect(() => {
+    if (!hasSeededClosedReceiptOrdersRef.current) {
+      activeSalesSessionPaidClosedSales.forEach((order) => knownClosedReceiptOrderIdsRef.current.add(order.id));
+      hasSeededClosedReceiptOrdersRef.current = true;
+      return;
+    }
+    for (const order of activeSalesSessionPaidClosedSales) {
+      if (knownClosedReceiptOrderIdsRef.current.has(order.id)) continue;
+      knownClosedReceiptOrderIdsRef.current.add(order.id);
+      if (isPrintStationActive) setReceiptPrintQueue((current) => current.some((queued) => queued.id === order.id) ? current : [...current, order]);
+    }
+  }, [activeSalesSessionPaidClosedSales, isPrintStationActive]);
+  useEffect(() => {
+    if (receiptPrintOrder || !receiptPrintQueue.length) return;
+    setReceiptPrintOrder(receiptPrintQueue[0]);
+    setReceiptPrintQueue((current) => current.slice(1));
+  }, [receiptPrintOrder, receiptPrintQueue]);
   const selectedHistoricalSession = selectedHistoricalSessionId
     ? previousClosedSessions.find((session) => session.id === selectedHistoricalSessionId) ?? null
     : null;
@@ -2297,15 +2323,19 @@ export function AdminPosView() {
 
   if (isLoading) {
     return (
-      <AdminLayout>
+      <AdminLayout headerActions={<PrinterLinkControl enabled={isKioskPrintingProfile} />} headerMenuActions={<PrinterLinkControl menuItem enabled={isKioskPrintingProfile} />}>
         <section className="rounded-[1.8rem] border border-white/10 bg-white/[0.03] p-8 text-mist">Cargando operacion POS...</section>
       </AdminLayout>
     );
   }
 
   return (
-    <AdminLayout>
+    <AdminLayout headerActions={<PrinterLinkControl enabled={isKioskPrintingProfile} />} headerMenuActions={<PrinterLinkControl menuItem enabled={isKioskPrintingProfile} />}>
       {cashModal && <AdminCashView embedded initialAction={cashModal} onClose={() => { setCashModal(null); void loadStateRef.current(false, 'cash-modal'); }} />}
+      {receiptPrintOrder ? <ReceiptPrintDialog order={receiptPrintOrder} onClose={() => setReceiptPrintOrder(null)} onConfirm={() => {
+        const order = receiptPrintOrder; setReceiptPrintOrder(null);
+        void printSaleReceipt(order).catch((error: unknown) => setErrorMessage(error instanceof Error ? error.message : 'No fue posible imprimir el recibo.'));
+      }} /> : null}
       {inventoryVoidDialog ? (
         <InventoryVoidResolutionDialog
           value={inventoryVoidDialog}
@@ -2349,6 +2379,8 @@ export function AdminPosView() {
               Existencias y solicitudes
             </Link>
           ) : null}
+          <ThermalPrinterTestPanel onStationChange={setIsPrintStationActive} activeSessionId={posState?.activeSalesSession?.id ?? null} />
+          <PrintJobsPanel active={isPrintStationActive} actor={actor.email} />
       </nav>
 
       {showMetricsOverview || showPreparationMetrics || showFloorMetrics ? (
@@ -3487,7 +3519,8 @@ export function AdminPosView() {
                   </summary>
                   <div className="mt-3 space-y-3">
                     {activeSalesSessionPaidClosedSales.map((order) => (
-                      <details key={`active-${order.id}`} className="rounded-[1.2rem] border border-white/8 bg-black/15 p-4">
+                      <article key={`active-${order.id}`} className="rounded-[1.2rem] border border-white/8 bg-black/15 p-4">
+                        <details>
                         <summary className="list-none cursor-pointer">
                           <div className="flex flex-wrap items-start justify-between gap-3">
                             <div>
@@ -3507,7 +3540,6 @@ export function AdminPosView() {
                             <p>Metodos: {formatPaymentMethodsSummary(order.payments.filter((payment) => payment.status === 'confirmed'))}</p>
                           </div>
                         </summary>
-
                         <div className="mt-4 space-y-4 border-t border-white/8 pt-4">
                           <div>
                             <p className="text-[0.68rem] uppercase tracking-[0.22em] text-cyanGlow/75">Productos</p>
@@ -3552,7 +3584,9 @@ export function AdminPosView() {
                             </div>
                           </div>
                         </div>
-                      </details>
+                        </details>
+                        {isPrintStationActive ? <button type="button" onClick={() => setReceiptPrintOrder(order)} className={`${ghostButtonClassName} mt-4`}>Imprimir recibo</button> : null}
+                      </article>
                     ))}
                     {!activeSalesSessionPaidClosedSales.length ? <EmptyState message="Todavia no hay ventas pagadas cerradas dentro de la jornada vigente." /> : null}
                   </div>
@@ -5674,6 +5708,17 @@ const dangerButtonClassName =
   'rounded-full border border-rose-300/24 bg-rose-300/12 px-4 py-2.5 text-xs font-semibold uppercase tracking-[0.22em] text-rose-100 transition hover:border-rose-300/38 hover:bg-rose-300/16 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-300/20';
 const disabledDangerButtonClassName =
   'cursor-not-allowed rounded-full border border-white/12 bg-white/[0.04] px-4 py-2.5 text-xs font-semibold uppercase tracking-[0.22em] text-white/40 opacity-55';
+
+function ReceiptPrintDialog({ order, onClose, onConfirm }: { order: PosOrderWithRelations; onClose: () => void; onConfirm: () => void }) {
+  return <div className="zafiro-modal-backdrop fixed inset-0 z-[100] flex items-center justify-center bg-black/75 p-3" role="dialog" aria-modal="true">
+    <div className="w-full max-w-md rounded-[1.4rem] border border-white/12 bg-[#0d0d13] p-5 shadow-2xl">
+      <p className="text-xs uppercase tracking-[0.2em] text-cyanGlow">Recibo de venta</p>
+      <h2 className="mt-2 font-display text-2xl text-ivory">¿Deseas imprimir el recibo de esta cuenta?</h2>
+      <p className="mt-3 text-sm text-mist">Mesa {order.tableCodeSnapshot ?? 'sin mesa'} · {formatCurrency(order.summary.totalDue)}</p>
+      <div className="mt-5 flex flex-wrap justify-end gap-2"><button type="button" className={ghostButtonClassName} onClick={onClose}>Ahora no</button><button type="button" className={primaryButtonClassName} onClick={onConfirm}>Imprimir recibo</button></div>
+    </div>
+  </div>;
+}
 
 function getQuantityInputClassName(isValid: boolean) {
   return isValid ? inputClassName : invalidInputClassName;

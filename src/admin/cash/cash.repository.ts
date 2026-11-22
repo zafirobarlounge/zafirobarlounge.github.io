@@ -13,8 +13,8 @@ export async function saveCash(
   requestId: string,
   payload: Record<string, unknown>,
 ) {
-  const { data, error } = await getSupabaseClient().rpc(
-    payload.action === "open" ? "pos_cash_open" : "pos_cash_command",
+  const { data, error } = await (getSupabaseClient() as any).rpc(
+    (payload.action === "open" ? "pos_cash_open" : payload.action === 'close' ? 'pos_cash_close_and_purge' : "pos_cash_command") as never,
     {
       request_id: requestId,
       payload,

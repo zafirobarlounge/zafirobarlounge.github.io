@@ -6,6 +6,8 @@ import { useSupabaseAuth } from '../auth/SupabaseAuthProvider';
 
 interface AdminLayoutProps {
   children: ReactNode;
+  headerActions?: ReactNode;
+  headerMenuActions?: ReactNode;
 }
 
 const roleLabels: Record<string, string> = {
@@ -16,7 +18,7 @@ const roleLabels: Record<string, string> = {
   cashier: 'Caja',
 };
 
-export function AdminLayout({ children }: AdminLayoutProps) {
+export function AdminLayout({ children, headerActions, headerMenuActions }: AdminLayoutProps) {
   const { canAccessCatalog, canAccessPos, isAuthenticated, signOut, staffProfile, staffRoles, user } = useSupabaseAuth();
   const location = useLocation();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -104,6 +106,7 @@ export function AdminLayout({ children }: AdminLayoutProps) {
                     Cerrar sesion
                   </button>
                 ) : null}
+                {headerActions}
                 <Link
                   to="/"
                   className="interactive-button rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-ivory transition hover:border-cyanGlow/35 hover:bg-white/[0.08] sm:px-4 sm:py-2 sm:text-xs sm:tracking-[0.24em]"
@@ -142,6 +145,7 @@ export function AdminLayout({ children }: AdminLayoutProps) {
                     Cerrar sesion
                   </button>
                 ) : null}
+                {headerMenuActions}
                 <Link
                   to="/"
                   onClick={() => setIsMobileMenuOpen(false)}

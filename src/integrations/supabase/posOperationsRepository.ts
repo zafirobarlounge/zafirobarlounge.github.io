@@ -1201,39 +1201,13 @@ export async function voidProcessedOrderItemInSupabase(
 }
 
 export async function sendDraftItemsToPreparationInSupabase(orderId: string, actor: PosActorContext) {
-  const supabase = getSupabaseClient();
-  const draftItems = await loadOrderItems(orderId);
-  const pendingDrafts = draftItems.filter((item) => item.operationalStatus === 'draft');
-
-  if (!pendingDrafts.length) {
-    throw new Error('No hay lineas en borrador para enviar a preparacion.');
-  }
-
-  const now = new Date().toISOString();
-  const ids = pendingDrafts.map((item) => item.id);
-  const { data, error } = await supabase
-    .from('pos_order_items')
-    .update({
-      operational_status: 'pending_preparation',
-      sent_at: now,
-      updated_by_email: actor.email,
-    } as never)
-    .in('id', ids)
-    .select('*');
-
-  throwIfError(error, 'No fue posible enviar el pedido a preparacion');
-
-  await insertPosLog({
-    actor,
-    afterData: data,
-    beforeData: pendingDrafts,
-    eventType: 'order_sent_to_preparation',
-    notes: `${pendingDrafts.length} linea(s) enviadas`,
-    orderId,
-    tableId: (await getOrderById(orderId)).tableId,
-  });
-
-  return data?.map(mapPosOrderItemRow) ?? [];
+  const order = await getOrderById(orderId);
+  if (!order.salesSessionId) throw new Error('El pedido requiere una jornada abierta antes de enviarse a preparación.');
+  const { data, error } = await getSupabaseClient().rpc('send_pos_drafts_with_print_jobs' as never, {
+    p_order_id: orderId, p_session_id: order.salesSessionId, actor_email: actor.email,
+  } as never);
+  throwIfError(error, 'No fue posible enviar el pedido y crear sus comandas');
+  return (data as unknown as PosOrderItemRow[]).map(mapPosOrderItemRow);
 }
 
 export async function transitionPreparationItemInSupabase(

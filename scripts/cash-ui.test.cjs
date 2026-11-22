@@ -182,9 +182,10 @@ function harness({
           }),
         };
       if (name.includes("AdminLayout")) return { AdminLayout: "layout" };
+      if (name.includes("useModalScrollLock")) return { useModalScrollLock: () => {} };
       if (name.includes("cash.domain")) return domain.exports;
       if (name.includes("cash.repository"))
-        return { loadCash: async () => structuredClone(data), saveCash: save };
+        return { loadCash: async () => structuredClone(data), saveCash: save, purgePreparationPrintJobsForClosedSession: async () => {} };
       if (name.includes("inventory.repository"))
         return { loadInventory: async () => ({ items:[],presentations:[] }), loadInventoryPendingReplenishments: async () => [], saveInventoryPurchase: save, subscribeToInventoryRealtime: () => () => {} };
       if (name.includes("InventoryPurchaseLinesEditor"))
