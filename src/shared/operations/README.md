@@ -91,14 +91,13 @@ Cuando esta fase pase a runtime real, se recomienda **Supabase** como opción pr
 - Realtime
 - Storage para comprobantes o recursos futuros
 
-## Aún no implementado
+## Módulos posteriores
 
 No forma parte de esta fase:
-- inventario
 - facturación electrónica
 - impresoras
 - reportes avanzados
 - recetas o costeo
 - sincronización multiusuario en tiempo real
 
-Estos contratos no cambian el comportamiento actual del sitio público ni de `/admin`.
+El inventario ya se implementa en `src/admin/inventory` y su migración incremental 005. Los demás puntos siguen fuera de alcance. Estos contratos no cambian el comportamiento del sitio público.

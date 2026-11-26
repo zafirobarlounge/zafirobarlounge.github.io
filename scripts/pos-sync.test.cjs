@@ -4,10 +4,14 @@ const path = require('node:path');
 const { test } = require('node:test');
 const vm = require('node:vm');
 const ts = require('typescript');
+const React = require('react');
+const { renderToStaticMarkup } = require('react-dom/server');
 
 const root = path.resolve(__dirname, '..');
 const repositoryPath = 'src/integrations/supabase/posOperationsRepository.ts';
 const posPath = 'src/admin/AdminPosView.tsx';
+const areaInventoryPath = 'src/admin/inventory/AreaInventoryPanel.tsx';
+const inventoryDomainPath = 'src/admin/inventory/inventory.domain.ts';
 const settingsPath = 'src/admin/AdminPosSettingsView.tsx';
 const parse = (file) => ts.createSourceFile(file, readFileSync(path.join(root, file), 'utf8'), ts.ScriptTarget.Latest, true);
 const plain = (value) => JSON.parse(JSON.stringify(value));
@@ -29,12 +33,257 @@ test('session closing alert uses the next Colombian 6am cutoff and disappears on
   assert.equal(check({ ...session, openedAt: 'invalid' }, Date.now()), false);
 });
 
+test('POS vende productos disponibles aunque no estén visibles en la web', () => {
+  const repository = readFileSync(path.join(root, repositoryPath), 'utf8');
+  const loader = repository.match(/export async function loadPosProductOptionsFromSupabase\(\)[\s\S]*?\r?\n}\r?\n/)[0];
+  assert.match(loader, /rpc\('pos_product_options'/);
+  assert.doesNotMatch(loader, /menu_items_public|visible/);
+});
+
+test('anulación entregada exige destinos simples o por ingrediente y nunca clasifica consumo del cliente', () => {
+  const line = { consumption_line_id:'line-1',item_id:'item-1',item_name:'Pan',base_unit:'unit',quantity:1,already_resolved:0,destination:null };
+  const resolve = loadNamedHelpers(posPath, ['buildInventoryVoidResolution']);
+  assert.deepEqual(plain(resolve(line,'returned')), { consumption_line_id:'line-1',returned_quantity:1,waste_quantity:0,courtesy_quantity:0,internal_quantity:0,client_consumed_quantity:0,classification:'returned' });
+  assert.deepEqual(plain(resolve(line,'waste')), { consumption_line_id:'line-1',returned_quantity:0,waste_quantity:1,courtesy_quantity:0,internal_quantity:0,client_consumed_quantity:0,classification:'waste' });
+  assert.deepEqual(plain(resolve(line,'courtesy')), { consumption_line_id:'line-1',returned_quantity:0,waste_quantity:0,courtesy_quantity:1,internal_quantity:0,client_consumed_quantity:0,classification:'courtesy' });
+  assert.deepEqual(plain(resolve(line,'internal')), { consumption_line_id:'line-1',returned_quantity:0,waste_quantity:0,courtesy_quantity:0,internal_quantity:1,client_consumed_quantity:0,classification:'internal' });
+
+  const canAdjust = loadNamedHelpers(posPath, ['canAdjustInventoryVoidByIngredient']);
+  assert.equal(canAdjust([line]),false);
+  assert.equal(canAdjust([line,{...line,consumption_line_id:'line-2'}]),true);
+
+  const canConfirm = loadNamedHelpers(posPath, ['canConfirmInventoryVoid']);
+  const dialog = { item:{},reason:'Error',lines:[line,{...line,consumption_line_id:'line-2'}],destination:null,advanced:false };
+  assert.equal(canConfirm(dialog),false);
+  assert.equal(canConfirm({...dialog,destination:'waste'}),true);
+  assert.equal(canConfirm({...dialog,advanced:true,lines:[{...line,destination:'returned'},line]}),false);
+  assert.equal(canConfirm({...dialog,advanced:true,lines:[{...line,destination:'returned'},{...line,consumption_line_id:'line-2',destination:'courtesy'}]}),true);
+
+  const openIngredientMode = loadNamedHelpers(posPath, ['openInventoryVoidIngredientMode']);
+  const returnToSingleMode = loadNamedHelpers(posPath, ['returnToInventoryVoidSingleMode']);
+  const ingredientMode = plain(openIngredientMode({...dialog,destination:'waste'}));
+  assert.equal(ingredientMode.advanced,true);
+  assert.deepEqual(ingredientMode.lines.map((row)=>row.destination),['waste','waste']);
+  const singleMode = plain(returnToSingleMode({...ingredientMode,lines:[{...ingredientMode.lines[0],destination:'returned'},{...ingredientMode.lines[1],destination:'courtesy'}]}));
+  assert.equal(singleMode.advanced,false);
+  assert.equal(singleMode.destination,null);
+  assert.deepEqual(singleMode.lines.map((row)=>row.destination),[null,null]);
+  assert.equal(canConfirm(singleMode),false);
+
+  const build = loadNamedHelpers(posPath, ['canConfirmInventoryVoid','buildInventoryVoidResolution','buildInventoryVoidResolutions']);
+  assert.throws(()=>build(dialog),/Selecciona qué ocurrió/);
+  assert.throws(()=>build({...dialog,advanced:true,lines:[{...line,destination:'returned'},line]}),/cada ingrediente/);
+  assert.deepEqual(plain(build({...dialog,advanced:true,lines:[{...line,destination:'returned'},{...line,consumption_line_id:'line-2',destination:'internal'}]})).map((row)=>row.classification),['returned','internal']);
+
+  const Dialog = loadInventoryVoidDialog();
+  const render = (value) => renderToStaticMarkup(React.createElement(Dialog,{value,busy:false,onChange:()=>{},onClose:()=>{},onConfirm:()=>{throw new Error('No debe ejecutarse');}}));
+  const initialMarkup=render({...dialog,lines:[line]});
+  assert.match(initialMarkup,/disabled=""[^>]*>Confirmar anulación<\/button>/);
+  assert.match(initialMarkup,/class="disabled-neutral cursor-not-allowed opacity-55"/);
+  assert.doesNotMatch(initialMarkup,/class="danger"[^>]*disabled=""/);
+  assert.doesNotMatch(initialMarkup,/checked=""/);
+  assert.doesNotMatch(initialMarkup,/Ajustar por ingrediente/);
+  const selectedMarkup=render({...dialog,lines:[line],destination:'waste'});
+  assert.equal((selectedMarkup.match(/checked=""/g)||[]).length,1);
+  assert.doesNotMatch(selectedMarkup,/disabled=""[^>]*>Confirmar anulación<\/button>/);
+  assert.match(selectedMarkup,/class="danger"[^>]*>Confirmar anulación<\/button>/);
+  assert.doesNotMatch(selectedMarkup,/disabled-neutral/);
+  assert.match(render(dialog),/Ajustar por ingrediente/);
+  const incompleteAdvancedMarkup=render({...dialog,advanced:true,lines:[{...line,destination:'returned'},line]});
+  assert.match(incompleteAdvancedMarkup,/disabled=""[^>]*>Confirmar anulación<\/button>/);
+  assert.match(incompleteAdvancedMarkup,/class="disabled-neutral cursor-not-allowed opacity-55"/);
+  const completeAdvancedMarkup=render({...dialog,advanced:true,lines:[{...line,destination:'returned'},{...line,consumption_line_id:'line-2',destination:'courtesy'}]});
+  assert.doesNotMatch(completeAdvancedMarkup,/disabled=""[^>]*>Confirmar anulación<\/button>/);
+  assert.match(completeAdvancedMarkup,/class="danger"[^>]*>Confirmar anulación<\/button>/);
+
+  const source = readFileSync(path.join(root,posPath),'utf8');
+  assert.doesNotMatch(source,/Consumido por cliente/);
+  assert.match(source,/Ajustar por ingrediente/);
+  assert.match(source,/Volver a destino único/);
+});
+
 function evaluate(source, context) {
   const compiled = ts.transpileModule(source, {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, jsx: ts.JsxEmit.ReactJSX },
   }).outputText;
   return vm.runInNewContext(compiled, context);
 }
+
+function loadNamedHelpers(filePath, names, context = {}) {
+  const source = parse(filePath);
+  const helpers = source.statements.filter((node) => ts.isFunctionDeclaration(node) && names.includes(node.name?.text));
+  assert.equal(helpers.length, names.length, `Missing POS helper: ${names.filter((name) => !helpers.some((node) => node.name?.text === name)).join(', ')}`);
+  const target = names[names.length - 1];
+  return evaluate(`${helpers.map((node) => node.getText(source)).join('\n')}; ${target}`, { exports: {}, ...context });
+}
+
+function loadInventoryVoidDialog() {
+  const source = parse(posPath);
+  const functionNames = ['InventoryVoidResolutionDialog','InventoryVoidDestinationIcon','InventoryVoidDestinationChoices','canAdjustInventoryVoidByIngredient','canConfirmInventoryVoid'];
+  const functions = source.statements.filter((node)=>ts.isFunctionDeclaration(node)&&functionNames.includes(node.name?.text));
+  const options = source.statements.find((node)=>ts.isVariableStatement(node)&&node.declarationList.declarations.some((declaration)=>ts.isIdentifier(declaration.name)&&declaration.name.text==='inventoryVoidDestinationOptions'));
+  assert.equal(functions.length,functionNames.length);
+  assert.ok(options);
+  const compiled = ts.transpileModule(`${options.getText(source)}\n${functions.map((node)=>node.getText(source)).join('\n')}; InventoryVoidResolutionDialog`,{
+    compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020,jsx:ts.JsxEmit.ReactJSX},
+  }).outputText;
+  const Icon = () => null;
+  return vm.runInNewContext(compiled,{exports:{},require:(name)=>require(name),Check:Icon,Gift:Icon,PackageCheck:Icon,Trash2:Icon,Utensils:Icon,ghostButtonClassName:'ghost',dangerButtonClassName:'danger',disabledDangerButtonClassName:'disabled-neutral cursor-not-allowed opacity-55'});
+}
+
+test('inventario operativo filtra por área, búsqueda y estados mutuamente excluyentes', () => {
+  const match = (item, search) => `${item.name} ${item.import_code ?? ''}`.toLocaleLowerCase('es-CO').includes(search.trim().toLocaleLowerCase('es-CO'));
+  const priority = (item) => item.balance == null ? 0 : item.balance <= 0 ? 1 : item.minimum_quantity != null && item.balance < item.minimum_quantity ? 2 : Number(item.pending_incoming ?? 0) > 0 ? 3 : 4;
+  const filter = loadNamedHelpers(areaInventoryPath, ['getAreaInventoryItemState', 'filterAreaInventoryItems'], { inventoryItemMatchesSearch: match, getInventoryOperationalPriority: priority });
+  const items = [
+    { id: 'bar', name: 'Cerveza', import_code: 'BAR_1', active: true, areas: ['bar'], balance: 8, minimum_quantity: 4, pending_incoming: 0 },
+    { id: 'shared', name: 'Limón', import_code: 'SHARED', active: true, areas: ['bar', 'kitchen'], balance: 0, minimum_quantity: 4, pending_incoming: 0 },
+    { id: 'low', name: 'Pan', import_code: 'KITCHEN_1', active: true, areas: ['kitchen'], balance: 2, minimum_quantity: 5, pending_incoming: 0 },
+    { id: 'uncounted', name: 'Salsa', import_code: 'KITCHEN_2', active: true, areas: ['kitchen'], balance: null, minimum_quantity: null, pending_incoming: 0 },
+  ];
+  const ids = (area, search, status) => Array.from(filter(items, area, search, status), (item) => item.id);
+  assert.deepEqual(ids('bar', '', 'all'), ['shared', 'bar']);
+  assert.deepEqual(ids('kitchen', '', 'all'), ['uncounted', 'shared', 'low']);
+  assert.deepEqual(ids('kitchen', 'pan', 'all'), ['low']);
+  assert.deepEqual(ids('kitchen', '', 'depleted'), ['shared']);
+  assert.deepEqual(ids('kitchen', '', 'low'), ['low']);
+  assert.deepEqual(ids('kitchen', '', 'uncounted'), ['uncounted']);
+});
+
+test('inventario de Bar y Cocina prioriza estados accionables y ordena cada grupo por nombre', () => {
+  const match = () => true;
+  const priority = (item) => item.balance == null ? 0 : item.balance <= 0 ? 1 : item.minimum_quantity != null && item.balance < item.minimum_quantity ? 2 : Number(item.pending_incoming ?? 0) > 0 ? 3 : 4;
+  const filter = loadNamedHelpers(areaInventoryPath, ['getAreaInventoryItemState', 'filterAreaInventoryItems'], { inventoryItemMatchesSearch: match, getInventoryOperationalPriority: priority });
+  const base = { active: true, areas: ['bar', 'kitchen'], import_code: null };
+  const items = [
+    { ...base, id: 'normal-z', name: 'Zumo', balance: 20, minimum_quantity: 5, pending_incoming: 0 },
+    { ...base, id: 'pending-z', name: 'Yerbabuena', balance: 20, minimum_quantity: 5, pending_incoming: 4 },
+    { ...base, id: 'low-z', name: 'Pan', balance: 2, minimum_quantity: 5, pending_incoming: 8 },
+    { ...base, id: 'depleted', name: 'Limón', balance: 0, minimum_quantity: 5, pending_incoming: 0 },
+    { ...base, id: 'uncounted', name: 'Salsa', balance: null, minimum_quantity: null, pending_incoming: 0 },
+    { ...base, id: 'pending-a', name: 'Agua', balance: 20, minimum_quantity: 5, pending_incoming: 2 },
+    { ...base, id: 'normal-a', name: 'Cerveza', balance: 20, minimum_quantity: 5, pending_incoming: 0 },
+  ];
+  const expected = ['uncounted', 'depleted', 'low-z', 'pending-a', 'pending-z', 'normal-a', 'normal-z'];
+  for (const area of ['bar', 'kitchen']) {
+    assert.deepEqual(Array.from(filter(items, area, '', 'all'), (item) => item.id), expected);
+  }
+});
+
+test('reportes operativos usan submit enviado y la cantidad correcta sin mutar saldos', () => {
+  const encodeInventorySubmissionLineNotes = (notes, presentation) => presentation ? `snapshot:${JSON.stringify({ presentation, notes: notes.trim() })}` : notes.trim();
+  const build = loadNamedHelpers(areaInventoryPath, ['buildAreaInventorySubmissionPayload'], { encodeInventorySubmissionLineNotes });
+  const replenishment = plain(build('bar', 'item-1', 'replenishment', 6, 'Hace falta'));
+  const count = plain(build('kitchen', 'item-2', 'count', 0, 'Conteo físico'));
+  const damage = plain(build('bar', 'item-3', 'damage', 2, 'Botellas rotas'));
+  assert.deepEqual(replenishment, { action: 'submit', kind: 'replenishment', area: 'bar', status: 'sent', notes: 'Hace falta', lines: [{ item_id: 'item-1', requested_quantity: 6, notes: 'Hace falta' }] });
+  assert.deepEqual(count, { action: 'submit', kind: 'count', area: 'kitchen', status: 'sent', notes: 'Conteo físico', lines: [{ item_id: 'item-2', observed_quantity: 0, notes: 'Conteo físico' }] });
+  assert.deepEqual(damage, { action: 'submit', kind: 'damage', area: 'bar', status: 'sent', notes: 'Botellas rotas', lines: [{ item_id: 'item-3', requested_quantity: 2, notes: 'Botellas rotas' }] });
+  for (const payload of [replenishment, count, damage]) {
+    assert.equal('balance' in payload, false);
+    assert.equal('quantity_delta' in payload, false);
+  }
+});
+
+test('solicitud por presentación convierte paquetes a cantidad base y conserva snapshot', () => {
+  const calculate = loadNamedHelpers(areaInventoryPath, ['calculateInventoryRequestedBaseQuantity']);
+  assert.equal(calculate(1, 12), 12);
+  assert.equal(calculate(1, 4), 4);
+  assert.equal(calculate(2, 24), 48);
+  assert.equal(calculate(1.5, 12), null);
+
+  const encodeInventorySubmissionLineNotes = (notes, presentation) => `snapshot:${JSON.stringify({ presentation, notes: notes.trim() })}`;
+  const build = loadNamedHelpers(areaInventoryPath, ['buildAreaInventorySubmissionPayload'], { encodeInventorySubmissionLineNotes });
+  const presentation = { presentation_id: 'paca-12', presentation_name: 'Paca x12', content_per_package: 12, content_unit: 'unit', package_quantity: 2 };
+  const payload = plain(build('bar', 'coca-cola', 'replenishment', calculate(2, 12), 'Para barra', presentation));
+  assert.equal(payload.lines[0].requested_quantity, 24);
+  assert.match(payload.lines[0].notes, /Paca x12/);
+  assert.match(payload.lines[0].notes, /package_quantity.*2/);
+});
+
+test('Bar y Cocina integran inventario operativo sin costos ni acciones administrativas', () => {
+  const source = readFileSync(path.join(root, posPath), 'utf8');
+  assert.match(source, /<AreaInventoryPanel area="kitchen"/);
+  assert.match(source, /<AreaInventoryPanel area="bar"/);
+  const panel = readFileSync(path.join(root, areaInventoryPath), 'utf8');
+  for (const text of ['Inventario del área', 'Solicitar', 'Contar', 'Daño', 'Reportes recientes del área', 'Unidad base']) assert.match(panel, new RegExp(text));
+  for (const forbidden of ['last_unit_cost', 'average_unit_cost', 'inventory_value', 'Registrar entrada', 'Conteo / corregir', "action: 'receive'", "action: 'correction'", "action: 'initial_count'"]) assert.doesNotMatch(panel, new RegExp(forbidden.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.match(panel, /loadInventory\(usageType, area\)/);
+  assert.doesNotMatch(panel, /role="tablist"/);
+  assert.match(panel, /Field label="Estado"[\s\S]*Field label="Tipo"/);
+  assert.match(panel, /aria-label={`Filtrar inventario de \$\{areaLabel\} por tipo`}/);
+  assert.match(panel, /<option value="consumable">Consumibles<\/option>[\s\S]*<option value="operational">Operativos<\/option>/);
+  assert.match(panel, /loadInventoryRecentSubmissions\(area\)/);
+  assert.match(panel, /saveInventoryCommand/);
+  assert.doesNotMatch(panel, /submission\.area === area/);
+  assert.match(panel, /<InventoryStatusBadge status=\{submission\.status\}/);
+  assert.doesNotMatch(panel, /setInterval|poll/i);
+  assert.match(panel, /presentations\.filter\(\(presentation\) => presentation\.active/);
+  assert.match(panel, /Solicitud directa en unidad base/);
+  assert.match(panel, /Cantidad de paquetes\/pacas\/envases/);
+  assert.match(panel, /Enviar solicitud/);
+  assert.match(panel, /const \[recentReportsExpanded, setRecentReportsExpanded\] = useState\(false\)/);
+  assert.match(panel, /aria-controls={`area-recent-reports-\$\{area\}`}/);
+  assert.match(panel, /recentReportsExpanded \? 'Ocultar' : 'Ver reportes'/);
+});
+
+test('inventario del área inicia cerrado y solo solicita datos al primer despliegue', () => {
+  const toggle = loadNamedHelpers(areaInventoryPath, ['getAreaInventoryToggleAction']);
+  assert.equal(toggle(false, false, false), 'open-and-load');
+  assert.equal(toggle(true, true, false), 'close');
+  assert.equal(toggle(false, true, false), 'open');
+  assert.equal(toggle(false, false, true), 'open');
+
+  const panel = readFileSync(path.join(root, areaInventoryPath), 'utf8');
+  assert.match(panel, /const \[expanded, setExpanded\] = useState\(false\)/);
+  assert.match(panel, /if \(action === 'open-and-load'\) void refresh\(\)/);
+  assert.match(panel, /if \(expanded\) void refresh\(\)/);
+  assert.match(panel, /expanded \? 'Ocultar inventario' : requiresAttention \? 'Revisar inventario' : 'Ver inventario'/);
+  assert.match(panel, /aria-label="Recargar inventario" title="Recargar inventario"/);
+  assert.match(panel, /<RefreshCw aria-hidden="true"/);
+  assert.match(panel, /loading\?'animate-spin':''/);
+  assert.match(panel, /Requiere atención/);
+  assert.match(panel, /summary\.depleted===1\?'agotado':'agotados'/);
+  assert.match(panel, /summary\.low===1\?'bajo':'bajos'/);
+  assert.match(panel, /summary\.uncounted.*sin conteo/);
+  assert.match(panel, /summary\.total.*artículos/);
+  assert.match(panel, /border-l-rose-300\/70/);
+  assert.match(panel, /await saveInventoryCommand[\s\S]*await refresh\(true\)/);
+});
+
+test('mensajes del inventario del área usan los tiempos definidos en POS', () => {
+  const duration = loadNamedHelpers(inventoryDomainPath, ['getInventoryMessageDuration']);
+  assert.equal(duration(false), 5000);
+  assert.equal(duration(true), 8000);
+  const panel = readFileSync(path.join(root, areaInventoryPath), 'utf8');
+  assert.match(panel, /window\.setTimeout/);
+  assert.match(panel, /window\.clearTimeout/);
+  assert.match(panel, /setNotice\(null\)/);
+  assert.match(panel, /setError\(null\)/);
+});
+
+test('resumen del área distingue cero, bajo mínimo, sin conteo y artículos compartidos', () => {
+  const summarize = loadNamedHelpers(areaInventoryPath, ['getAreaInventoryItemState', 'summarizeAreaInventory']);
+  const items = [
+    { active: true, areas: ['bar'], balance: 8, minimum_quantity: 4 },
+    { active: true, areas: ['bar', 'kitchen'], balance: 0, minimum_quantity: 4 },
+    { active: true, areas: ['kitchen'], balance: 2, minimum_quantity: 5 },
+    { active: true, areas: ['kitchen'], balance: null, minimum_quantity: null },
+  ];
+  assert.deepEqual(plain(summarize(items, 'bar')), { total: 2, low: 0, depleted: 1, uncounted: 0 });
+  assert.deepEqual(plain(summarize(items, 'kitchen')), { total: 3, low: 1, depleted: 1, uncounted: 1 });
+});
+
+test('contenido desplegado prioriza reportes y evita duplicar Sin conteo inicial', () => {
+  const panel = readFileSync(path.join(root, areaInventoryPath), 'utf8');
+  assert.ok(panel.indexOf('Reportes recientes del área') < panel.indexOf('<AreaInventoryItemCard'));
+  assert.match(panel, /state !== 'uncounted' \? <span/);
+  assert.match(panel, /Reposición pendiente/);
+  assert.match(panel, /Orden: sin conteo, agotados, bajo mínimo, reposición pendiente y disponibles/);
+  assert.match(panel, /formatInventoryQuantity\(item\.balance/);
+  assert.match(panel, /search:event\.target\.value/);
+  assert.match(panel, /status:event\.target\.value as AreaInventoryStatusFilter/);
+});
 
 function loadRepository(client) {
   const context = {
@@ -392,8 +641,45 @@ test('history downloads each dataset once and preserves existing summaries, clos
   assert.equal(actual.history[0].orderCount, 2);
   assert.equal(actual.history[0].totalCollected, 20000);
   const source = readFileSync(path.join(root, 'src/admin/AdminSalesSessionsView.tsx'), 'utf8');
-  assert.ok(source.includes('await loadSalesSessionHistoryViewFromSupabase()'));
+  assert.ok(source.includes('await loadAuthorizedSessionReportFromSupabase()'));
   assert.ok(!source.includes('loadPosStateFromSupabase'));
+});
+
+test('adjusted report moves a whole account, preserves snapshot and cancels without stale totals', async () => {
+  const rows=fixtures();
+  rows.pos_orders=rows.pos_orders.filter(o=>o.id==='closed');
+  rows.pos_order_items=rows.pos_order_items.filter(i=>i.order_id==='closed');
+  rows.pos_payments=rows.pos_payments.filter(p=>p.order_id==='closed');
+  rows.pos_sales_sessions[0].summary={grossSales:10000,totalCollected:10000,orderCount:1,paymentMethods:[{method:'cash',paymentCount:1,totalAmount:10000}],products:[]};
+  const source=JSON.stringify(rows);
+  const adjustment={sequence:1,request_id:'a',action:'move',session_id:'s0',destination_id:'s1',order_id:'closed',payload:{},reason:'Error',actor:'admin',created_at:timestamp};
+  const adjustments=[adjustment];
+  const repo=loadRepository({rpc:async()=>({data:{sessions:structuredClone(rows.pos_sales_sessions),orders:structuredClone(rows.pos_orders),items:structuredClone(rows.pos_order_items),payments:structuredClone(rows.pos_payments),tables:rows.pos_tables,reconciled_session_ids:['s0'],adjustments},error:null})});
+  let result=await repo.loadAuthorizedSessionReportFromSupabase();
+  assert.equal(result.history.find(s=>s.id==='s0').totalCollected,0);
+  assert.equal(result.history.find(s=>s.id==='s0').originalSummary.totalCollected,10000);
+  assert.equal(result.history.find(s=>s.id==='s1').totalCollected,10000);
+  assert.equal(result.closedSales[0].salesSessionId,'s1');
+  adjustments.push({...adjustment,sequence:2,request_id:'b',action:'window',session_id:'s1',destination_id:null,order_id:null,payload:{business_date:'2026-08-30',opened_at:'2026-08-30T23:00:00Z',closed_at:'2026-08-31T07:00:00Z',session_label:'Corregida'}});
+  adjustments.push({...adjustment,sequence:3,request_id:'c',action:'cancel',session_id:'s1',destination_id:null});
+  result=await repo.loadAuthorizedSessionReportFromSupabase();
+  assert.equal(result.history.find(s=>s.id==='s1').totalCollected,0);
+  assert.equal(result.history.find(s=>s.id==='s1').totalSold,0);
+  assert.equal(result.history.find(s=>s.id==='s1').businessDate,'2026-08-30');
+  assert.equal(result.closedSales[0].financialStatus,'cancelled');
+  assert.equal(JSON.stringify(rows),source);
+});
+
+test('authorized report uses one RPC and the saved sales snapshot for reconciled sessions', async () => {
+  const rows=fixtures();
+  const target=rows.pos_sales_sessions[0];
+  target.summary={ orderCount:7, confirmedPayments:2, totalCollected:123, grossSales:456, pendingBalance:0, pendingPayments:0, openOrders:0, deliveredProducts:0, products:[], paymentMethods:[{method:'cash',paymentCount:2,totalAmount:123}] };
+  const names=[];
+  const repo=loadRepository({rpc:async name=>{names.push(name);return {data:{sessions:rows.pos_sales_sessions,orders:rows.pos_orders,items:rows.pos_order_items,payments:rows.pos_payments,tables:rows.pos_tables,reconciled_session_ids:[target.id]},error:null};}});
+  const report=await repo.loadAuthorizedSessionReportFromSupabase();
+  const saved=report.history.find(s=>s.id===target.id);
+  assert.equal(saved.totalCollected,123);assert.equal(saved.orderCount,7);assert.deepEqual(names,['pos_session_report_v2']);
+  await assert.rejects(loadRepository({rpc:async()=>({data:null,error:{message:'denied'}})}).loadAuthorizedSessionReportFromSupabase(),/denied/);
 });
 
 test('history still paginates large datasets without downloading any page twice', async () => {
@@ -511,7 +797,7 @@ test('history ignores older responses and responses after unmount', async () => 
   const requests = [];
   const context = {
     isMountedRef: { current: true }, loadRequestIdRef: { current: 0 },
-    loadSalesSessionHistoryViewFromSupabase: () => new Promise((resolve) => requests.push(resolve)),
+    loadAuthorizedSessionReportFromSupabase: () => new Promise((resolve) => requests.push(resolve)),
     sessions: null, setSessions(value) { context.sessions = value; },
     setErrorMessage() {}, setIsLoading() {}, setClosedSales() {}, setTables() {}, setExpandedSessionId() {},
   };

@@ -3,7 +3,7 @@ import { AdminLayout } from './AdminLayout';
 import { useSupabaseAuth } from '../auth/SupabaseAuthProvider';
 
 export function AdminView() {
-  const { canAccessCatalog, canAccessPos, isCatalogAdmin, staffProfile } = useSupabaseAuth();
+  const { canAccessCatalog, canAccessPos, isCatalogAdmin, staffRoles, staffProfile } = useSupabaseAuth();
 
   if (canAccessPos && !canAccessCatalog) {
     return <Navigate to="/admin/pos" replace />;
@@ -14,6 +14,12 @@ export function AdminView() {
   }
 
   const availableModules = [
+    (isCatalogAdmin || staffRoles.some((role) => ['superadmin', 'cashier', 'bar', 'kitchen'].includes(role)))
+      ? { cta: 'Abrir inventario', description: 'Existencias, entradas, solicitudes, conteos, mermas y consumo del POS.', title: 'Inventario', to: '/admin/inventory', tone: 'pos' }
+      : null,
+    (isCatalogAdmin || staffRoles.includes('cashier') || staffRoles.includes('superadmin'))
+      ? { cta: 'Abrir caja y gastos', description: 'Base inicial, gastos, aportes, retiros y arqueos por jornada.', title: 'Caja y gastos', to: '/admin/cash', tone: 'sessions' }
+      : null,
     canAccessCatalog
       ? {
           cta: 'Abrir modulo de menu',
@@ -32,7 +38,7 @@ export function AdminView() {
           tone: 'pos',
         }
       : null,
-    isCatalogAdmin
+    (isCatalogAdmin || staffRoles.includes('cashier') || staffRoles.includes('superadmin'))
       ? {
           cta: 'Ver jornadas',
           description: 'Historial completo de jornadas POS, resumen de ventas y anulaciones administrativas.',

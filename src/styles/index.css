@@ -13,6 +13,7 @@
 
 html {
   scroll-behavior: smooth;
+  overflow-x: clip;
 }
 
 @media (max-width: 767px) {
@@ -43,6 +44,7 @@ body {
   min-height: 100vh;
   background: transparent;
   color: #f5efe6;
+  overflow-x: clip;
 }
 
 #root {
@@ -74,6 +76,12 @@ a {
 }
 
 @layer components {
+  .zafiro-modal-backdrop {
+    min-height: 100dvh;
+    align-items: center;
+    justify-content: center;
+  }
+
   .interactive-card {
     transition:
       transform 260ms ease,

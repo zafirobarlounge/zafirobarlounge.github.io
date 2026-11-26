@@ -391,6 +391,14 @@ export interface Database {
       };
     };
     Functions: {
+      pos_session_report: { Args: Record<PropertyKey, never>; Returns: Record<string, unknown> };
+      pos_session_report_v2: { Args: Record<PropertyKey, never>; Returns: Record<string, unknown> };
+      pos_session_adjustment: { Args: { request_id: string; payload: Record<string, unknown> }; Returns: Record<string, unknown> };
+      pos_cash_open: { Args: { request_id: string; payload: Record<string, unknown> }; Returns: Record<string, unknown> };
+      pos_cash_ensure_session: { Args: Record<PropertyKey, never>; Returns: Record<string, unknown> };
+      pos_cash_read: { Args: Record<PropertyKey, never>; Returns: Record<string, unknown> };
+      pos_cash_command: { Args: { request_id: string; payload: Record<string, unknown> }; Returns: Record<string, unknown> };
+      inventory_purchase_command: { Args: { request_id: string; payload: Record<string, unknown> }; Returns: Record<string, unknown> };
       has_staff_role: {
         Args: {
           requested_role: string;
