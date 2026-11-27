@@ -43,6 +43,7 @@ export function AdminLayout({ children, headerActions, headerMenuActions }: Admi
 
   useEffect(() => {
     const closeMenu = (event: MouseEvent | TouchEvent) => {
+      if (event.target instanceof Element && event.target.closest('[data-zafiro-printer-link-dialog]')) return;
       if (!mobileMenuRef.current?.contains(event.target as Node)) {
         setIsMobileMenuOpen(false);
       }
@@ -123,7 +124,7 @@ export function AdminLayout({ children, headerActions, headerMenuActions }: Admi
               </button>
             </div>
             {isMobileMenuOpen ? (
-              <div className="absolute right-0 top-full z-50 mt-2 w-44 rounded-[1rem] border border-white/10 bg-[#0b0b0f] p-2 shadow-[0_16px_48px_rgba(0,0,0,0.35)] sm:hidden">
+              <div className="zafiro-dropdown-scroll absolute right-0 top-full z-50 mt-2 w-44 rounded-[1rem] border border-white/10 bg-[#0b0b0f] p-2 shadow-[0_16px_48px_rgba(0,0,0,0.35)] [--zafiro-dropdown-top:calc(var(--admin-header-height,7rem)+0.5rem)] sm:hidden">
                 {shouldShowAdminHubLink ? (
                   <Link
                     to="/admin"

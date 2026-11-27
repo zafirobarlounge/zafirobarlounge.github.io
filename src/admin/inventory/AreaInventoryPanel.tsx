@@ -486,8 +486,8 @@ function InventoryReportDialog({ areaLabel, busy, error, item, kind, notes, pres
       ? packageQuantity
       : null;
   return (
-    <div className="zafiro-modal-backdrop fixed inset-0 z-[100] flex overflow-hidden overscroll-none bg-black/75 p-3" role="dialog" aria-modal="true">
-      <div data-zafiro-modal-scroller className="max-h-[calc(100dvh-1.5rem)] w-full max-w-2xl overflow-y-auto overscroll-contain rounded-[1.4rem] border border-white/12 bg-[#0d0d13] p-5 shadow-2xl sm:max-h-[92dvh] sm:p-7">
+    <div className="zafiro-viewport-overlay zafiro-modal-backdrop z-[100] bg-black/75" role="dialog" aria-modal="true" aria-label={submissionKindLabels[kind]}>
+      <div data-zafiro-modal-scroller className="zafiro-modal-panel w-full max-w-2xl rounded-[1.4rem] border border-white/12 bg-[#0d0d13] p-5 shadow-2xl sm:p-7">
         <div className="mb-5 flex items-start justify-between gap-3">
           <div><p className="text-xs uppercase tracking-[0.2em] text-cyanGlow">Inventario de {areaLabel}</p><h2 className="mt-2 font-display text-3xl text-ivory">{submissionKindLabels[kind]}</h2></div>
           <button type="button" className={ghostButton} onClick={onClose}>Cerrar</button>

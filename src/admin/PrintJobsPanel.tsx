@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { getSupabaseClient } from '../integrations/supabase/client';
 import { printPreparationTicket, type PreparationTicketSnapshot } from './posPrint';
+import { useModalScrollLock } from './useModalScrollLock';
 
 type Job = {
   id: string;
@@ -50,22 +51,14 @@ export function PrintJobsPanel({ active, actor }: { active: boolean; actor: stri
   }, []);
 
   const pendingCount = useMemo(() => jobs.filter(isPendingPrintIncident).length, [jobs]);
+  useModalScrollLock(pendingCount > 0 && (open || Boolean(confirm)));
 
   useEffect(() => {
-    if (!pendingCount) setOpen(false);
+    if (!pendingCount) {
+      setOpen(false);
+      setConfirm(null);
+    }
   }, [pendingCount]);
-
-  useEffect(() => {
-    if (!open) return;
-    const previousBodyOverflow = document.body.style.overflow;
-    const previousHtmlOverflow = document.documentElement.style.overflow;
-    document.body.style.overflow = 'hidden';
-    document.documentElement.style.overflow = 'hidden';
-    return () => {
-      document.body.style.overflow = previousBodyOverflow;
-      document.documentElement.style.overflow = previousHtmlOverflow;
-    };
-  }, [open]);
 
   const review = async (job: Job) => {
     setError(null);
@@ -136,8 +129,8 @@ export function PrintJobsPanel({ active, actor }: { active: boolean; actor: stri
   if (!pendingCount) return null;
 
   const panel = open ? (
-    <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/75 p-3 sm:p-5" role="dialog" aria-modal="true" aria-label="Trabajos de impresión">
-      <div className="flex max-h-[85vh] w-full max-w-[760px] flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#0d0d13] text-ivory shadow-2xl">
+    <div className="zafiro-viewport-overlay zafiro-modal-backdrop z-[1000] bg-black/75 sm:[--zafiro-modal-padding:1.25rem]" role="dialog" aria-modal="true" aria-label="Trabajos de impresión">
+      <div className="zafiro-modal-panel flex w-full max-w-[760px] flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#0d0d13] text-ivory shadow-2xl">
         <div className="flex shrink-0 items-start justify-between gap-3 border-b border-white/10 bg-black/20 px-4 py-4 sm:px-5">
           <div>
             <p className="text-xs uppercase tracking-[0.2em] text-cyanGlow">Seguimiento de impresión</p>
@@ -145,7 +138,7 @@ export function PrintJobsPanel({ active, actor }: { active: boolean; actor: stri
           </div>
           <button type="button" onClick={() => setOpen(false)} className="rounded-full border border-white/15 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-ivory transition hover:border-cyanGlow/35 hover:bg-white/[0.08]">Cerrar</button>
         </div>
-        <div className="min-h-0 overflow-y-auto p-3 sm:p-4">
+        <div data-zafiro-modal-scroller className="min-h-0 p-3 sm:p-4">
           {error ? <p role="alert" className="mb-3 rounded-xl border border-red-400/30 bg-red-400/10 p-3 text-sm text-red-200">{error}</p> : null}
           <div className="space-y-3">
             {jobs.map((job) => {
@@ -193,8 +186,8 @@ export function PrintJobsPanel({ active, actor }: { active: boolean; actor: stri
   ) : null;
 
   const confirmation = confirm ? (
-    <div className="fixed inset-0 z-[1010] flex items-center justify-center bg-black/75 p-3" role="dialog" aria-modal="true" aria-label="Confirmar reimpresión">
-      <div className="w-full max-w-md rounded-2xl border border-white/10 bg-[#0d0d13] p-5 text-ivory shadow-2xl">
+    <div className="zafiro-viewport-overlay zafiro-modal-backdrop z-[1010] bg-black/75" role="dialog" aria-modal="true" aria-label="Confirmar reimpresión">
+      <div data-zafiro-modal-scroller className="zafiro-modal-panel w-full max-w-md rounded-2xl border border-white/10 bg-[#0d0d13] p-5 text-ivory shadow-2xl">
         <p className="text-xs uppercase tracking-[0.2em] text-amber-200">Posible duplicación física</p>
         <h2 className="mt-2 font-display text-xl">¿Reimprimir la comanda?</h2>
         <p className="mt-3 text-sm text-mist">Se usará el snapshot original marcado como REIMPRESIÓN. El navegador no confirma que el papel haya salido físicamente.</p>

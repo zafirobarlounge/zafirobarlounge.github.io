@@ -76,10 +76,75 @@ a {
 }
 
 @layer components {
+  .zafiro-viewport-overlay {
+    position: fixed;
+    right: 0;
+    left: 0;
+    top: var(--zafiro-modal-viewport-offset, 0px);
+    height: var(--zafiro-modal-viewport-height, 100%);
+  }
+
   .zafiro-modal-backdrop {
-    min-height: 100dvh;
+    display: flex;
     align-items: center;
     justify-content: center;
+    overflow: hidden;
+    overscroll-behavior: none;
+    padding: max(var(--zafiro-modal-padding, 0.75rem), env(safe-area-inset-top, 0px))
+      max(var(--zafiro-modal-padding, 0.75rem), env(safe-area-inset-right, 0px))
+      max(var(--zafiro-modal-padding, 0.75rem), env(safe-area-inset-bottom, 0px))
+      max(var(--zafiro-modal-padding, 0.75rem), env(safe-area-inset-left, 0px));
+  }
+
+  .zafiro-modal-panel {
+    min-width: 0;
+    max-height: 100%;
+  }
+
+  [data-zafiro-modal-scroller] {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .zafiro-table-sheet {
+    container: pos-table-sheet / size;
+    padding: max(0.75rem, env(safe-area-inset-top, 0px))
+      max(0.75rem, env(safe-area-inset-right, 0px))
+      max(0.75rem, env(safe-area-inset-bottom, 0px))
+      max(0.75rem, env(safe-area-inset-left, 0px));
+  }
+
+  .zafiro-table-sheet-actions {
+    max-height: 40%;
+  }
+
+  .zafiro-table-sheet-header {
+    position: sticky;
+    top: 0;
+  }
+
+  @container pos-table-sheet (max-height: 20rem) {
+    .zafiro-table-sheet-header {
+      position: static;
+    }
+  }
+
+  .zafiro-dropdown-scroll {
+    --zafiro-dropdown-viewport: 100vh;
+    max-height: max(0px, calc(var(--zafiro-dropdown-viewport) - var(--zafiro-dropdown-top) - max(0.75rem, env(safe-area-inset-bottom, 0px))));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  @supports (height: 100dvh) {
+    .zafiro-viewport-overlay {
+      height: var(--zafiro-modal-viewport-height, 100dvh);
+    }
+
+    .zafiro-dropdown-scroll {
+      --zafiro-dropdown-viewport: 100dvh;
+    }
   }
 
   .interactive-card {

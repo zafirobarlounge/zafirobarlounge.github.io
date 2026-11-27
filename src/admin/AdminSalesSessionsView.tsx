@@ -863,8 +863,8 @@ export function AdminSalesSessionsView() {
       )}
 
       {access.manage && sessionPendingDelete ? (
-        <div className="zafiro-modal-backdrop fixed inset-0 z-50 flex overflow-hidden overscroll-none bg-black/72 px-4">
-          <div data-zafiro-modal-scroller className="max-h-[calc(100dvh-2rem)] w-full max-w-lg overflow-y-auto overscroll-contain rounded-[1.4rem] border border-white/10 bg-[#0b0b0f] p-5 shadow-[0_18px_60px_rgba(0,0,0,0.45)]">
+        <div className="zafiro-viewport-overlay zafiro-modal-backdrop z-50 bg-black/72 [--zafiro-modal-padding:1rem]" role="dialog" aria-modal="true" aria-label="Eliminar jornada">
+          <div data-zafiro-modal-scroller className="zafiro-modal-panel w-full max-w-lg rounded-[1.4rem] border border-white/10 bg-[#0b0b0f] p-5 shadow-[0_18px_60px_rgba(0,0,0,0.45)]">
             <p className="text-[0.68rem] uppercase tracking-[0.22em] text-rose-200">Eliminar jornada</p>
             <h2 className="mt-2 font-display text-2xl text-ivory">{sessionPendingDelete.sessionLabel}</h2>
             <p className="mt-3 text-sm leading-6 text-mist">
@@ -902,8 +902,8 @@ export function AdminSalesSessionsView() {
       {isProductRankingModalOpen ? <ProductRankingModal products={visibleSummary.topProducts} onClose={() => setIsProductRankingModalOpen(false)} /> : null}
 
       {access.manage && orderPendingMove ? (
-        <div className="zafiro-modal-backdrop fixed inset-0 z-50 flex overflow-hidden overscroll-none bg-black/72 px-4">
-          <div data-zafiro-modal-scroller className="max-h-[calc(100dvh-2rem)] w-full max-w-xl overflow-y-auto overscroll-contain rounded-[1.4rem] border border-white/10 bg-[#0b0b0f] p-5 shadow-[0_18px_60px_rgba(0,0,0,0.45)]">
+        <div className="zafiro-viewport-overlay zafiro-modal-backdrop z-50 bg-black/72 [--zafiro-modal-padding:1rem]" role="dialog" aria-modal="true" aria-label="Mover cuenta de jornada">
+          <div data-zafiro-modal-scroller className="zafiro-modal-panel w-full max-w-xl rounded-[1.4rem] border border-white/10 bg-[#0b0b0f] p-5 shadow-[0_18px_60px_rgba(0,0,0,0.45)]">
             <p className="text-[0.68rem] uppercase tracking-[0.22em] text-cyanGlow/80">Mover cuenta de jornada</p>
             <h2 className="mt-2 font-display text-2xl text-ivory">{resolveOrderTableLabel(orderPendingMove.order, tablesById)}</h2>
             <p className="mt-3 text-sm leading-6 text-mist">
@@ -965,8 +965,8 @@ export function AdminSalesSessionsView() {
       ) : null}
 
       {access.manage && (isCreateSessionModalOpen || sessionPendingEdit) ? (
-        <div className="zafiro-modal-backdrop fixed inset-0 z-50 flex overflow-hidden overscroll-none bg-black/72 px-4">
-          <div data-zafiro-modal-scroller className="max-h-[calc(100dvh-2rem)] w-full max-w-xl overflow-y-auto overscroll-contain rounded-[1.4rem] border border-white/10 bg-[#0b0b0f] p-5 shadow-[0_18px_60px_rgba(0,0,0,0.45)]">
+        <div className="zafiro-viewport-overlay zafiro-modal-backdrop z-50 bg-black/72 [--zafiro-modal-padding:1rem]" role="dialog" aria-modal="true" aria-label={sessionPendingEdit ? 'Ajustar jornada' : 'Crear jornada manual'}>
+          <div data-zafiro-modal-scroller className="zafiro-modal-panel w-full max-w-xl rounded-[1.4rem] border border-white/10 bg-[#0b0b0f] p-5 shadow-[0_18px_60px_rgba(0,0,0,0.45)]">
             <p className="text-[0.68rem] uppercase tracking-[0.22em] text-cyanGlow/80">
               {sessionPendingEdit ? 'Ajustar jornada' : 'Crear jornada manual'}
             </p>
@@ -1098,8 +1098,8 @@ function ProductRanking({ products, onShowAll }: { products: Array<{ productName
 }
 
 function ProductRankingModal({ products, onClose }: { products: Array<{ productName: string; quantity: number; totalAmount: number }>; onClose: () => void }) {
-  return <div className="zafiro-modal-backdrop fixed inset-0 z-50 flex overflow-hidden overscroll-none bg-black/72 px-4" role="dialog" aria-modal="true" aria-labelledby="all-products-title">
-    <div data-zafiro-modal-scroller className="max-h-[calc(100dvh-2rem)] w-full max-w-2xl overflow-y-auto overscroll-contain rounded-[1.4rem] border border-white/10 bg-[#0b0b0f] p-5 shadow-[0_18px_60px_rgba(0,0,0,0.45)]">
+  return <div className="zafiro-viewport-overlay zafiro-modal-backdrop z-50 bg-black/72 [--zafiro-modal-padding:1rem]" role="dialog" aria-modal="true" aria-labelledby="all-products-title">
+    <div data-zafiro-modal-scroller className="zafiro-modal-panel w-full max-w-2xl rounded-[1.4rem] border border-white/10 bg-[#0b0b0f] p-5 shadow-[0_18px_60px_rgba(0,0,0,0.45)]">
       <div className="flex items-start justify-between gap-4">
         <div><p className="text-[0.68rem] uppercase tracking-[0.22em] text-cyanGlow/80">Productos destacados</p><h2 id="all-products-title" className="mt-2 font-display text-2xl text-ivory">Todos los productos del periodo</h2><p className="mt-2 text-sm text-mist">Cantidad y valor vendido.</p></div>
         <button type="button" className={ghostButtonClassName} onClick={onClose}>Cerrar</button>

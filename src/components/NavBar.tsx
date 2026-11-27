@@ -146,7 +146,7 @@ export function NavBar({
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -14 }}
               transition={{ duration: 0.24, ease: 'easeOut' }}
-              className="absolute inset-x-4 top-full z-50 mt-3 overflow-hidden rounded-[1.75rem] border border-white/10 bg-[linear-gradient(180deg,rgba(16,19,28,0.96),rgba(9,9,11,0.98))] p-4 shadow-glow md:hidden"
+              className="zafiro-dropdown-scroll absolute inset-x-4 top-full z-50 mt-3 rounded-[1.75rem] border border-white/10 bg-[linear-gradient(180deg,rgba(16,19,28,0.96),rgba(9,9,11,0.98))] p-4 shadow-glow [--zafiro-dropdown-top:5.625rem] md:hidden"
             >
               <div className="rounded-[1.4rem] border border-white/10 bg-white/[0.03] p-4">
                 <div className="mb-4 flex items-center justify-between gap-4 border-b border-white/10 pb-4">
