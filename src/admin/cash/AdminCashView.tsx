@@ -340,7 +340,7 @@ export function AdminCashView({ embedded = false, initialAction = null, onClose 
     URL.revokeObjectURL(url);
   }
   const operationDialog = modal && (
-    <div className="zafiro-modal-backdrop fixed inset-0 z-[100] flex overflow-hidden overscroll-none bg-black/75 p-4">
+    <div className="zafiro-viewport-overlay zafiro-modal-backdrop z-[100] bg-black/75 [--zafiro-modal-padding:1rem]">
       <div role="dialog" aria-modal="true" onKeyDown={e => {
         if (e.key === 'Escape') { e.stopPropagation(); closeModal(); }
         if (e.key === 'Tab') {
@@ -349,7 +349,7 @@ export function AdminCashView({ embedded = false, initialAction = null, onClose 
           if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); }
           else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
         }
-      }} data-zafiro-modal-scroller aria-label={modal === 'movement' ? 'Registrar movimiento' : !active ? 'Abrir jornada y caja' : 'Arqueo y cierre de jornada'} className="max-h-[calc(100dvh-2rem)] w-full max-w-xl overflow-y-auto overscroll-contain rounded-2xl border border-white/20 bg-obsidian p-4 sm:max-h-[90dvh]">
+      }} data-zafiro-modal-scroller aria-label={modal === 'movement' ? 'Registrar movimiento' : !active ? 'Abrir jornada y caja' : 'Arqueo y cierre de jornada'} className="zafiro-modal-panel w-full max-w-xl rounded-2xl border border-white/20 bg-obsidian p-4">
         <div className="mb-5 flex justify-end border-b border-white/10 pb-4">
           <button autoFocus type="button" className="rounded-full border border-white/14 bg-white/[0.06] px-4 py-2 text-sm font-semibold uppercase tracking-[0.22em] text-ivory transition hover:border-cyanGlow/24 hover:bg-white/[0.1] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyanGlow/20 disabled:cursor-not-allowed disabled:opacity-60" disabled={busy} onClick={closeModal}>
             Cerrar

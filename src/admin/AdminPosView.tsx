@@ -398,7 +398,7 @@ export function AdminPosView() {
     };
   }, [canOperateBar, canOperateCashier, canOperateFloor, canOperateKitchen]);
 
-  useModalScrollLock(isTableSheetOpen || isMoveTableModalOpen || Boolean(inventoryVoidDialog));
+  useModalScrollLock(isTableSheetOpen || isMoveTableModalOpen || Boolean(inventoryVoidDialog) || Boolean(receiptPrintOrder));
 
   useEffect(() => {
     const unlockAudioAndNotifications = () => {
@@ -2906,16 +2906,15 @@ export function AdminPosView() {
           </div>
 
           {isTableSheetOpen && selectedTable ? (
-            <div className="fixed inset-0 z-50 overflow-hidden overscroll-none bg-[#0b0b0f] xl:hidden">
+            <div className="zafiro-viewport-overlay zafiro-table-sheet z-50 flex flex-col gap-2 overflow-hidden overscroll-none bg-[#0b0b0f] xl:hidden">
               <div
                 data-zafiro-modal-scroller
-                className="absolute inset-0 overflow-y-auto overscroll-contain border border-white/10 bg-[#0b0b0f] px-4 pb-[max(7.5rem,env(safe-area-inset-bottom))] pt-[max(1rem,env(safe-area-inset-top))] shadow-[0_-18px_40px_rgba(0,0,0,0.38)]"
-                style={{ WebkitOverflowScrolling: 'touch', touchAction: 'pan-y' }}
+                className="min-h-0 flex-1 px-1 pb-1"
               >
                 <div
                   ref={mobileTableSheetHeaderRef}
                   tabIndex={-1}
-                  className="sticky top-0 left-3 right-3 z-30 mb-4 rounded-[1.7rem] border border-white/10 bg-[#0b0b0f]/95 px-4 py-4 shadow-[0_18px_50px_rgba(0,0,0,0.35)] backdrop-blur-sm"
+                  className="zafiro-table-sheet-header z-30 mb-4 rounded-[1.7rem] border border-white/10 bg-[#0b0b0f]/95 px-4 py-4 shadow-[0_18px_50px_rgba(0,0,0,0.35)] backdrop-blur-sm"
                 >
                   <div className="flex items-center justify-between gap-3">
                     <div className="min-w-0">
@@ -2934,7 +2933,7 @@ export function AdminPosView() {
                 {renderSelectedTableWorkspace()}
               </div>
               {selectedOrderDraftItems.length ? (
-                <div className="absolute inset-x-3 bottom-[max(0.75rem,env(safe-area-inset-bottom))] z-20 grid gap-2 rounded-[1.1rem] border border-amberGlow/35 bg-[#18130d]/95 px-3 py-3 shadow-[0_14px_34px_rgba(0,0,0,0.38)] backdrop-blur">
+                <div data-zafiro-modal-scroller className="zafiro-table-sheet-actions grid shrink-0 gap-2 rounded-[1.1rem] border border-amberGlow/35 bg-[#18130d]/95 px-3 py-3 shadow-[0_14px_34px_rgba(0,0,0,0.38)] backdrop-blur">
                   <div className="min-w-0">
                     <p className="text-sm font-semibold leading-5 text-ivory">
                       {selectedOrderDraftItems.length} borrador{selectedOrderDraftItems.length === 1 ? '' : 'es'} sin enviar
@@ -2947,8 +2946,8 @@ export function AdminPosView() {
                 </div>
               ) : null}
               {isCloseDraftWarningOpen ? (
-                <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/90 px-4 py-6">
-                  <div className="w-full max-w-sm rounded-[1.6rem] border border-amberGlow/40 bg-[#0d0d11]/95 p-5 shadow-[0_22px_60px_rgba(0,0,0,0.55)] ring-1 ring-amberGlow/15">
+                <div className="zafiro-modal-backdrop absolute inset-0 z-40 bg-black/90" role="dialog" aria-modal="true" aria-label="Borradores pendientes">
+                  <div data-zafiro-modal-scroller className="zafiro-modal-panel w-full max-w-sm rounded-[1.6rem] border border-amberGlow/40 bg-[#0d0d11]/95 p-5 shadow-[0_22px_60px_rgba(0,0,0,0.55)] ring-1 ring-amberGlow/15">
                     <div className="mb-4 inline-flex items-center gap-2 rounded-full bg-amberGlow/10 px-3 py-1 text-[0.68rem] font-semibold uppercase tracking-[0.24em] text-amberGlow">
                       Alerta
                     </div>
@@ -2971,8 +2970,8 @@ export function AdminPosView() {
           ) : null}
 
           {isMoveTableModalOpen && selectedTable?.activeOrder ? (
-            <div className="zafiro-modal-backdrop fixed inset-0 z-50 flex overflow-hidden overscroll-none bg-black/72 px-4">
-              <div data-zafiro-modal-scroller className="max-h-[calc(100dvh-2rem)] w-full max-w-lg overflow-y-auto overscroll-contain rounded-[1.4rem] border border-white/10 bg-[#0b0b0f] p-5 shadow-[0_18px_60px_rgba(0,0,0,0.45)] sm:max-h-[92dvh]">
+            <div className="zafiro-viewport-overlay zafiro-modal-backdrop z-50 bg-black/72 [--zafiro-modal-padding:1rem]" role="dialog" aria-modal="true" aria-label="Trasladar cuenta">
+              <div data-zafiro-modal-scroller className="zafiro-modal-panel w-full max-w-lg rounded-[1.4rem] border border-white/10 bg-[#0b0b0f] p-5 shadow-[0_18px_60px_rgba(0,0,0,0.45)]">
                 <div className="flex items-start justify-between gap-4">
                   <div>
                     <p className="text-[0.68rem] uppercase tracking-[0.22em] text-cyanGlow/80">Trasladar cuenta</p>
@@ -5618,8 +5617,8 @@ function InventoryVoidResolutionDialog({ value, busy, onChange, onClose, onConfi
   const canAdjustByIngredient=canAdjustInventoryVoidByIngredient(value.lines);
   const canConfirm=canConfirmInventoryVoid(value);
   const showAdvanced=canAdjustByIngredient&&value.advanced;
-  return <div className="zafiro-modal-backdrop fixed inset-0 z-[100] flex overflow-hidden overscroll-none bg-black/75 p-3" role="dialog" aria-modal="true">
-    <div data-zafiro-modal-scroller className="max-h-[calc(100dvh-1.5rem)] w-full max-w-4xl overflow-y-auto overscroll-contain rounded-[1.4rem] border border-white/12 bg-[#0d0d13] p-5 shadow-2xl sm:max-h-[92dvh] sm:p-6">
+  return <div className="zafiro-viewport-overlay zafiro-modal-backdrop z-[100] bg-black/75" role="dialog" aria-modal="true" aria-label="Resolver anulación de inventario">
+    <div data-zafiro-modal-scroller className="zafiro-modal-panel w-full max-w-4xl rounded-[1.4rem] border border-white/12 bg-[#0d0d13] p-5 shadow-2xl sm:p-6">
       <div className="flex items-start justify-between gap-3"><div><p className="text-xs uppercase tracking-[0.2em] text-amberGlow">Anulación después de entregar</p><h2 className="mt-2 font-display text-3xl text-ivory">Anular producto entregado</h2></div><button type="button" className={ghostButtonClassName} onClick={onClose}>Cerrar</button></div>
       <div className="mt-5 rounded-[1rem] border border-cyanGlow/20 bg-cyanGlow/[0.06] px-5 py-4"><p className="font-display text-2xl text-ivory">{value.item.productName}</p><p className="mt-1 text-xs uppercase tracking-[0.16em] text-cyan-100/75">Producto entregado</p></div>
       {showAdvanced?<div className="mt-5"><div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="text-lg font-semibold text-ivory">Destino por ingrediente</h3><p className="mt-1 text-sm text-mist">Selecciona qué ocurrió con cada ingrediente.</p></div><button type="button" className={ghostButtonClassName} onClick={()=>onChange(returnToInventoryVoidSingleMode(value))}>Volver a destino único</button></div><div className="mt-4 space-y-3">{value.lines.map((line,index)=><article key={line.consumption_line_id} className="rounded-[1rem] border border-white/10 bg-white/[0.03] p-4"><h4 className="font-semibold text-ivory">{line.item_name}</h4><InventoryVoidDestinationChoices compact name={`inventory-void-${line.consumption_line_id}`} value={line.destination} onChange={(destination)=>onChange({...value,lines:value.lines.map((current,lineIndex)=>lineIndex===index?{...current,destination}:current)})}/></article>)}</div></div>:<fieldset className="mt-5"><legend className="text-lg font-semibold text-ivory">¿Qué ocurrió con este producto?</legend><InventoryVoidDestinationChoices name="inventory-void-destination" value={value.destination} onChange={(destination)=>onChange({...value,destination})}/>{canAdjustByIngredient?<button type="button" className={`${ghostButtonClassName} mt-4`} onClick={()=>onChange(openInventoryVoidIngredientMode(value))}>Ajustar por ingrediente</button>:null}</fieldset>}
@@ -5710,8 +5709,8 @@ const disabledDangerButtonClassName =
   'cursor-not-allowed rounded-full border border-white/12 bg-white/[0.04] px-4 py-2.5 text-xs font-semibold uppercase tracking-[0.22em] text-white/40 opacity-55';
 
 function ReceiptPrintDialog({ order, onClose, onConfirm }: { order: PosOrderWithRelations; onClose: () => void; onConfirm: () => void }) {
-  return <div className="zafiro-modal-backdrop fixed inset-0 z-[100] flex items-center justify-center bg-black/75 p-3" role="dialog" aria-modal="true">
-    <div className="w-full max-w-md rounded-[1.4rem] border border-white/12 bg-[#0d0d13] p-5 shadow-2xl">
+  return <div className="zafiro-viewport-overlay zafiro-modal-backdrop z-[100] bg-black/75" role="dialog" aria-modal="true" aria-label="Recibo de venta">
+    <div data-zafiro-modal-scroller className="zafiro-modal-panel w-full max-w-md rounded-[1.4rem] border border-white/12 bg-[#0d0d13] p-5 shadow-2xl">
       <p className="text-xs uppercase tracking-[0.2em] text-cyanGlow">Recibo de venta</p>
       <h2 className="mt-2 font-display text-2xl text-ivory">¿Deseas imprimir el recibo de esta cuenta?</h2>
       <p className="mt-3 text-sm text-mist">Mesa {order.tableCodeSnapshot ?? 'sin mesa'} · {formatCurrency(order.summary.totalDue)}</p>

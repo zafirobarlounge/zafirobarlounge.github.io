@@ -39,9 +39,8 @@ test('panel keeps the original snapshot, records the browser cycle, then resolve
 
 test('panel uses a body portal with a constrained and scrollable modal viewport', () => {
   assert.match(source, /createPortal\(<>{panel}\{confirmation}<\/>, document\.body\)/);
-  assert.match(source, /max-h-\[85vh\]/);
-  assert.match(source, /overflow-y-auto/);
-  assert.match(source, /z-\[1000\]/);
-  assert.match(source, /document\.body\.style\.overflow = 'hidden'/);
-  assert.match(source, /document\.documentElement\.style\.overflow = 'hidden'/);
+  assert.match(source, /zafiro-viewport-overlay zafiro-modal-backdrop z-\[1000\]/);
+  assert.match(source, /zafiro-viewport-overlay zafiro-modal-backdrop z-\[1010\]/);
+  assert.equal(source.match(/data-zafiro-modal-scroller/g)?.length, 2);
+  assert.match(source, /useModalScrollLock\(pendingCount > 0 && \(open \|\| Boolean\(confirm\)\)\)/);
 });
